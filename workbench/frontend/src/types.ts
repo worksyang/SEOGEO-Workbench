@@ -96,3 +96,107 @@ export interface MpBootstrapData {
 
 export interface MpBootstrapResponse { ok?: boolean; data?: MpBootstrapData | null }
 export interface MpArticlesResponse { ok?: boolean; data?: Record<string, unknown> | null }
+
+export type XhsStatus = 'healthy' | 'degraded' | 'offline' | 'unknown' | string
+export type JsonRecord = Record<string, unknown>
+
+export interface XhsSourceStatus {
+  status?: XhsStatus
+  source?: string
+  error?: string | null
+}
+
+export interface XhsCounts {
+  keywords: number
+  accounts: number
+  snapshots: number
+  ranking_hits: number
+  articles: number
+  snapshot_terms: number
+}
+
+export interface XhsKeyword {
+  keyword_id?: string
+  keyword?: string
+  status?: string
+  topic?: string | null
+  keyword_bucket?: string | null
+  payload?: JsonRecord
+  payload_json?: string
+  [key: string]: unknown
+}
+
+export interface XhsSnapshot {
+  snapshot_id?: string
+  keyword_id?: string
+  keyword?: string
+  captured_at?: string
+  features?: JsonRecord
+  payload?: JsonRecord
+  hits?: XhsHit[]
+  [key: string]: unknown
+}
+
+export interface XhsRun {
+  id?: string
+  captured_at?: string
+  terms?: {
+    suggestions?: unknown[]
+    related?: unknown[]
+  }
+  articles?: XhsArticle[]
+  [key: string]: unknown
+}
+
+export interface XhsHit {
+  hit_id?: string
+  snapshot_id?: string
+  rank?: number
+  content_id?: string | null
+  title_raw?: string | null
+  url_raw?: string | null
+  creator_name_raw?: string | null
+  payload?: JsonRecord
+  [key: string]: unknown
+}
+
+export interface XhsArticle {
+  content_id?: string
+  article_id?: string
+  title?: string | null
+  canonical_url?: string | null
+  creator_id?: string | null
+  author_name?: string | null
+  published_at?: string | null
+  payload?: JsonRecord
+  hits?: XhsHit[]
+  observations?: XhsObservation[]
+  [key: string]: unknown
+}
+
+export interface XhsObservation {
+  observation_id?: string
+  subject_id?: string
+  metric_key?: string
+  observed_at?: string
+  numeric_value?: number | null
+  payload?: JsonRecord
+  [key: string]: unknown
+}
+
+export interface XhsBootstrapData {
+  source_status?: XhsSourceStatus
+  counts?: XhsCounts
+  keywords?: XhsKeyword[]
+  accounts?: JsonRecord[]
+  snapshots?: XhsSnapshot[]
+  runs?: XhsRun[]
+  ranking_hits?: XhsHit[]
+  articles?: XhsArticle[]
+  snapshot_terms?: JsonRecord[]
+}
+
+export interface XhsApiEnvelope<T> {
+  ok?: boolean
+  data?: T
+}

@@ -2,6 +2,7 @@ import {useState} from 'react'
 import {useWorkbenchData} from './hooks/useWorkbenchData'
 import WechatPage from './features/wechat/WechatPage'
 import MpPage from './features/mp/MpPage'
+import XhsPage from './features/xhs/XhsPage'
 import './styles/app.css'
 
 const NAV_ITEMS = [
@@ -32,6 +33,7 @@ export default function App() {
   const [active, setActive] = useState('overview')
   const [wechatSourceStatus, setWechatSourceStatus] = useState('unknown')
   const [mpSourceStatus, setMpSourceStatus] = useState('unknown')
+  const [xhsSourceStatus, setXhsSourceStatus] = useState('unknown')
   const {overview, status, loading, error, reload} = useWorkbenchData()
   const wechatNavStatus = active === 'wechat' && wechatSourceStatus === 'unknown'
     ? '检查中'
@@ -40,7 +42,10 @@ export default function App() {
       : '待接入'
   const mpNavStatus = mpSourceStatus === 'unknown'
     ? '未检查'
-    : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[mpSourceStatus] ?? mpSourceStatus)
+      : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[mpSourceStatus] ?? mpSourceStatus)
+  const xhsNavStatus = xhsSourceStatus === 'unknown'
+    ? '未检查'
+    : ({healthy: '健康', ready: '健康', online: '健康', degraded: '历史回放', partial: '历史回放', offline: '离线', unavailable: '离线'}[xhsSourceStatus] ?? xhsSourceStatus)
 
   return (
     <div className="app-shell">
@@ -62,7 +67,7 @@ export default function App() {
             >
               <span className="nav-icon" aria-hidden="true">{icon}</span>
               <span>{label}</span>
-              {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : '待接入'}</span>}
+              {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : '待接入'}</span>}
             </button>
           ))}
         </nav>
@@ -175,6 +180,8 @@ export default function App() {
           <WechatPage onSourceStatus={setWechatSourceStatus} />
         ) : active === 'mp' ? (
           <MpPage onSourceStatus={setMpSourceStatus} />
+        ) : active === 'xhs' ? (
+          <XhsPage onSourceStatus={setXhsSourceStatus} />
         ) : (
           <section className="module-placeholder">
             <p className="eyebrow">真实接入进行中</p>
