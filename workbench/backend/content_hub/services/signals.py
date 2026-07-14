@@ -238,13 +238,6 @@ class SignalsService:
                 signal_date, severity, value, baseline_value, model_version,
                 status, details_json, consumed_by_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, '[]')
-            ON CONFLICT(signal_type, subject_type, subject_id, signal_date, model_version)
-            DO UPDATE SET
-                detected_at=excluded.detected_at,
-                severity=excluded.severity,
-                value=excluded.value,
-                baseline_value=excluded.baseline_value,
-                details_json=excluded.details_json
             """,
             (
                 generate_ulid_like("sig"),

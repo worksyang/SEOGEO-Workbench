@@ -268,7 +268,7 @@ class WritingService:
             INSERT INTO contents(
                 content_id, content_type, title, canonical_url,
                 first_seen_at, updated_at, md_path, file_hash, content_hash
-            ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
             ON CONFLICT(content_id) DO UPDATE SET file_hash=excluded.file_hash
             """,
             (
@@ -285,12 +285,13 @@ class WritingService:
 
     def _record_event(self, job_id: str, event: str, payload: dict[str, Any]) -> None:
         self._conn.execute(
-            "INSERT INTO job_events(event_id, job_id, event, observed_at, payload_json) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO job_events(event_id, job_id, occurred_at, event_type, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 f"ev_{job_id}_{event}",
                 job_id,
-                event,
                 utc_now_iso(),
+                event,
+                None,
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
             ),
         )

@@ -82,7 +82,7 @@ class JobsService:
             raise ValueError(f"非法结束状态：{status}")
         self._conn.execute(
             "UPDATE production_jobs SET status=?, output_content_id=COALESCE(?, output_content_id), updated_at=? WHERE job_id=?",
-            (status, output_content_id or "", utc_now_iso(), job_id),
+            (status, output_content_id or None, utc_now_iso(), job_id),
         )
         self._record_event(job_id, "completed", {"status": status, "output_content_id": output_content_id})
 
@@ -110,7 +110,7 @@ class JobsService:
         events = [
             dict(event)
             for event in self._conn.execute(
-                "SELECT event_id, event, observed_at, payload_json FROM job_events WHERE job_id=? ORDER BY observed_at",
+                "SELECT event_id, event_type, occurred_at, payload_json FROM job_events WHERE job_id=? ORDER BY occurred_at",
                 (job_id,),
             ).fetchall()
         ]
@@ -129,12 +129,13 @@ class JobsService:
 
     def _record_event(self, job_id: str, event: str, payload: dict[str, Any]) -> None:
         self._conn.execute(
-            "INSERT INTO job_events(event_id, job_id, event, observed_at, payload_json) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO job_events(event_id, job_id, occurred_at, event_type, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 f"ev_{job_id}_{event}",
                 job_id,
-                event,
                 utc_now_iso(),
+                event,
+                None,
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
             ),
         )

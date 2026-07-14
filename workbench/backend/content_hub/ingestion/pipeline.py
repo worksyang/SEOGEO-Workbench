@@ -77,6 +77,8 @@ class IngestionPipeline:
         resolver = IdentityResolver(self._conn)
         try:
             with writer_lock(self._lock_path):
+                # 已有 SQLite 隐式事务时显式先提交，避免 BEGIN IMMEDIATE 嵌套
+                self._conn.commit()
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
                     written += self._ingest_contents(raw.contents, resolver, errors)
@@ -158,17 +160,17 @@ class IngestionPipeline:
                     (
                         record.content_id,
                         record.content_type,
-                        record.title or "",
-                        record.canonical_url or "",
-                        record.creator_id or "",
-                        record.author_name or "",
-                        record.published_at or "",
+                        record.title or None,
+                        record.canonical_url or None,
+                        record.creator_id or None,
+                        record.author_name or None,
+                        record.published_at or None,
                         record.first_seen_at or utc_now_iso(),
                         record.updated_at or record.first_seen_at or utc_now_iso(),
-                        record.md_path or "",
-                        record.file_hash or "",
-                        record.content_hash or "",
-                        record.domain or "",
+                        record.md_path or None,
+                        record.file_hash or None,
+                        record.content_hash or None,
+                        record.domain or None,
                         json.dumps(entities, ensure_ascii=False),
                         json.dumps(intents, ensure_ascii=False),
                         json.dumps(dict(record.payload), ensure_ascii=False),

@@ -137,6 +137,7 @@ class PublishingService:
             outcome="draft_saved",
             details={"content_id": content_id, "operator": operator},
         )
+        # 仅在 Publishing 自身需要时新建 job；下面调用 _record_attempt 时已经包含 job_id 备用
         return {"attempt_id": attempt_id, "draft_path": str(target), "content_id": content_id}
 
     def dry_run(self, *, account_id: str, content_id: str, body: str) -> dict[str, Any]:
@@ -210,37 +211,58 @@ class PublishingService:
         outcome: str,
         details: dict[str, Any],
     ) -> str:
-        attempt_id = generate_ulid_like("pub")
+        payload = {"automated": False, "content_md_path": content_md_path, "outcome": outcome, **details}
+        if "dry" in outcome:
+            mode = "dry_run"
+        elif "draft" in outcome:
+            mode = "draft"
+        else:
+            mode = "publish"
+        # 幂等先查
+        existing = self._conn.execute(
+            "SELECT attempt_id FROM publish_attempts WHERE idempotency_key=?",
+            (idem_key,),
+        ).fetchone()
+        if existing:
+            return existing["attempt_id"] if isinstance(existing, sqlite3.Row) else existing[0]
+        # job_id 派生自 idem_key 以满足 FK，且幂等时复用同一行
+        job_id = f"job_pub_{idem_key}"
         try:
             self._conn.execute(
-                """
-                INSERT INTO publish_attempts(
-                    attempt_id, account_id, content_md_path, idem_key,
-                    status, started_at, finished_at, details_json, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    attempt_id,
-                    account_id,
-                    content_md_path,
-                    idem_key,
-                    status,
-                    utc_now_iso(),
-                    utc_now_iso(),
-                    json.dumps({"outcome": outcome, **details}, ensure_ascii=False, sort_keys=True),
-                    json.dumps({"automated": False}, ensure_ascii=False, sort_keys=True),
-                ),
+                """INSERT OR IGNORE INTO production_jobs(
+                       job_id, job_type, status, input_signal_ids_json,
+                       source_content_ids_json, created_at, updated_at, payload_json
+                   ) VALUES (?, ?, 'succeeded', '[]', '[]', ?, ?, '{}')""",
+                (job_id, f"publish_{mode}", utc_now_iso(), utc_now_iso()),
             )
-        except sqlite3.IntegrityError:
-            row = self._conn.execute(
-                "SELECT attempt_id FROM publish_attempts WHERE idem_key=?",
-                (idem_key,),
-            ).fetchone()
-            return row["attempt_id"] if row else attempt_id
-        return attempt_id
-
-
-# ── Markdown → 微信编辑器 HTML 的简化实现 ──────────────────
+        except sqlite3.OperationalError:
+            # 单独的 OperationalError（非完整性错误），重抛
+            raise
+        attempt_id = generate_ulid_like("pub")
+        self._conn.execute(
+            """INSERT OR IGNORE INTO publish_attempts(
+                   attempt_id, job_id, account_key, idempotency_key,
+                   mode, status, attempted_at, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                attempt_id,
+                job_id,
+                account_id,
+                idem_key,
+                mode,
+                status,
+                utc_now_iso(),
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        # 任何情况都返回本次要返回的 attempt_id（已有则取旧的）
+        row = self._conn.execute(
+            "SELECT attempt_id FROM publish_attempts WHERE idempotency_key=?",
+            (idem_key,),
+        ).fetchone()
+        if row:
+            return row["attempt_id"] if isinstance(row, sqlite3.Row) else row[0]
+        return attempt_id# ── Markdown → 微信编辑器 HTML 的简化实现 ──────────────────
 
 _INLINE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _INLINE_EM = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")

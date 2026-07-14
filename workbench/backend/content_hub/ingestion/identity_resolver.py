@@ -185,7 +185,7 @@ class IdentityResolver:
         if old_id == new_id:
             return new_id
         cur = self._conn.execute(
-            "SELECT 1 FROM identity_merge_map WHERE old_content_id=? AND new_content_id=?",
+            "SELECT 1 FROM identity_merge_map WHERE source_content_id=? AND target_content_id=? AND reverted_at IS NULL",
             (old_id, new_id),
         ).fetchone()
         if cur:
@@ -193,16 +193,15 @@ class IdentityResolver:
         self._conn.execute(
             """
             INSERT INTO identity_merge_map(
-                merge_id, old_content_id, new_content_id, operator, reason, merged_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                source_content_id, target_content_id, merged_at, merged_by, reason_json
+            ) VALUES (?, ?, ?, ?, ?)
             """,
             (
-                f"merge::{old_id}::{new_id}",
                 old_id,
                 new_id,
-                operator,
-                reason,
                 utc_now_iso(),
+                operator,
+                json.dumps({"reason": reason}, ensure_ascii=False),
             ),
         )
         rows = self._conn.execute(
@@ -221,7 +220,7 @@ class IdentityResolver:
 
     def lookup_alias(self, old_id: str) -> str:
         row = self._conn.execute(
-            "SELECT new_content_id FROM identity_merge_map WHERE old_content_id=? ORDER BY merged_at DESC LIMIT 1",
+            "SELECT target_content_id FROM identity_merge_map WHERE source_content_id=? AND reverted_at IS NULL ORDER BY merged_at DESC LIMIT 1",
             (old_id,),
         ).fetchone()
         return row[0] if row else old_id
