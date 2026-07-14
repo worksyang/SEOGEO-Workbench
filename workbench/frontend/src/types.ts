@@ -68,3 +68,31 @@ export interface WechatArticleResponse {
   ok?: boolean
   data?: Record<string, unknown> | null
 }
+
+export type MpSourceStatus = 'healthy' | 'degraded' | 'offline' | 'unknown' | string
+
+export interface MpBootstrapData {
+  source_status?: {
+    status?: MpSourceStatus
+    inconsistent?: boolean
+    logged_in?: boolean | null
+    display_status?: string | null
+    message?: string | null
+    errors?: Record<string, unknown>
+  } | null
+  summary?: {
+    account_count?: number
+    category_count?: number
+    job_count?: number
+    imported_article_count?: number
+  } | null
+  accounts?: unknown[] | null
+  categories?: unknown[] | null
+  jobs?: unknown[] | null
+  hub_articles?: unknown[] | null
+  auth?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+export interface MpBootstrapResponse { ok?: boolean; data?: MpBootstrapData | null }
+export interface MpArticlesResponse { ok?: boolean; data?: Record<string, unknown> | null }
