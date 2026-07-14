@@ -29,3 +29,20 @@ unified-content-platform-demo.png
 
 # 浏览器自动化
 .playwright-cli/
+
+# 汇入源码中的运行数据与凭证
+source/**/data/raw/
+source/**/data/state/
+source/**/data/runs/
+source/**/data/cache/
+source/**/normalized/
+source/**/.backup/
+source/**/.web_console/
+source/**/chrome_user_data/
+source/**/cookies.json
+source/**/token.txt
+source/**/tokens.txt
+source/**/wxcookie.yaml
+source/**/openaiapi.json
+source/**/session-*.md
+source/**/*.7z

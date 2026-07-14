@@ -1,0 +1,23 @@
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs / temp
+*.log
+/tmp/
+
+# 生成的 Demo 产物
+geo_demo_*.png
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key

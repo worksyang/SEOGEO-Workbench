@@ -1,0 +1,4 @@
+selenium        # 浏览器自动化操作
+lxml            # 解析HTML
+pyperclip       # 剪贴板操作
+psutil          # 系统监控

@@ -1,0 +1,28 @@
+# HTTP请求和API调用
+requests>=2.28.0
+
+
+# 异步HTTP客户端 (虽然代码中没有直接使用aiohttp，但asyncio需要)
+# aiohttp>=3.8.0  # 注释掉，代码中没有实际使用
+
+# 图像处理
+Pillow>=9.0.0
+
+# 剪贴板操作 (Gemini模块使用)
+pyperclip>=1.8.0
+
+# 浏览器自动化 (Gemini模块使用)
+selenium>=4.0.0
+
+# 终端颜色输出 (api_money.py使用)
+termcolor>=1.1.0
+
+# 进度条显示 (api_money.py使用)
+tqdm>=4.65.0
+
+# 注意：以下是Python标准库，无需安装：
+# - os, sys, time, random, datetime
+# - typing, concurrent.futures, asyncio
+# - importlib.util, json, re
+# - abc, functools, io, traceback
+# - glob, threading, enum 

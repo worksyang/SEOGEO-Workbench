@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>港险服务群看板</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#f4f5f7;color:#111;font-size:13px}
+.topbar{background:#fff;border-bottom:1px solid #e2e4e8;height:46px;display:flex;align-items:center;padding:0 20px;gap:12px;position:sticky;top:0;z-index:50}
+.logo{font-size:13px;font-weight:600;color:#111}
+.sep{width:1px;height:16px;background:#e2e4e8}
+.topbar-meta{font-size:11px;color:#999}
+.view-pill{font-size:11px;border:1px solid #e2e4e8;background:#fff;color:#666;border-radius:999px;padding:4px 10px;cursor:pointer;transition:all .12s}
+.view-pill.active{background:#eff6ff;color:#1e40af;border-color:#bfdbfe}
+.topbar-right{margin-left:auto;font-size:11px;color:#999}
+
+.main{padding:16px;display:flex;flex-direction:column;gap:16px}
+
+/* KPI 卡片 */
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:#fff;border:1px solid #e2e4e8;border-radius:8px;padding:14px 16px}
+.kpi-label{font-size:11px;color:#999;margin-bottom:6px}
+.kpi-value{font-size:24px;font-weight:700;color:#111;line-height:1}
+.kpi-sub{font-size:11px;color:#999;margin-top:4px}
+.kpi-sub.up{color:#16a34a}.kpi-sub.down{color:#dc2626}
+.kpi-trend{display:inline-block;font-size:11px;margin-left:4px}
+
+/* 看板网格 */
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.card{background:#fff;border:1px solid #e2e4e8;border-radius:8px;overflow:hidden}
+.card-head{padding:10px 14px;border-bottom:1px solid #f0f0f0;font-weight:600;font-size:12px;display:flex;align-items:center;gap:8px}
+.card-body{padding:12px 14px}
+
+/* 群列表 */
+.group-list{display:flex;flex-direction:column;gap:6px}
+.group-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f5f5f5}
+.group-item:last-child{border-bottom:none}
+.group-name{flex:1;font-size:12px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-count{font-size:11px;color:#999;min-width:36px;text-align:right}
+.group-bar{height:4px;background:#f0f0f0;border-radius:2px;overflow:hidden;flex-shrink:0;width:60px}
+.group-bar-fill{height:100%;background:#3b82f6;border-radius:2px}
+.group-badge{font-size:10px;padding:1px 6px;border-radius:10px;background:#f0f4ff;color:#1e40af}
+.group-badge.hot{background:#fef2f2;color:#dc2626}
+.group-badge.cold{background:#f0fdf4;color:#16a34a}
+
+/* 趋势图 */
+.trend-chart{display:flex;align-items:flex-end;gap:4px;height:120px;padding-top:8px}
+.trend-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.trend-bar-fill{width:100%;background:#3b82f6;border-radius:3px 3px 0 0;min-height:4px;transition:height .2s}
+.trend-bar-fill.peak{background:#dc2626}
+.trend-bar-label{font-size:10px;color:#999}
+.trend-bar-value{font-size:10px;color:#666}
+
+/* 关键词热度 */
+.kw-list{display:flex;flex-direction:column;gap:5px}
+.kw-row{display:flex;align-items:center;gap:8px}
+.kw-name{width:70px;font-size:12px;color:#334155;flex-shrink:0}
+.kw-bar{height:18px;background:#f0f0f0;border-radius:3px;overflow:hidden;flex:1}
+.kw-bar-fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:3px;display:flex;align-items:center;padding-left:6px}
+.kw-count{font-size:10px;color:#fff;font-weight:600}
+.kw-cat{font-size:10px;color:#999;width:48px;flex-shrink:0;text-align:right}
+
+/* 问询列表 */
+.q-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto}
+.q-item{padding:8px 10px;background:#f8f9fa;border-radius:6px;border-left:3px solid #3b82f6}
+.q-group{font-size:10px;color:#999;margin-bottom:2px}
+.q-text{font-size:12px;color:#334155;line-height:1.4}
+.q-text .q-mark{color:#dc2626;font-weight:600}
+
+/* 消息类型分布 */
+.type-pie{display:flex;align-items:center;gap:16px}
+.type-chart{width:100px;height:100px;border-radius:50%;background:conic-gradient(#3b82f6 52.2%,#10b981 13.4%,#f59e0b 10.5%,#8b5cf6 10.3%,#ec4899 5.7%,#6b7280 7.9%)}
+.type-legend{display:flex;flex-direction:column;gap:4px;flex:1}
+.type-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#666}
+.type-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+.type-pct{margin-left:auto;color:#999;font-size:10px}
+
+/* 业务分类雷达 */
+.cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cat-item{background:#f8f9fa;border-radius:6px;padding:8px 10px}
+.cat-name{font-size:11px;color:#999;margin-bottom:2px}
+.cat-count{font-size:16px;font-weight:700;color:#111}
+.cat-bar{height:3px;background:#e2e4e8;border-radius:2px;margin-top:4px;overflow:hidden}
+.cat-bar-fill{height:100%;border-radius:2px}
+
+/* 热点信号 */
+.signal-list{display:flex;flex-direction:column;gap:8px}
+.signal{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:6px}
+.signal.warn{background:#fef2f2;border-left:3px solid #dc2626}
+.signal.info{background:#f0f4ff;border-left:3px solid #3b82f6}
+.signal.good{background:#f0fdf4;border-left:3px solid #16a34a}
+.signal-icon{font-size:14px;flex-shrink:0;margin-top:1px}
+.signal-text{font-size:11px;color:#334155;line-height:1.5}
+.signal-text b{color:#111}
+
+.col-span-2{grid-column:span 2}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="logo">港险服务群看板</span>
+  <span class="sep"></span>
+  <span class="topbar-meta">11个群 · 2531条消息 · 最近30天</span>
+  <span class="sep"></span>
+  <div style="display:flex;gap:6px">
+    <span class="view-pill active">最近7天</span>
+    <span class="view-pill">最近30天</span>
+    <span class="view-pill">今天</span>
+  </div>
+  <div class="topbar-right">数据更新: 2026-06-23 20:30</div>
+</div>
+
+<div class="main">
+
+  <!-- KPI 卡片 -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="kpi-label">总消息量</div>
+      <div class="kpi-value">2,531</div>
+      <div class="kpi-sub">11个群 · 30天</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">今日消息</div>
+      <div class="kpi-value">67</div>
+      <div class="kpi-sub down">较昨日 -38%<span class="kpi-trend">↓</span></div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">活跃群数</div>
+      <div class="kpi-value">8<span style="font-size:14px;color:#999">/11</span></div>
+      <div class="kpi-sub">3个群今日无新消息</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">待处理问询</div>
+      <div class="kpi-value">127</div>
+      <div class="kpi-sub up">含问号消息 · <span style="color:#dc2626">需回复</span></div>
+    </div>
+  </div>
+
+  <!-- 主网格 -->
+  <div class="grid">
+
+    <!-- 左列: 群列表 -->
+    <div class="card" style="grid-row:span 2">
+      <div class="card-head">服务群热度排行</div>
+      <div class="card-body">
+        <div class="group-list">
+          <div class="group-item">
+            <span class="group-badge hot">热</span>
+            <span class="group-name">全民经纪101（至高）—神盾运营群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:100%"></div></div>
+            <span class="group-count">250条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge hot">热</span>
+            <span class="group-name">京港（至高）支持群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:100%"></div></div>
+            <span class="group-count">250条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge hot">热</span>
+            <span class="group-name">全民對至高支持群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:100%"></div></div>
+            <span class="group-count">250条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge hot">热</span>
+            <span class="group-name">全民经纪股东107李凯支持群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:100%"></div></div>
+            <span class="group-count">250条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge">中</span>
+            <span class="group-name">贞明｜Z102上海港险服务支持</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:99%"></div></div>
+            <span class="group-count">247条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge">中</span>
+            <span class="group-name">全民股东105广州轻易保支持群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:96%"></div></div>
+            <span class="group-count">239条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge">中</span>
+            <span class="group-name">贞明｜Z101HK港险服务支持</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:95%"></div></div>
+            <span class="group-count">237条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge">中</span>
+            <span class="group-name">家办.付兴琼 陈平支持组</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:88%"></div></div>
+            <span class="group-count">221条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge cold">冷</span>
+            <span class="group-name">张凯总专属签单服务群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:86%"></div></div>
+            <span class="group-count">214条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge cold">冷</span>
+            <span class="group-name">全民经纪股东106佳佳支持群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:83%"></div></div>
+            <span class="group-count">208条</span>
+          </div>
+          <div class="group-item">
+            <span class="group-badge cold">冷</span>
+            <span class="group-name">小李直辖服务群</span>
+            <div class="group-bar"><div class="group-bar-fill" style="width:66%"></div></div>
+            <span class="group-count">165条</span>
+          </div>
+        </div>
+
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid #f0f0f0">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:#111">约单/成交排行 <span style="font-size:10px;color:#999;font-weight:400">（口径：约单/签单/投保成功/已投保/确定投保/成交/签了；最近30天）</span></div>
+          <div class="group-list">
+            <div class="group-item">
+              <span class="group-badge hot">29</span>
+              <span class="group-name">京港（至高）支持群</span>
+              <span class="group-count">11.6%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge hot">23</span>
+              <span class="group-name">全民经纪股东106佳佳支持群</span>
+              <span class="group-count">11.1%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge hot">19</span>
+              <span class="group-name">全民股东105广州轻易保支持群</span>
+              <span class="group-count">7.9%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge" style="background:#fef2f2;color:#dc2626">15</span>
+              <span class="group-name">全民经纪101（至高）—神盾运营群</span>
+              <span class="group-count">6.0%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge" style="background:#fef2f2;color:#dc2626">12</span>
+              <span class="group-name">全民经纪股东107李凯支持群</span>
+              <span class="group-count">4.8%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge" style="background:#fef2f2;color:#dc2626">9</span>
+              <span class="group-name">全民對至高支持群</span>
+              <span class="group-count">3.6%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge cold">2</span>
+              <span class="group-name">张凯总专属签单服务群</span>
+              <span class="group-count">0.9%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge cold">1</span>
+              <span class="group-name">家办.付兴琼 陈平支持组</span>
+              <span class="group-count">0.5%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge cold">1</span>
+              <span class="group-name">小李直辖服务群</span>
+              <span class="group-count">0.6%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge cold">1</span>
+              <span class="group-name">贞明｜Z101HK港险服务支持</span>
+              <span class="group-count">0.4%</span>
+            </div>
+            <div class="group-item">
+              <span class="group-badge cold">1</span>
+              <span class="group-name">贞明｜Z102上海港险服务支持</span>
+              <span class="group-count">0.4%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中列: 消息趋势 -->
+    <div class="card col-span-2">
+      <div class="card-head">消息量趋势（最近7天）</div>
+      <div class="card-body">
+        <div class="trend-chart">
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:100%"></div><span class="trend-bar-value">155</span><span class="trend-bar-label">06-17</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:86%"></div><span class="trend-bar-value">133</span><span class="trend-bar-label">06-18</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:10%"></div><span class="trend-bar-value">16</span><span class="trend-bar-label">06-19</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:16%"></div><span class="trend-bar-value">25</span><span class="trend-bar-label">06-20</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:15%"></div><span class="trend-bar-value">23</span><span class="trend-bar-label">06-21</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill peak" style="height:70%"></div><span class="trend-bar-value">108</span><span class="trend-bar-label">06-22</span></div>
+          <div class="trend-bar"><div class="trend-bar-fill" style="height:43%"></div><span class="trend-bar-value">67</span><span class="trend-bar-label">06-23</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#999">
+          <span style="color:#dc2626">●</span> 06-22 周六突增108条 — 疑似周末集中处理投保资料
+        </div>
+      </div>
+    </div>
+
+    <!-- 保司热度 -->
+    <div class="card">
+      <div class="card-head">保司提及热度</div>
+      <div class="card-body">
+        <div class="kw-list">
+          <div class="kw-row"><span class="kw-name">友邦</span><div class="kw-bar"><div class="kw-bar-fill" style="width:100%"><span class="kw-count">58</span></div></div><span class="kw-cat">保司</span></div>
+          <div class="kw-row"><span class="kw-name">永明</span><div class="kw-bar"><div class="kw-bar-fill" style="width:59%;background:linear-gradient(90deg,#10b981,#34d399)"><span class="kw-count">34</span></div></div><span class="kw-cat">保司</span></div>
+          <div class="kw-row"><span class="kw-name">安盛</span><div class="kw-bar"><div class="kw-bar-fill" style="width:50%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"><span class="kw-count">29</span></div></div><span class="kw-cat">保司</span></div>
+          <div class="kw-row"><span class="kw-name">万通</span><div class="kw-bar"><div class="kw-bar-fill" style="width:31%;background:linear-gradient(90deg,#8b5cf6,#a78bfa)"><span class="kw-count">18</span></div></div><span class="kw-cat">保司</span></div>
+          <div class="kw-row"><span class="kw-name">保诚</span><div class="kw-bar"><div class="kw-bar-fill" style="width:19%;background:linear-gradient(90deg,#ec4899,#f472b6)"><span class="kw-count">11</span></div></div><span class="kw-cat">保司</span></div>
+          <div class="kw-row"><span class="kw-name">宏利</span><div class="kw-bar"><div class="kw-bar-fill" style="width:17%;background:linear-gradient(90deg,#6b7280,#9ca3af)"><span class="kw-count">10</span></div></div><span class="kw-cat">保司</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 产品热度 -->
+    <div class="card">
+      <div class="card-head">产品提及热度</div>
+      <div class="card-body">
+        <div class="kw-list">
+          <div class="kw-row"><span class="kw-name">环宇</span><div class="kw-bar"><div class="kw-bar-fill" style="width:100%"><span class="kw-count">19</span></div></div><span class="kw-cat">产品</span></div>
+          <div class="kw-row"><span class="kw-name">星河</span><div class="kw-bar"><div class="kw-bar-fill" style="width:74%"><span class="kw-count">14</span></div></div><span class="kw-cat">产品</span></div>
+          <div class="kw-row"><span class="kw-name">盛利2</span><div class="kw-bar"><div class="kw-bar-fill" style="width:58%"><span class="kw-count">11</span></div></div><span class="kw-cat">产品</span></div>
+          <div class="kw-row"><span class="kw-name">财富盈活</span><div class="kw-bar"><div class="kw-bar-fill" style="width:47%"><span class="kw-count">9</span></div></div><span class="kw-cat">产品</span></div>
+          <div class="kw-row"><span class="kw-name">盈聚天下</span><div class="kw-bar"><div class="kw-bar-fill" style="width:37%"><span class="kw-count">7</span></div></div><span class="kw-cat">产品</span></div>
+          <div class="kw-row"><span class="kw-name">匠心传承</span><div class="kw-bar"><div class="kw-bar-fill" style="width:26%"><span class="kw-count">5</span></div></div><span class="kw-cat">产品</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 业务流程关键词 -->
+    <div class="card">
+      <div class="card-head">业务流程热度</div>
+      <div class="card-body">
+        <div class="kw-list">
+          <div class="kw-row"><span class="kw-name">投保</span><div class="kw-bar"><div class="kw-bar-fill" style="width:100%;background:linear-gradient(90deg,#dc2626,#ef4444)"><span class="kw-count">77</span></div></div><span class="kw-cat">流程</span></div>
+          <div class="kw-row"><span class="kw-name">保单</span><div class="kw-bar"><div class="kw-bar-fill" style="width:88%;background:linear-gradient(90deg,#dc2626,#ef4444)"><span class="kw-count">68</span></div></div><span class="kw-cat">流程</span></div>
+          <div class="kw-row"><span class="kw-name">签单</span><div class="kw-bar"><div class="kw-bar-fill" style="width:70%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"><span class="kw-count">54</span></div></div><span class="kw-cat">流程</span></div>
+          <div class="kw-row"><span class="kw-name">保费</span><div class="kw-bar"><div class="kw-bar-fill" style="width:62%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"><span class="kw-count">48</span></div></div><span class="kw-cat">流程</span></div>
+          <div class="kw-row"><span class="kw-name">核保</span><div class="kw-bar"><div class="kw-bar-fill" style="width:32%;background:linear-gradient(90deg,#8b5cf6,#a78bfa)"><span class="kw-count">25</span></div></div><span class="kw-cat">流程</span></div>
+          <div class="kw-row"><span class="kw-name">资产证明</span><div class="kw-bar"><div class="kw-bar-fill" style="width:16%;background:linear-gradient(90deg,#ec4899,#f472b6)"><span class="kw-count">12</span></div></div><span class="kw-cat">材料</span></div>
+          <div class="kw-row"><span class="kw-name">利率</span><div class="kw-bar"><div class="kw-bar-fill" style="width:32%;background:linear-gradient(90deg,#10b981,#34d399)"><span class="kw-count">25</span></div></div><span class="kw-cat">融资</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 热点信号 -->
+    <div class="card col-span-2">
+      <div class="card-head">热点信号 & 预警</div>
+      <div class="card-body">
+        <div class="signal-list">
+          <div class="signal warn">
+            <span class="signal-icon">🔥</span>
+            <div class="signal-text"><b>资产证明</b>提及率上升 — 最近7天提及12次，集中在106佳佳群和Z101港险群。客户频繁询问"1000万港币资产证明要求"和"为什么需要两倍"。建议准备标准话术模板。</div>
+          </div>
+          <div class="signal warn">
+            <span class="signal-icon">⚠️</span>
+            <div class="signal-text"><b>保费融资利率</b>讨论增加 — 25次提及"利率"，多群在讨论保费融资方案。客户关注点：封顶利率、压力测试、资产证明金额。建议更新融资利率对比表。</div>
+          </div>
+          <div class="signal info">
+            <span class="signal-icon">📈</span>
+            <div class="signal-text"><b>友邦</b>保司提及量领先(58次) — 占比45%，远超永明(34)和安盛(29)。产品中<b>环宇盈活</b>热度最高(19次)，<b>财富盈活</b>作为新品正在追赶(9次)。</div>
+          </div>
+          <div class="signal info">
+            <span class="signal-icon">📋</span>
+            <div class="signal-text"><b>小国护照</b>咨询出现 — 圣基茨、土耳其护照投保问询在佳佳群出现3次，客户关心"小国护照能否买港险"和"税务居民身份认定"。</div>
+          </div>
+          <div class="signal good">
+            <span class="signal-icon">✅</span>
+            <div class="signal-text"><b>签单流程</b>进展正常 — 54次提及签单，30次提及预约确认。多个客户在走签单流程，材料寄回地址(香港九龙尖东)确认正常。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最新问询 -->
+    <div class="card col-span-2">
+      <div class="card-head">最新问询（含问号的消息 · 需回复）</div>
+      <div class="card-body">
+        <div class="q-list">
+          <div class="q-item">
+            <div class="q-group">全民经纪股东106佳佳支持群 · 06-18 12:45</div>
+            <div class="q-text">哎，客户投保金额是多少啊？记得当时已经按照这个完全准备的资料，为什么现在又要多补400多万啊？客户没有这个资产证明了<span class="q-mark">？</span></div>
+          </div>
+          <div class="q-item">
+            <div class="q-group">全民经纪股东106佳佳支持群 · 06-18 12:51</div>
+            <div class="q-text">为什么是要两倍啊？他只要提供了总保费不就可以了吗？之前也没说要两倍啊<span class="q-mark">？</span></div>
+          </div>
+          <div class="q-item">
+            <div class="q-group">贞明｜Z101HK港险服务支持 · 06-16 14:10</div>
+            <div class="q-text">圣基茨和土耳其小国护照可以买港险吗<span class="q-mark">？</span>就是都可以用内地身份先买，然后到时候把这些投保人被保人受益人全部改成小国护照的他自己，都是可以的，对吧<span class="q-mark">？</span></div>
+          </div>
+          <div class="q-item">
+            <div class="q-group">全民经纪股东106佳佳支持群 · 06-18 12:40</div>
+            <div class="q-text">签完字之后寄回到哪里<span class="q-mark">？</span></div>
+          </div>
+          <div class="q-item">
+            <div class="q-group">贞明｜Z101HK港险服务支持 · 06-16 12:29</div>
+            <div class="q-text">圣基茨和土耳其小国护照可以买港险吗<span class="q-mark">？</span></div>
+          </div>
+          <div class="q-item">
+            <div class="q-group">京港（至高）支持群 · 06-15 10:32</div>
+            <div class="q-text">您好，您的预约已确认！请问资产证明是现场提供吗<span class="q-mark">？</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 消息类型分布 -->
+    <div class="card">
+      <div class="card-head">消息类型分布</div>
+      <div class="card-body">
+        <div class="type-pie">
+          <div class="type-chart"></div>
+          <div class="type-legend">
+            <div class="type-row"><span class="type-dot" style="background:#3b82f6"></span>文本<span class="type-pct">52.2%</span></div>
+            <div class="type-row"><span class="type-dot" style="background:#10b981"></span>图片<span class="type-pct">13.4%</span></div>
+            <div class="type-row"><span class="type-dot" style="background:#f59e0b"></span>@提醒<span class="type-pct">10.5%</span></div>
+            <div class="type-row"><span class="type-dot" style="background:#8b5cf6"></span>引用回复<span class="type-pct">10.3%</span></div>
+            <div class="type-row"><span class="type-dot" style="background:#ec4899"></span>链接<span class="type-pct">5.7%</span></div>
+            <div class="type-row"><span class="type-dot" style="background:#6b7280"></span>文件/其他<span class="type-pct">7.9%</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 业务分类雷达 -->
+    <div class="card">
+      <div class="card-head">咨询分类统计</div>
+      <div class="card-body">
+        <div class="cat-grid">
+          <div class="cat-item">
+            <div class="cat-name">投保流程</div>
+            <div class="cat-count">77</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:100%;background:#dc2626"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">保单管理</div>
+            <div class="cat-count">68</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:88%;background:#f59e0b"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">签单服务</div>
+            <div class="cat-count">54</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:70%;background:#3b82f6"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">保费融资</div>
+            <div class="cat-count">48</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:62%;background:#10b981"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">核保咨询</div>
+            <div class="cat-count">25</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:32%;background:#8b5cf6"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">资产证明</div>
+            <div class="cat-count">12</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:16%;background:#ec4899"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">小国护照</div>
+            <div class="cat-count">15</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:19%;background:#6b7280"></div></div>
+          </div>
+          <div class="cat-item">
+            <div class="cat-name">身份变更</div>
+            <div class="cat-count">17</div>
+            <div class="cat-bar"><div class="cat-bar-fill" style="width:22%;background:#6b7280"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

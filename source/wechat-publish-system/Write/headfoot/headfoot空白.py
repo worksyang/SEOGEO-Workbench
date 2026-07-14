@@ -1,0 +1,2 @@
+header_content = """ """
+footer_content = """ """

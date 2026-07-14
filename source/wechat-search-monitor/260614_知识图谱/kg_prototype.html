@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>下拉词 & 相关搜索 · 知识图谱（原型）</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f8fa;
+    --panel: #ffffff;
+    --border: #d0d7de;
+    --text: #24292f;
+    --muted: #57606a;
+    --kw: #0969da;
+    --topic: #cf222e;
+    --suggestion: #1a7f37;
+    --related: #9a6700;
+    --pill-bg: #f3f4f6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .layout { display: flex; height: 100vh; }
+  /* 左侧面板 */
+  .sidebar {
+    width: 280px; background: var(--panel); border-right: 1px solid var(--border);
+    padding: 16px; overflow-y: auto; flex-shrink: 0;
+  }
+  .sidebar h2 { font-size: 14px; margin: 0 0 4px; }
+  .sidebar .sub { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .legend { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .legend-item { display: flex; align-items: center; font-size: 12px; margin: 6px 0; color: var(--muted); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+  .filter-group { margin-top: 16px; }
+  .filter-group label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  .filter-group select, .filter-group input {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 8px; border-radius: 4px; font-size: 12px;
+  }
+  /* 主图区 */
+  .main { flex: 1; position: relative; overflow: hidden; }
+  .toolbar {
+    position: absolute; top: 12px; left: 12px; right: 12px; z-index: 10;
+    display: flex; gap: 8px; align-items: center; background: rgba(255,255,255,0.92);
+    border: 1px solid var(--border); padding: 8px 12px; border-radius: 6px;
+    backdrop-filter: blur(8px); box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  .toolbar .title { font-size: 13px; color: var(--text); margin-right: auto; }
+  .toolbar .pill {
+    font-size: 11px; padding: 3px 8px; border-radius: 10px;
+    background: var(--pill-bg); color: var(--muted); border: 1px solid var(--border);
+  }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg:active { cursor: grabbing; }
+  .node circle { stroke: #ffffff; stroke-width: 2px; cursor: pointer; transition: r 0.15s; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.12)); }
+  .node text { font-size: 11px; fill: var(--text); pointer-events: none; text-anchor: middle; user-select: none; }
+  .node--keyword text { font-weight: 600; }
+  .link { stroke-opacity: 0.45; transition: stroke-opacity 0.15s; }
+  .link--belong { stroke: #8c959f; stroke-dasharray: 4 2; }
+  .link--suggestion { stroke: var(--suggestion); }
+  .link--related { stroke: var(--related); }
+  /* 详情抽屉 */
+  .drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 360px;
+    background: var(--panel); border-left: 1px solid var(--border);
+    padding: 20px; transform: translateX(100%); transition: transform 0.25s;
+    overflow-y: auto;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer .close { float: right; cursor: pointer; color: var(--muted); font-size: 18px; }
+  .drawer h3 { margin: 0 0 4px; font-size: 16px; }
+  .drawer .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .drawer .section-title {
+    font-size: 11px; text-transform: uppercase; color: var(--muted);
+    letter-spacing: 1px; margin: 16px 0 8px;
+  }
+  .drawer .term {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 10px; margin: 4px 0; font-size: 12px; cursor: pointer;
+  }
+  .drawer .term:hover { border-color: var(--kw); background: #ffffff; }
+  .drawer .term.suggestion { border-left: 3px solid var(--suggestion); }
+  .drawer .term.related { border-left: 3px solid var(--related); }
+  /* 缩放控制 */
+  .zoom-ctrl {
+    position: absolute; bottom: 20px; right: 20px; z-index: 10;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .zoom-ctrl button {
+    width: 32px; height: 32px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 16px;
+  }
+  .zoom-ctrl button:hover { background: var(--bg); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- 左侧：筛选 + 图例 -->
+  <div class="sidebar">
+    <h2>下拉词 · 相关搜索</h2>
+    <div class="sub">基于微信搜索抓取的真实下拉词 / 相关搜索构造的图谱视图（V0 原型）</div>
+
+    <div class="filter-group">
+      <label>产品/主题</label>
+      <select id="topicFilter">
+        <option value="">全部</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>显示半径</label>
+      <input type="range" id="radius" min="60" max="220" value="140" />
+    </div>
+    <div class="filter-group">
+      <label>边类型</label>
+      <select id="linkType">
+        <option value="all">全部</option>
+        <option value="suggestion">仅下拉词</option>
+        <option value="related">仅相关搜索</option>
+        <option value="belong">仅归属</option>
+      </select>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background: var(--kw)"></div>关键词（核心节点）</div>
+      <div class="legend-item"><div class="legend-dot" style="background: var(--topic)"></div>产品主题</div>
+      <div class="legend-item"><div class="legend-dot" style="background: var(--suggestion)"></div>下拉词（suggestion）</div>
+      <div class="legend-item"><div class="legend-dot" style="background: var(--related)"></div>相关搜索（related）</div>
+    </div>
+
+    <div class="legend" style="font-size:11px; color: var(--muted); line-height:1.6;">
+      <strong style="color:var(--text)">交互说明：</strong><br/>
+      · 鼠标滚轮：缩放<br/>
+      · 拖拽空白：平移<br/>
+      · 拖拽节点：重新布局<br/>
+      · 点击节点：右侧查看详情<br/>
+      · 双击节点：聚焦该节点
+    </div>
+  </div>
+
+  <!-- 中间：主图 -->
+  <div class="main">
+    <div class="toolbar">
+      <div class="title">知识图谱 · 关键词视角扩展</div>
+      <div class="pill" id="statNodes">-- 节点</div>
+      <div class="pill" id="statLinks">-- 连线</div>
+      <div class="pill" id="statKw">-- 关键词</div>
+    </div>
+    <svg id="graph"></svg>
+    <div class="zoom-ctrl">
+      <button id="zoomIn">+</button>
+      <button id="zoomOut">−</button>
+      <button id="zoomReset">⌂</button>
+    </div>
+
+    <!-- 详情抽屉 -->
+    <div class="drawer" id="drawer">
+      <span class="close" id="drawerClose">×</span>
+      <h3 id="drawerTitle">节点</h3>
+      <div class="meta" id="drawerMeta"></div>
+      <div class="section-title">直接相连的下拉词</div>
+      <div id="drawerSuggestions"></div>
+      <div class="section-title">直接相连的相关搜索</div>
+      <div id="drawerRelated"></div>
+      <div class="section-title">归属产品主题</div>
+      <div id="drawerTopic"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const color = {
+  keyword: getComputedStyle(document.documentElement).getPropertyValue('--kw').trim(),
+  topic:   getComputedStyle(document.documentElement).getPropertyValue('--topic').trim(),
+  suggestion: getComputedStyle(document.documentElement).getPropertyValue('--suggestion').trim(),
+  related:    getComputedStyle(document.documentElement).getPropertyValue('--related').trim(),
+};
+const radiusOf = {keyword: 18, topic: 14, suggestion: 7, related: 7};
+const linkTypeColor = {belong: '#8b949e', suggestion: color.suggestion, related: color.related};
+
+// 加载真实数据
+fetch('kg_data.json').then(r => r.json()).then(raw => {
+  buildGraph(raw);
+});
+
+let simulation, svg, gNodes, gLinks, zoomBehavior;
+function buildGraph(raw) {
+  // 统计
+  document.getElementById('statNodes').textContent = raw.nodes.length + ' 节点';
+  document.getElementById('statLinks').textContent = raw.links.length + ' 连线';
+  document.getElementById('statKw').textContent = raw.nodes.filter(n => n.kind === 'keyword').length + ' 关键词';
+
+  // 填充主题筛选
+  const topics = [...new Set(raw.nodes.filter(n => n.kind === 'topic').map(n => n.name))].sort();
+  const sel = document.getElementById('topicFilter');
+  topics.forEach(t => {
+    const o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o);
+  });
+
+  const width = document.querySelector('.main').clientWidth;
+  const height = document.querySelector('.main').clientHeight;
+  svg = d3.select('#graph');
+  svg.selectAll('*').remove();
+  const root = svg.append('g');
+
+  zoomBehavior = d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => root.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+
+  // 力导向
+  simulation = d3.forceSimulation(raw.nodes)
+    .force('link', d3.forceLink(raw.links).id(d => d.id).distance(d => d.type === 'belong' ? 80 : 60).strength(0.7))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collide', d3.forceCollide().radius(d => radiusOf[d.kind] + 10))
+    .force('x', d3.forceX(width / 2).strength(0.08))
+    .force('y', d3.forceY(height / 2).strength(0.08));
+
+  gLinks = root.append('g').selectAll('line')
+    .data(raw.links).enter().append('line')
+    .attr('class', d => 'link link--' + d.type)
+    .attr('stroke', d => linkTypeColor[d.type])
+    .attr('stroke-width', 1);
+
+  gNodes = root.append('g').selectAll('g.node')
+    .data(raw.nodes).enter().append('g')
+    .attr('class', d => 'node node--' + d.kind)
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end',   (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }))
+    .on('click', (e, d) => showDetail(d))
+    .on('dblclick', (e, d) => {
+      e.stopPropagation();
+      const t = d3.zoomIdentity.translate(width/2 - d.x, height/2 - d.y).scale(1.5);
+      svg.transition().duration(500).call(zoomBehavior.transform, t);
+    });
+
+  gNodes.append('circle')
+    .attr('r', d => radiusOf[d.kind])
+    .attr('fill', d => color[d.kind]);
+
+  gNodes.append('text')
+    .attr('dy', d => radiusOf[d.kind] + 12)
+    .text(d => d.name);
+
+  simulation.on('tick', () => {
+    gLinks
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    gNodes.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  // 边类型筛选
+  document.getElementById('linkType').addEventListener('change', e => {
+    const v = e.target.value;
+    gLinks.style('display', d => v === 'all' || d.type === v ? null : 'none');
+  });
+  // 主题筛选
+  sel.addEventListener('change', e => {
+    const t = e.target.value;
+    if (!t) { gNodes.style('opacity', 1); gLinks.style('opacity', 0.5); return; }
+    const visible = new Set([t]);
+    raw.links.forEach(l => {
+      if (l.target.id === t || l.source.id === t) {
+        visible.add(typeof l.target === 'object' ? l.target.id : l.target);
+        visible.add(typeof l.source === 'object' ? l.source.id : l.source);
+      }
+    });
+    gNodes.style('opacity', d => visible.has(d.id) ? 1 : 0.15);
+    gLinks.style('opacity', l => {
+      const sid = typeof l.source === 'object' ? l.source.id : l.source;
+      const tid = typeof l.target === 'object' ? l.target.id : l.target;
+      return (visible.has(sid) && visible.has(tid)) ? 0.5 : 0.05;
+    });
+  });
+
+  // 缩放按钮
+  document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoomBehavior.scaleBy, 1.3);
+  document.getElementById('zoomOut').onclick = () => svg.transition().call(zoomBehavior.scaleBy, 0.7);
+  document.getElementById('zoomReset').onclick = () => svg.transition().call(zoomBehavior.transform, d3.zoomIdentity);
+
+  // 抽屉关闭
+  document.getElementById('drawerClose').onclick = () => document.getElementById('drawer').classList.remove('open');
+
+  // 存到 window 给抽屉用
+  window.__kg = raw;
+}
+
+function showDetail(node) {
+  const links = window.__kg.links;
+  const nodesById = Object.fromEntries(window.__kg.nodes.map(n => [n.id, n]));
+  const drawer = document.getElementById('drawer');
+  drawer.classList.add('open');
+  document.getElementById('drawerTitle').textContent = node.name;
+  document.getElementById('drawerMeta').textContent = '类型: ' + ({
+    keyword: '关键词（核心）', topic: '产品主题', suggestion: '下拉词', related: '相关搜索'
+  })[node.kind];
+
+  const sugs = links.filter(l => l.target === node.id && l.type === 'suggestion').map(l => l.source);
+  const rels = links.filter(l => l.target === node.id && l.type === 'related').map(l => l.source);
+  const topic = links.filter(l => l.source === node.id && l.type === 'belong').map(l => l.target);
+
+  document.getElementById('drawerSuggestions').innerHTML =
+    sugs.map(s => `<div class="term suggestion" onclick="goNode('${s}')">${s}</div>`).join('') || '<div style="color:var(--muted);font-size:12px">无</div>';
+  document.getElementById('drawerRelated').innerHTML =
+    rels.map(s => `<div class="term related" onclick="goNode('${s}')">${s}</div>`).join('') || '<div style="color:var(--muted);font-size:12px">无</div>';
+  document.getElementById('drawerTopic').innerHTML =
+    topic.map(s => `<div class="term" onclick="goNode('${s}')" style="border-left:3px solid var(--topic)">${s}</div>`).join('') || '<div style="color:var(--muted);font-size:12px">无</div>';
+}
+
+function goNode(id) {
+  const n = window.__kg.nodes.find(x => x.id === id);
+  if (n) showDetail(n);
+}
+</script>
+</body>
+</html>

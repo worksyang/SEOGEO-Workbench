@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>关键词资产台 Demo</title>
+<link rel="icon" href="data:," />
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif; background:#f4f5f7; color:#111; font-size:13px; }
+button, input, select { font-family:inherit; }
+.topbar { background:#fff; border-bottom:1px solid #e2e4e8; height:46px; display:flex; align-items:center; padding:0 20px; gap:12px; position:sticky; top:0; z-index:50; }
+.logo { font-size:13px; font-weight:600; color:#111; }
+.sep { width:1px; height:16px; background:#e2e4e8; }
+.topbar-meta { font-size:11px; color:#999; }
+.view-switch { display:flex; gap:6px; }
+.view-pill { font-size:11px; border:1px solid #e2e4e8; background:#fff; color:#666; border-radius:999px; padding:4px 10px; cursor:pointer; transition:all .12s; }
+.view-pill.active { background:#eff6ff; color:#1e40af; border-color:#bfdbfe; }
+.topbar-right { margin-left:auto; font-size:11px; color:#999; }
+.layout { display:grid; grid-template-columns:260px minmax(620px, 1fr) 390px; height:calc(100vh - 46px); }
+.sidebar { background:#fff; border-right:1px solid #e2e4e8; display:flex; flex-direction:column; min-width:0; }
+.sidebar-head { padding:14px 16px 10px; border-bottom:1px solid #f0f0f0; }
+.sidebar-title { font-weight:700; font-size:13px; color:#111; }
+.sidebar-desc { margin-top:4px; font-size:11px; color:#999; line-height:1.5; }
+.search-input { margin-top:10px; font-size:12px; border:1px solid #e2e4e8; border-radius:6px; padding:7px 9px; outline:none; color:#333; width:100%; }
+.search-input:focus { border-color:#bfdbfe; box-shadow:0 0 0 3px rgba(59,130,246,.08); }
+.cluster-list { padding:8px; overflow:auto; }
+.cluster-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 10px; border-radius:7px; cursor:pointer; transition:all .12s; color:#475569; }
+.cluster-row:hover { background:#f8fafc; }
+.cluster-row.active { background:#eff6ff; color:#1e40af; font-weight:700; }
+.cluster-name { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cluster-count { font-size:10px; color:#94a3b8; }
+.cluster-row.active .cluster-count { color:#3b82f6; }
+.main { overflow:auto; }
+.main-shell { padding:18px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+.hero { background:#fff; border:1px solid #e2e4e8; border-radius:8px; padding:16px; display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+.hero-title { font-size:18px; font-weight:800; color:#111; }
+.hero-desc { margin-top:5px; color:#64748b; font-size:12px; line-height:1.6; max-width:720px; }
+.hero-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.mini-btn { border:1px solid #dbe3f0; background:#fff; color:#475569; border-radius:999px; padding:6px 12px; font-size:12px; cursor:pointer; transition:all .12s; }
+.mini-btn:hover { border-color:#bfdbfe; background:#f8fbff; color:#1e40af; }
+.mini-btn.primary { background:#eff6ff; color:#1e40af; border-color:#bfdbfe; font-weight:600; }
+.stat-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px; }
+.stat-card { background:#fff; border:1px solid #e2e4e8; border-radius:8px; padding:12px; }
+.stat-n { font-size:20px; font-weight:800; color:#111; }
+.stat-n.hi { color:#1e40af; }
+.stat-l { margin-top:3px; font-size:10px; color:#aaa; }
+.control-card { background:#fff; border:1px solid #e2e4e8; border-radius:8px; padding:12px 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.control-label { font-size:11px; color:#999; margin-right:-4px; }
+.select { border:1px solid #e2e4e8; border-radius:999px; background:#fff; color:#475569; padding:6px 10px; font-size:12px; outline:none; }
+.asset-card { background:#fff; border:1px solid #e2e4e8; border-radius:8px; overflow:hidden; }
+.asset-head { display:grid; grid-template-columns:2.1fr .8fr .8fr .75fr .75fr .75fr .7fr; gap:10px; padding:10px 14px; border-bottom:1px solid #f1f3f5; color:#aaa; font-size:10px; text-transform:uppercase; letter-spacing:.5px; font-weight:700; }
+.asset-row { display:grid; grid-template-columns:2.1fr .8fr .8fr .75fr .75fr .75fr .7fr; gap:10px; padding:12px 14px; border-bottom:1px solid #f7f7f7; cursor:pointer; align-items:center; transition:background .1s; }
+.asset-row:hover { background:#f8fbff; }
+.asset-row.active { background:#eff6ff; }
+.term-main { min-width:0; }
+.term-name { font-weight:700; color:#111; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.term-meta { margin-top:5px; display:flex; gap:5px; flex-wrap:wrap; align-items:center; }
+.badge { font-size:10px; padding:2px 6px; border-radius:4px; font-weight:600; white-space:nowrap; }
+.badge-core { background:#f1f5f9; color:#334155; }
+.badge-suggestion { background:#dcfce7; color:#166534; }
+.badge-related { background:#fef3c7; color:#92400e; }
+.badge-status { background:#eff6ff; color:#1e40af; }
+.badge-warn { background:#fee2e2; color:#991b1b; }
+.badge-done { background:#f1f5f9; color:#64748b; }
+.cell-muted { color:#64748b; font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.score { display:flex; align-items:center; gap:8px; }
+.score-num { width:32px; font-weight:800; color:#111; font-size:16px; }
+.score-bar { flex:1; height:6px; background:#eef2f7; border-radius:999px; overflow:hidden; }
+.score-fill { height:100%; background:#3b82f6; border-radius:999px; }
+.trend { display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:700; }
+.trend.rising { color:#166534; }
+.trend.falling { color:#991b1b; }
+.trend.stable { color:#475569; }
+.trend.new { color:#1e40af; }
+.coverage { font-size:12px; color:#475569; }
+.empty-block { padding:28px; color:#bbb; text-align:center; font-size:12px; }
+.detail { background:#fff; border-left:1px solid #e2e4e8; overflow:auto; }
+.detail-inner { padding:18px; display:flex; flex-direction:column; gap:12px; }
+.detail-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.detail-title { font-size:17px; font-weight:800; line-height:1.35; color:#111; }
+.detail-sub { margin-top:6px; font-size:12px; color:#999; line-height:1.6; }
+.card { background:#fff; border:1px solid #e2e4e8; border-radius:8px; padding:14px 16px; }
+.card-title { font-size:11px; font-weight:700; color:#aaa; text-transform:uppercase; letter-spacing:.6px; margin-bottom:10px; }
+.stat-row { display:flex; }
+.stat-item { flex:1; text-align:center; padding:6px 0; border-right:1px solid #f5f5f5; }
+.stat-item:last-child { border-right:none; }
+.detail-stat-n { font-size:18px; font-weight:800; color:#111; }
+.detail-stat-n.hi { color:#1e40af; }
+.detail-stat-l { margin-top:2px; font-size:10px; color:#bbb; }
+.chip-row { display:flex; gap:6px; flex-wrap:wrap; }
+.kw-tag { font-size:11px; padding:4px 8px; border-radius:999px; background:#f1f5f9; color:#475569; }
+.kw-tag.blue { background:#eff6ff; color:#1e40af; }
+.kw-tag.green { background:#dcfce7; color:#166534; }
+.mini-list { display:flex; flex-direction:column; gap:7px; }
+.mini-row { padding:9px 10px; border:1px solid #f1f3f5; border-radius:7px; background:#fff; }
+.mini-name { font-size:12px; font-weight:700; color:#111; line-height:1.45; }
+.mini-meta { margin-top:3px; color:#999; font-size:11px; }
+.note-box { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.6; }
+.local-graph { position:relative; height:190px; border-radius:8px; background:linear-gradient(180deg,#f8fbff 0%,#fff 100%); border:1px solid #e2e8f0; overflow:hidden; }
+.node { position:absolute; transform:translate(-50%,-50%); border-radius:999px; padding:7px 10px; font-size:11px; font-weight:700; white-space:nowrap; border:1px solid #dbeafe; background:#eff6ff; color:#1e40af; box-shadow:0 1px 2px rgba(15,23,42,.08); }
+.node.center { left:50%; top:50%; background:#1e40af; color:#fff; border-color:#1e40af; }
+.node.n1 { left:23%; top:25%; }
+.node.n2 { left:76%; top:28%; }
+.node.n3 { left:18%; top:72%; }
+.node.n4 { left:80%; top:70%; }
+.node.n5 { left:50%; top:16%; background:#dcfce7; color:#166534; border-color:#bbf7d0; }
+.edge { position:absolute; height:1px; background:#bfdbfe; transform-origin:left center; opacity:.8; }
+.e1 { left:28%; top:31%; width:130px; transform:rotate(23deg); }
+.e2 { left:51%; top:50%; width:120px; transform:rotate(-29deg); }
+.e3 { left:28%; top:67%; width:130px; transform:rotate(-22deg); }
+.e4 { left:52%; top:51%; width:130px; transform:rotate(25deg); }
+.e5 { left:50%; top:22%; width:52px; transform:rotate(90deg); }
+@media (max-width:1200px) {
+  .layout { grid-template-columns:230px minmax(560px, 1fr); }
+  .detail { display:none; }
+  .stat-grid { grid-template-columns:repeat(3, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="logo">关键词监控系统</div>
+  <div class="sep"></div>
+  <span class="topbar-meta">关键词资产：<b id="assetCountTop" style="color:#111">--</b> 个 · 核心监控词：<b style="color:#111">170</b> 个</span>
+  <div class="view-switch">
+    <button class="view-pill">关键词视角</button>
+    <button class="view-pill">账号透视</button>
+    <button class="view-pill active">关键词资产台 Demo</button>
+  </div>
+  <div class="topbar-right">Demo 数据 · 未接入真实 pipeline · 大厂式 Query Intelligence</div>
+</div>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="sidebar-title">词库导航</div>
+      <div class="sidebar-desc">先按主题/意图收拢，再进入词资产队列处理。</div>
+      <input id="searchInput" class="search-input" placeholder="搜索词 / 主词 / 意图…" />
+    </div>
+    <div id="clusterList" class="cluster-list"></div>
+  </aside>
+
+  <main class="main">
+    <div class="main-shell">
+      <section class="hero">
+        <div>
+          <div class="hero-title">关键词资产台</div>
+          <div class="hero-desc">不是把 1 万多个词画成一张大图，而是把主词、下拉词、相关搜索词沉淀为可筛选、可分层、可排队、可行动的搜索意图资产。</div>
+        </div>
+        <div class="hero-actions">
+          <button class="mini-btn primary" data-quick="重点追踪">重点追踪</button>
+          <button class="mini-btn" data-quick="未覆盖">未覆盖</button>
+          <button class="mini-btn" data-quick="rising">上升词</button>
+          <button class="mini-btn" data-quick="clear">清空筛选</button>
+        </div>
+      </section>
+
+      <section class="stat-grid" id="statGrid"></section>
+
+      <section class="control-card">
+        <span class="control-label">运营状态</span>
+        <select id="statusFilter" class="select">
+          <option value="">全部</option>
+          <option value="重点追踪">重点追踪</option>
+          <option value="待判断">待判断</option>
+          <option value="已覆盖">已覆盖</option>
+          <option value="忽略观察">忽略观察</option>
+        </select>
+        <span class="control-label">覆盖状态</span>
+        <select id="coverageFilter" class="select">
+          <option value="">全部</option>
+          <option value="未覆盖">未覆盖</option>
+          <option value="部分覆盖">部分覆盖</option>
+          <option value="已覆盖">已覆盖</option>
+        </select>
+        <span class="control-label">排序</span>
+        <select id="sortSelect" class="select">
+          <option value="opportunity">机会分最高</option>
+          <option value="appearances">出现次数最多</option>
+          <option value="seedCoverage">覆盖主词最多</option>
+          <option value="competition">竞争更强</option>
+        </select>
+      </section>
+
+      <section class="asset-card">
+        <div class="asset-head">
+          <div>关键词资产</div><div>聚类 / 意图</div><div>来源主词</div><div>机会分</div><div>趋势</div><div>竞争</div><div>覆盖</div>
+        </div>
+        <div id="assetRows"></div>
+      </section>
+    </div>
+  </main>
+
+  <aside class="detail">
+    <div class="detail-inner" id="detailPanel"></div>
+  </aside>
+</div>
+
+<script>
+let DATA = null;
+let activeCluster = 'all';
+let activeId = null;
+let quickFilter = '';
+
+const typeLabel = { core: '主词', suggestion: '下拉词', related: '相关搜索' };
+const typeClass = { core: 'badge-core', suggestion: 'badge-suggestion', related: 'badge-related' };
+const trendIcon = { rising: '↗', falling: '↘', stable: '→', new: '★' };
+const competitionRank = { '高': 3, '中': 2, '低': 1 };
+
+async function loadData() {
+  const res = await fetch('keyword_asset_demo_data.json?v=260614');
+  DATA = await res.json();
+  activeId = DATA.keywords[0].id;
+  renderAll();
+}
+
+function fmt(n) {
+  return Number(n).toLocaleString('zh-CN');
+}
+
+function renderAll() {
+  document.getElementById('assetCountTop').textContent = fmt(DATA.summary.expandedTerms);
+  renderClusters();
+  renderStats();
+  renderRows();
+  renderDetail(DATA.keywords.find(x => x.id === activeId) || DATA.keywords[0]);
+}
+
+function renderClusters() {
+  document.getElementById('clusterList').innerHTML = DATA.clusters.map(c => `
+    <div class="cluster-row ${activeCluster === c.id ? 'active' : ''}" onclick="setCluster('${c.id}')">
+      <span class="cluster-name">${c.name}</span>
+      <span class="cluster-count">${fmt(c.count)}</span>
+    </div>
+  `).join('');
+}
+
+function renderStats() {
+  const s = DATA.summary;
+  const items = [
+    ['核心词', s.coreKeywords, false],
+    ['扩展词', s.expandedTerms, true],
+    ['7日新增', s.newTerms7d, false],
+    ['高机会词', s.highOpportunity, true],
+    ['未覆盖词', s.uncoveredTerms, false],
+    ['强竞争词', s.competitiveTerms, false],
+  ];
+  document.getElementById('statGrid').innerHTML = items.map(i => `
+    <div class="stat-card"><div class="stat-n ${i[2] ? 'hi' : ''}">${fmt(i[1])}</div><div class="stat-l">${i[0]}</div></div>
+  `).join('');
+}
+
+function getFilteredRows() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  const coverage = document.getElementById('coverageFilter').value;
+  const sort = document.getElementById('sortSelect').value;
+  let rows = DATA.keywords.filter(k => {
+    if (activeCluster !== 'all' && k.cluster !== activeCluster) return false;
+    if (status && k.status !== status) return false;
+    if (coverage && k.coverage !== coverage) return false;
+    if (quickFilter === '重点追踪' && k.status !== '重点追踪') return false;
+    if (quickFilter === '未覆盖' && k.coverage !== '未覆盖') return false;
+    if (quickFilter === 'rising' && k.trend !== 'rising') return false;
+    if (!q) return true;
+    return [k.term, k.sourceSeed, k.intent, k.status, k.coverage].join(' ').toLowerCase().includes(q);
+  });
+  rows.sort((a,b) => {
+    if (sort === 'appearances') return b.appearances - a.appearances;
+    if (sort === 'seedCoverage') return b.seedCoverage - a.seedCoverage;
+    if (sort === 'competition') return competitionRank[b.competition] - competitionRank[a.competition];
+    return b.opportunity - a.opportunity;
+  });
+  return rows;
+}
+
+function renderRows() {
+  const rows = getFilteredRows();
+  const el = document.getElementById('assetRows');
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-block">没有匹配的关键词资产</div>';
+    return;
+  }
+  if (!rows.some(r => r.id === activeId)) activeId = rows[0].id;
+  el.innerHTML = rows.map(k => `
+    <div class="asset-row ${k.id === activeId ? 'active' : ''}" onclick="selectKeyword('${k.id}')">
+      <div class="term-main">
+        <div class="term-name">${k.term}</div>
+        <div class="term-meta">
+          <span class="badge ${typeClass[k.type]}">${typeLabel[k.type]}</span>
+          <span class="badge ${k.status === '重点追踪' ? 'badge-status' : k.status === '已覆盖' ? 'badge-done' : k.status === '忽略观察' ? 'badge-warn' : 'badge-core'}">${k.status}</span>
+          <span class="cell-muted">${k.appearances} 次出现 · 覆盖 ${k.seedCoverage} 个主词</span>
+        </div>
+      </div>
+      <div class="cell-muted">${clusterName(k.cluster)} / ${k.intent}</div>
+      <div class="cell-muted">${k.sourceSeed}</div>
+      <div class="score"><span class="score-num">${k.opportunity}</span><span class="score-bar"><span class="score-fill" style="width:${k.opportunity}%"></span></span></div>
+      <div class="trend ${k.trend}">${trendIcon[k.trend]} ${k.trendLabel}</div>
+      <div class="cell-muted">${k.competition} · ${k.topAccounts} 账号</div>
+      <div class="coverage">${k.coverage}</div>
+    </div>
+  `).join('');
+}
+
+function renderDetail(k) {
+  if (!k) return;
+  const relatedNodes = [k.sourceSeed, ...k.suggestions.slice(0,2), ...k.related.slice(0,2)];
+  document.getElementById('detailPanel').innerHTML = `
+    <div class="card">
+      <div class="detail-title-row">
+        <div>
+          <div class="detail-title">${k.term}</div>
+          <div class="detail-sub">${typeLabel[k.type]} · ${clusterName(k.cluster)} · ${k.intent}<br/>最近出现：${k.latestSeen}</div>
+        </div>
+        <span class="badge ${k.status === '重点追踪' ? 'badge-status' : 'badge-core'}">${k.status}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">资产信号</div>
+      <div class="stat-row">
+        <div class="stat-item"><div class="detail-stat-n hi">${k.opportunity}</div><div class="detail-stat-l">机会分</div></div>
+        <div class="stat-item"><div class="detail-stat-n">${k.appearances}</div><div class="detail-stat-l">出现次数</div></div>
+        <div class="stat-item"><div class="detail-stat-n">${k.seedCoverage}</div><div class="detail-stat-l">覆盖主词</div></div>
+        <div class="stat-item"><div class="detail-stat-n">${k.change7d}</div><div class="detail-stat-l">7日变化</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">局部关系视图</div>
+      <div class="local-graph">
+        <div class="edge e1"></div><div class="edge e2"></div><div class="edge e3"></div><div class="edge e4"></div><div class="edge e5"></div>
+        <div class="node center">${short(k.term)}</div>
+        <div class="node n1">${short(relatedNodes[0])}</div>
+        <div class="node n2">${short(relatedNodes[1])}</div>
+        <div class="node n3">${short(relatedNodes[2])}</div>
+        <div class="node n4">${short(relatedNodes[3])}</div>
+        <div class="node n5">${k.intent}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">下拉词</div>
+      <div class="chip-row">${k.suggestions.map(x => `<span class="kw-tag green">${x}</span>`).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">相关搜索</div>
+      <div class="chip-row">${k.related.map(x => `<span class="kw-tag blue">${x}</span>`).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">竞争账号</div>
+      <div class="chip-row">${k.accounts.map(x => `<span class="kw-tag">${x}</span>`).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">参考上榜内容</div>
+      <div class="mini-list">${k.articles.map((x,i) => `<div class="mini-row"><div class="mini-name">${i+1}. ${x}</div><div class="mini-meta">模拟 SERP 内容 · 用于 Demo 展示</div></div>`).join('')}</div>
+    </div>
+
+    <div class="note-box">${k.note}</div>
+  `;
+}
+
+function clusterName(id) {
+  return DATA.clusters.find(c => c.id === id)?.name || id;
+}
+function short(v) {
+  return String(v).length > 9 ? String(v).slice(0, 9) + '…' : v;
+}
+function setCluster(id) {
+  activeCluster = id;
+  renderAll();
+}
+function selectKeyword(id) {
+  activeId = id;
+  renderRows();
+  renderDetail(DATA.keywords.find(x => x.id === id));
+}
+function bindEvents() {
+  ['searchInput','statusFilter','coverageFilter','sortSelect'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => renderRows());
+    document.getElementById(id).addEventListener('change', () => renderRows());
+  });
+  document.querySelectorAll('[data-quick]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.quick;
+      quickFilter = v === 'clear' ? '' : v;
+      if (v === 'clear') {
+        document.getElementById('searchInput').value = '';
+        document.getElementById('statusFilter').value = '';
+        document.getElementById('coverageFilter').value = '';
+        activeCluster = 'all';
+      }
+      renderAll();
+    });
+  });
+}
+
+bindEvents();
+loadData().catch(err => {
+  document.getElementById('assetRows').innerHTML = '<div class="empty-block">数据加载失败：请通过本地服务器打开本 Demo 文件夹。</div>';
+  console.error(err);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上榜文章换新热力图</title>
+<link rel="icon" href="data:,">
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+<link rel="stylesheet" href="{{ asset_url('css/monitor.css') }}">
+</head>
+<body class="turnover-page">
+<div class="topbar turnover-topbar">
+  <a class="turnover-back" id="turnoverBackLink" href="/">返回监控</a>
+  <div class="sep"></div>
+  <div class="logo">上榜文章换新热力图</div>
+  <div class="topbar-right" id="turnoverTopMeta">正在加载数据…</div>
+</div>
+
+<main class="turnover-shell">
+  <section class="turnover-hero" id="turnoverHero">
+    <div class="turnover-loading">正在加载热力图数据…</div>
+  </section>
+
+  <section class="turnover-section">
+    <div class="turnover-section-head">
+      <div>
+        <h2>每天换了多少文章</h2>
+        <p>每个色块都在回答一个问题：这次抓到的上榜文章，和上一次相比变了多少。</p>
+      </div>
+      <div class="turnover-section-stat" id="turnoverCalendarStat"></div>
+    </div>
+    <div class="turnover-calendar" id="turnoverCalendar"></div>
+    <div class="turnover-legend" id="turnoverLegend"></div>
+  </section>
+
+  <section class="turnover-section">
+    <div class="turnover-section-head">
+      <div>
+        <h2>最近一次榜单交接</h2>
+        <p>直接看这次谁进来、谁离开、谁继续占位；时间百分比留给上面的热力图，这里只看具体文章。</p>
+      </div>
+    </div>
+    <div class="turnover-handoff-grid" id="turnoverHandoff"></div>
+  </section>
+
+  <section class="turnover-section turnover-city-section" id="turnoverCitySection">
+    <div class="turnover-section-head">
+      <div>
+        <h2>3D 文章生命周期城市</h2>
+        <p>每栋楼是一篇文章：楼越长代表在榜跨度越久，楼越高代表被抓到越多；绿色还在榜，橙色刚新进，红色刚掉出，灰蓝色是历史文章。</p>
+      </div>
+      <div class="turnover-city-actions">
+        <div class="turnover-section-stat" id="turnoverCityStat"></div>
+        <button class="turnover-city-fullscreen" id="turnoverCityFullscreen" type="button">最大化</button>
+      </div>
+    </div>
+    <div class="turnover-city-wrap">
+      <div class="turnover-city-stage" id="turnoverCity3d"></div>
+      <div class="turnover-city-readout" id="turnoverCityReadout"></div>
+    </div>
+  </section>
+
+  <section class="turnover-section">
+    <div class="turnover-section-head">
+      <div>
+        <h2>哪些文章一直在榜</h2>
+        <p>点文章行可以看正文。有多少天上榜 = 这段时间里多少天搜到它；抓到多少次 = 系统一共看见它几次，同一天抓多次会重复计数。</p>
+      </div>
+      <div class="turnover-filter-pills" id="turnoverLifeFilters"></div>
+    </div>
+    <div class="turnover-life-wrap">
+      <div class="turnover-life-grid" id="turnoverLifeGrid"></div>
+    </div>
+    <div class="turnover-state-legend" id="turnoverStateLegend"></div>
+  </section>
+
+</main>
+
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <h3 id="drawerTitle"></h3>
+    <span class="drawer-x" onclick="closeDrawer()">✕</span>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot" id="drawerFoot"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="{{ asset_url('js/turnover-utils.js') }}"></script>
+<script src="{{ asset_url('js/keyword-turnover.js') }}"></script>
+</body>
+</html>

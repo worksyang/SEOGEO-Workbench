@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zk.xhs-keyword-monitor</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/python@3.11/libexec/bin/python3</string>
+    <string>/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/run.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/works14</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>FLASK_DEBUG</key>
+    <string>0</string>
+    <key>ZK_MONITOR_DISABLE_SCHEDULER</key>
+    <string>0</string>
+    <key>AUTO_REFRESH_ENABLED</key>
+    <string>1</string>
+    <key>AUTO_REFRESH_INTERVAL_HOURS</key>
+    <string>24</string>
+    <key>XHS_REFRESH_AUTOFIX_ENABLED</key>
+    <string>1</string>
+    <key>XHS_DATA_PROVIDER</key>
+    <string>tikhub</string>
+    <key>PORT</key>
+    <string>8766</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/data/state/launchd/xhs-keyword-monitor.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/data/state/launchd/xhs-keyword-monitor.err.log</string>
+</dict>
+</plist>

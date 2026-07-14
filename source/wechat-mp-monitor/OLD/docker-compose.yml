@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  we-mp-rss:
+    image: ghcr.io/rachelos/we-mp-rss:latest
+    container_name: we-mp-rss
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./we-mp-rss-data:/app/data
+    restart: unless-stopped
+    environment:
+      - PIP_INDEX_URL=https://mirrors.huaweicloud.com/repository/pypi/simple
+    # 可选环境变量配置（根据需要取消注释并修改）
+    # - DB=sqlite:///data/db.db
+    # - PORT=8001
+    # - SECRET_KEY=your-secret-key
+    # - INTERVAL=10
+    # - MODEL=app
+    # - GATHER.MODEL=app
+    # - GATHER.CONTENT=True
+

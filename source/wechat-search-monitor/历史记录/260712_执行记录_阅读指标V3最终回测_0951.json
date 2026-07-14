@@ -1,0 +1,109 @@
+{
+  "generated_at": "2026-07-12T09:51:36",
+  "method": "historical_daily_to_sparse_downsampling_v3",
+  "reference_definition": "同一V3公式下，15日内至少13个观测日的active关键词",
+  "accuracy_definition": "估算值位于高密度参考值的60%～140%",
+  "minimum_pass_rate": 0.6,
+  "window_end": "2026-07-12T08:49:12",
+  "history_start": "2026-05-14T00:00:00",
+  "reference_sample_count": 133,
+  "cases": {
+    "all_3d": {
+      "reference_sample_count": 133,
+      "available_count": 133,
+      "availability_rate": 1.0,
+      "metrics": {
+        "steady_read_median": {
+          "sample_count": 133,
+          "median_ratio": 1.0,
+          "median_absolute_percentage_error": 0.1429,
+          "within_tolerance_rate": 0.8571,
+          "p90_absolute_percentage_error": 0.4545,
+          "spearman": 0.9659
+        },
+        "read_delta_estimated": {
+          "sample_count": 133,
+          "median_ratio": 1.0015,
+          "median_absolute_percentage_error": 0.1237,
+          "within_tolerance_rate": 0.985,
+          "p90_absolute_percentage_error": 0.2848,
+          "spearman": 0.9725
+        }
+      },
+      "passed": true
+    },
+    "all_7d": {
+      "reference_sample_count": 133,
+      "available_count": 133,
+      "availability_rate": 1.0,
+      "metrics": {
+        "steady_read_median": {
+          "sample_count": 133,
+          "median_ratio": 1.05,
+          "median_absolute_percentage_error": 0.2466,
+          "within_tolerance_rate": 0.7368,
+          "p90_absolute_percentage_error": 0.75,
+          "spearman": 0.911
+        },
+        "read_delta_estimated": {
+          "sample_count": 133,
+          "median_ratio": 0.9223,
+          "median_absolute_percentage_error": 0.2304,
+          "within_tolerance_rate": 0.7519,
+          "p90_absolute_percentage_error": 0.4983,
+          "spearman": 0.9205
+        }
+      },
+      "passed": true
+    },
+    "all_15d": {
+      "reference_sample_count": 133,
+      "available_count": 88,
+      "availability_rate": 0.6617,
+      "metrics": {
+        "steady_read_median": {
+          "sample_count": 88,
+          "median_ratio": 1.0139,
+          "median_absolute_percentage_error": 0.276,
+          "within_tolerance_rate": 0.6705,
+          "p90_absolute_percentage_error": 1.2857,
+          "spearman": 0.8404
+        },
+        "read_delta_estimated": {
+          "sample_count": 88,
+          "median_ratio": 0.8341,
+          "median_absolute_percentage_error": 0.3085,
+          "within_tolerance_rate": 0.6818,
+          "p90_absolute_percentage_error": 0.6404,
+          "spearman": 0.8445
+        }
+      },
+      "passed": true
+    },
+    "current_mixed_policy": {
+      "reference_sample_count": 133,
+      "available_count": 133,
+      "availability_rate": 1.0,
+      "metrics": {
+        "steady_read_median": {
+          "sample_count": 133,
+          "median_ratio": 1.0179,
+          "median_absolute_percentage_error": 0.0417,
+          "within_tolerance_rate": 0.9173,
+          "p90_absolute_percentage_error": 0.3333,
+          "spearman": 0.9752
+        },
+        "read_delta_estimated": {
+          "sample_count": 133,
+          "median_ratio": 1.0221,
+          "median_absolute_percentage_error": 0.0345,
+          "within_tolerance_rate": 0.9699,
+          "p90_absolute_percentage_error": 0.2851,
+          "spearman": 0.9753
+        }
+      },
+      "passed": true
+    }
+  },
+  "overall_passed": true
+}

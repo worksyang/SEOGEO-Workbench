@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>写作流程图 · LLM模式 vs Agent模式</title>
+<style>
+  :root{
+    --bg:#f4f6f9;--card:#fff;--line:#d3dae3;--strong:#9aa7b5;
+    --text:#1f2733;--muted:#6b7785;
+    --blue:#2d7ff9;--purple:#7a5cf0;--red:#ef4444;--green:#10b981;--orange:#f59e0b;--teal:#14b8a6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.5;padding:36px 18px;min-height:100vh;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:21px;font-weight:700;text-align:center;letter-spacing:.5px}
+  .sub{text-align:center;color:var(--muted);font-size:12px;margin-bottom:6px}
+
+  /* 两栏 */
+  .cols{display:flex;gap:28px;align-items:flex-start;justify-content:center;margin-top:26px;flex-wrap:wrap}
+  .col{flex:0 0 540px;max-width:540px}
+  .col-head{
+    text-align:center;margin-bottom:14px;padding:10px 14px;border-radius:10px;
+    border:1px solid var(--line);background:var(--card);box-shadow:0 2px 8px rgba(30,40,60,.05);
+  }
+  .col-head .ct{font-size:15px;font-weight:700}
+  .col-head .cd{font-size:11px;color:var(--muted);margin-top:2px}
+  .col.left .col-head{border-top:3px solid var(--blue)}
+  .col.left .col-head .ct{color:var(--blue)}
+  .col.right .col-head{border-top:3px solid var(--purple)}
+  .col.right .col-head .ct{color:var(--purple)}
+
+  .flow{display:flex;flex-direction:column;align-items:center}
+
+  .node{
+    width:100%;max-width:480px;background:var(--card);
+    border:1px solid var(--line);border-radius:8px;
+    padding:10px 14px;box-shadow:0 2px 8px rgba(30,40,60,.05);
+    transition:box-shadow .15s;
+  }
+  .node:hover{box-shadow:0 5px 16px rgba(45,127,249,.12)}
+  .node .h{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+  .node .n{
+    width:19px;height:19px;border-radius:50%;color:#fff;font-size:10px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+  }
+  .node .t{font-size:12.5px;font-weight:600}
+  .node .d{color:var(--muted);font-size:10.5px;padding-left:27px}
+  .node .d strong{color:var(--text)}
+  .node .d code{
+    background:#f0f3f7;padding:1px 5px;border-radius:4px;
+    font-family:"SF Mono",Consolas,monospace;font-size:9.5px;color:var(--blue);
+  }
+
+  .s-green{border-left:3px solid var(--green)}.s-green .n{background:var(--green)}
+  .s-blue{border-left:3px solid var(--blue)}.s-blue .n{background:var(--blue)}
+  .s-purple{border-left:3px solid var(--purple)}.s-purple .n{background:var(--purple)}
+  .s-red{border-left:3px solid var(--red)}.s-red .n{background:var(--red)}
+  .s-teal{border-left:3px solid var(--teal)}.s-teal .n{background:var(--teal)}
+
+  .vl{width:2px;height:18px;background:var(--strong);margin:0 auto}
+
+  /* 标签芯片行 */
+  .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;padding-left:27px}
+  .chip{
+    background:#f0f3f7;border:1px solid var(--line);border-radius:5px;
+    padding:2px 6px;font-size:9.5px;color:var(--muted);white-space:nowrap;
+  }
+  .chip.k{color:#5a4e8a;border-color:#ddd4fa;background:#f6f3ff}
+  .chip.b{color:var(--blue);font-weight:600}
+
+  .mini{
+    margin-top:6px;padding:8px 10px;background:#f6f3ff;
+    border:1px solid #ddd4fa;border-radius:6px;
+  }
+  .mini .ml{font-size:9.5px;font-weight:700;color:var(--purple);margin-bottom:3px}
+  .mini ol{margin:0;padding-left:15px;font-size:9.5px;color:#5a4e8a;line-height:1.55}
+  .mini li{margin-bottom:0}
+
+  .tree{
+    margin-top:6px;font-family:"SF Mono",Consolas,monospace;font-size:9.5px;
+    background:#f7f9fc;border:1px solid var(--line);border-radius:5px;
+    padding:7px 9px;color:var(--muted);white-space:pre;
+  }
+  .tree .dir{color:var(--blue);font-weight:600}
+  .tree .md{color:var(--purple)}.tree .txt{color:var(--orange)}.tree .seo{color:var(--red)}
+  .tree .wiki{color:var(--teal);font-weight:600}
+
+  /* 装配阶段高亮框（Agent 专属） */
+  .assemble{
+    width:100%;max-width:480px;border:1.5px dashed var(--purple);
+    border-radius:10px;padding:10px;margin:2px 0;background:#fbfaff;
+  }
+  .assemble .alabel{
+    font-size:9.5px;font-weight:700;color:var(--purple);text-align:center;
+    margin-bottom:6px;letter-spacing:.3px;
+  }
+
+  .foot{text-align:center;color:var(--muted);font-size:10.5px;margin-top:30px}
+
+  /* 关键差异标注 */
+  .diff-note{
+    margin-top:6px;padding-left:27px;font-size:9.5px;color:var(--teal);font-style:italic;
+  }
+
+  /* LLM 闸门建议气泡 */
+  .llm-gate{
+    width:100%;max-width:480px;margin:4px 0;
+    padding:10px 14px;background:#fef2f2;
+    border:1.5px dashed var(--red);border-radius:10px;
+  }
+  .llm-gate .gl{
+    font-size:10px;font-weight:700;color:var(--red);
+    margin-bottom:4px;letter-spacing:.3px;
+    display:flex;align-items:center;gap:5px;
+  }
+  .llm-gate .gl::before{content:"⚠";font-size:12px}
+  .llm-gate .gd{font-size:10px;color:#991b1b;line-height:1.6}
+  .llm-gate .gd strong{color:var(--red)}
+  .llm-gate .gd code{
+    background:#fee2e2;padding:1px 5px;border-radius:4px;
+    font-family:"SF Mono",Consolas,monospace;font-size:9px;color:var(--red);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>写作流程图：LLM 模式 vs Agent 模式</h1>
+  <div class="sub">左：单 Prompt 直出 · 右：路由 + 多重装配 + 双闸门</div>
+
+  <div class="cols">
+
+    <!-- ============ 左：LLM 写作模式（原流程） ============ -->
+    <div class="col left">
+      <div class="col-head">
+        <div class="ct">LLM 写作模式（原流程）</div>
+        <div class="cd">一个大 Prompt 驱动模型直出全文</div>
+      </div>
+      <div class="flow">
+
+        <div class="node s-green">
+          <div class="h"><div class="n">1</div><div class="t">Markdown 知识库文件夹</div></div>
+          <div class="d">一个有结构的文件夹，存放大量 <strong>.md</strong> 原文，每篇可配同名 <strong>.txt</strong>；全库有兜底 <code>SEO.txt</code>。</div>
+          <div class="tree">📁 output_md/
+├─ 微信搜索结果/
+│   ├─ <span class="md">保诚.md</span>   <span class="txt">保诚.txt</span>
+│   └─ <span class="md">万通.md</span>   （无同名 txt）
+├─ 热门产品/
+│   └─ <span class="md">友邦盈御3.md</span>
+└─ <span class="seo">SEO.txt</span>   ← 兜底关键词库（一行一个）</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-blue">
+          <div class="h"><div class="n">2</div><div class="t">遍历读取所有 Markdown</div></div>
+          <div class="d">逐篇读取 <strong>.md</strong> 作为原文素材；原文已穿插图片链接并附带 <strong>OCR 信息</strong>。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-purple">
+          <div class="h"><div class="n">3</div><div class="t">匹配 Title（标题字段）</div></div>
+          <div class="d">优先读同名 <strong>.txt</strong> 取标题；无则回退 <code>SEO.txt</code> 提取关键词。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-purple">
+          <div class="h"><div class="n">4</div><div class="t">载入写作 Prompt 模板</div></div>
+          <div class="d">载入总 Prompt（形如 <code>prompt0909.md</code>），填入 <strong>{title}</strong>、当前时间等字段。</div>
+          <div class="mini">
+            <div class="ml">▸ Prompt 核心逻辑（超简略）</div>
+            <ol>
+              <li><strong>人设</strong>：懂行的闺蜜/兄弟，不是老师科普。</li>
+              <li><strong>风格</strong>：口语化、沉稳，激发信任感。</li>
+              <li><strong>改写</strong>：基于原文重构，揭示产品缺陷与"圈里人"风险。</li>
+              <li><strong>产品库</strong>：内置 12 款热销港险优劣势速查表。</li>
+              <li><strong>图文</strong>：保留原图链接 + 按 OCR 插图。</li>
+              <li><strong>合规</strong>：保司/产品名按规则替换，删引流信息。</li>
+              <li><strong>输出</strong>：Markdown 代码窗口，含 SEO 关键词，~6000 字。</li>
+            </ol>
+          </div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-purple">
+          <div class="h"><div class="n">5</div><div class="t">LLM 生成图文并茂的新文章</div></div>
+          <div class="d">Prompt 直接驱动模型写出整篇正文，保留原图链接、按 OCR 插图，OCR 注释文字不进正文。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-red">
+          <div class="h"><div class="n">6</div><div class="t">关键词替换合规流程</div></div>
+          <div class="d">对成稿做<strong>关键词替换</strong>：保司/产品名按规则替换、删除引流与无关信息。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-red">
+          <div class="h"><div class="n">7</div><div class="t">合规校验通过</div></div>
+          <div class="d">对替换后的成稿做最终校验，确认无违规内容。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-green">
+          <div class="h"><div class="n">8</div><div class="t">输出可发布的 Markdown 成稿</div></div>
+          <div class="d">一篇 <strong>Markdown</strong> 文章，图文并茂，可直接发微信公众号。</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ============ 右：Agent 写作模式（新流程） ============ -->
+    <div class="col right">
+      <div class="col-head">
+        <div class="ct">Agent 写作模式（新流程）</div>
+        <div class="cd">路由 + 框架/积木/事实来源三重装配 + 破窗前置 + 红线后置</div>
+      </div>
+      <div class="flow">
+
+        <div class="node s-green">
+          <div class="h"><div class="n">1</div><div class="t">知识库文件夹（Raw 层 + Wiki 层）</div></div>
+          <div class="d">比 LLM 模式多了 <strong>wiki/</strong> 编译层：Raw 原文 + 同名 txt 兜底 <code>SEO.txt</code>，之上是分门别类的写作弹药。</div>
+          <div class="tree">📁 output_md/
+├─ 微信搜索结果/  ← Raw 原文层
+│   ├─ <span class="md">保诚.md</span>   <span class="txt">保诚.txt</span>
+│   └─ <span class="md">万通.md</span>
+├─ <span class="seo">SEO.txt</span>   ← 兜底关键词库
+└─ <span class="wiki">wiki/</span>   ← 编译层（写作弹药）
+    ├─ <span class="wiki">产品母页/</span>  保诚/万通/友邦…
+    ├─ <span class="wiki">保司母页/</span>  友邦/保诚/宏利…
+    ├─ <span class="wiki">底层认知/</span>  分红/提领/税务边界
+    ├─ <span class="wiki">创作框架/</span>  7 个写作框架+积木库
+    ├── <span class="wiki">案例故事/</span>
+    └─ <span class="wiki">知识库规则/</span>  01-Agent创作执行流程</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-teal">
+          <div class="h"><div class="n">2</div><div class="t">接收系统注入（身份 + 规则 + 上下文）</div></div>
+          <div class="d">云端自动注入：写作身份（希希）、<strong>AGENTS.md</strong> 规则、环境信息、技能列表。<strong>Agent 无需主动"载入"，这些是每轮对话的固定上下文底色。</strong></div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-teal">
+          <div class="h"><div class="n">3</div><div class="t">先读破窗机制（定终点）</div></div>
+          <div class="d">写作前先理解结尾转化目标，<strong>带着终点写全文</strong>。结尾三步走：</div>
+          <div class="chips">
+            <span class="chip k">打破"我懂了"幻觉</span>
+            <span class="chip k">低门槛邀请"问一下不亏"</span>
+            <span class="chip k">话不说完 · 不收口</span>
+          </div>
+          <div class="diff-note">▸ 这是 Agent 模式前置的"终点闸门"，LLM 模式没有</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-blue">
+          <div class="h"><div class="n">4</div><div class="t">判断关键词 & 对象粗分</div></div>
+          <div class="d">先判断题目命中的业务词，做对象粗分，再进入创作框架：</div>
+          <div class="chips">
+            <span class="chip">A 单一产品</span>
+            <span class="chip">B 单一保司/银行</span>
+            <span class="chip">C 多产品/横评</span>
+            <span class="chip">D 概念/机制/数据</span>
+            <span class="chip">E 趋势/流程/偶发</span>
+          </div>
+        </div>
+
+        <div class="llm-gate">
+          <div class="gl">LLM 闸门 A：路由判断（三层拆解，非单一 LLM 调用）</div>
+          <div class="gd" style="line-height:1.65">
+            <div style="margin-bottom:5px"><strong>A1 框架路由</strong>（规则优先，LLM 只处理灰区）<br>
+            先跑 01 第4节关键词路由表做确定性匹配 → 唯一命中直接定框架；多个命中 → LLM 仲裁（输入仅：题目 + 候选框架一句话描述 ≈ 300字）</div>
+            <div style="margin-bottom:5px"><strong>A2 积木选择</strong>（LLM，上下文极轻）<br>
+            输入：题目 + 选定框架 + 10 个积木的一句话适用场景（从 01 第5节提取 ≈ 500字）→ 输出选 1-2 个积木</div>
+            <div style="margin-bottom:5px"><strong>A3 事实来源</strong>（纯规则，不需要 LLM）<br>
+            按 01 第6节对象→路径映射，用文件名 Glob 匹配 → 输出要读的文件列表</div>
+            <div style="margin-top:6px;padding-top:5px;border-top:1px solid #fecaca"><strong>解法核心</strong>：闸门 LLM 只看路由表/一句话描述（≈ 1KB），不读全文。Agent 拿到决策后自己读全文 → 不破坏按需读取。不需要额外维护 summary，01 本身就是所有框架的 summary。</div>
+          </div>
+        </div>
+
+        <div class="vl"></div>
+
+        <!-- 装配阶段：三重选择 -->
+        <div class="assemble">
+          <div class="alabel">◆ 上下文装配阶段（Agent 核心，区别于单 Prompt）</div>
+
+          <div class="node s-purple" style="max-width:none">
+            <div class="h"><div class="n">5</div><div class="t">路由：选 1 个主创作框架</div></div>
+            <div class="d">按业务词命中选<strong>一个</strong>最贴近的框架，不混用多个：</div>
+            <div class="chips">
+              <span class="chip k">保费融资</span>
+              <span class="chip k">分红实现率</span>
+              <span class="chip k">产品测评</span>
+              <span class="chip k">产品横评</span>
+              <span class="chip k">保司评价</span>
+              <span class="chip k">条款黑盒</span>
+              <span class="chip k">通用问题</span>
+            </div>
+          </div>
+          <div class="vl"></div>
+
+          <div class="node s-purple" style="max-width:none">
+            <div class="h"><div class="n">6</div><div class="t">选 1-2 个心理认知积木</div></div>
+            <div class="d">只在思考中调用，<strong>正文不暴露积木名称</strong>：</div>
+            <div class="chips">
+              <span class="chip k">品牌塌陷</span>
+              <span class="chip k">静态幻觉</span>
+              <span class="chip k">从众阻断</span>
+              <span class="chip k">对比效应</span>
+              <span class="chip k">锚定效应</span>
+              <span class="chip k">信息黑盒</span>
+              <span class="chip k">损失规避</span>
+              <span class="chip k">确定性偏差</span>
+              <span class="chip k">智力权衡透明</span>
+              <span class="chip k">破窗与闭环剥夺</span>
+            </div>
+          </div>
+          <div class="vl"></div>
+
+          <div class="node s-blue" style="max-width:none">
+            <div class="h"><div class="n">7</div><div class="t">选事实来源（不全库扫描）</div></div>
+            <div class="d">按对象读取对应来源，按需补充：</div>
+            <div class="chips">
+              <span class="chip b">产品母页</span>
+              <span class="chip b">保司母页</span>
+              <span class="chip b">底层认知</span>
+              <span class="chip b">案例故事</span>
+              <span class="chip b">横评页</span>
+              <span class="chip b">用户指定 Raw</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="llm-gate">
+          <div class="gl">LLM 闸门 B：事实充足检查</div>
+          <div class="gd">已读取文件列表 + 用户题目 → 固定 LLM prompt → 输出 <code>{是否缺关键事实, 缺什么, 能否开始写}</code>。<strong>不足则硬停</strong>，避免弹药不够时硬写导致编造数据。</div>
+        </div>
+
+        <div class="vl"></div>
+
+        <div class="node s-purple">
+          <div class="h"><div class="n">8</div><div class="t">套传播包装层</div></div>
+          <div class="d">只处理<strong>打开率和第一屏</strong>，不替代主框架、不改事实：</div>
+          <div class="chips">
+            <span class="chip k">标题含关键词+冲突感</span>
+            <span class="chip k">开头120字给"别处看不到"的东西</span>
+            <span class="chip k">首屏先冲突后解释</span>
+          </div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-purple">
+          <div class="h"><div class="n">9</div><div class="t">按框架写作正文</div></div>
+          <div class="d">框架定推进顺序，母页「写作抓手层」定怎么翻译术语、先抓什么误会；图文并茂保留原图 + 按 OCR 插图。</div>
+        </div>
+
+        <div class="llm-gate">
+          <div class="gl">LLM 闸门 C：框架合规校验</div>
+          <div class="gd">正文 + 选定框架名 → 固定 LLM prompt → 输出 <code>{是否遵循推进顺序, 是否暴露内部结构, 积木是否只在思考中}</code>。在红线检查前先做<strong>框架级自检</strong>，比通用红线更精准。</div>
+        </div>
+
+        <div class="vl"></div>
+
+        <div class="node s-red">
+          <div class="h"><div class="n">10</div><div class="t">统一输出要求处理</div></div>
+          <div class="d">图片弹药库挑选配图、品牌署名统一为保智库/希希、数据可追溯、排版加粗重点、命名 <code>YYMMDD_标题.md</code>。</div>
+        </div>
+        <div class="vl"></div>
+
+        <div class="node s-red">
+          <div class="h"><div class="n">11</div><div class="t">红线检查（10 条）</div></div>
+          <div class="d">客群锚定 / 事实边界 / 数据红线 / 语气边界 / 传播边界 / 转化方式 / 图片来源 / <strong>框架隐形</strong> / 读取边界 / 搜索词禁露。</div>
+          <div class="diff-note">▸ 这是 Agent 模式后置的"发布闸门"，LLM 模式只有简单合规替换</div>
+        </div>
+
+        <div class="llm-gate">
+          <div class="gl">LLM 闸门 D：红线逐条结构化</div>
+          <div class="gd">10 条红线拆成固定 LLM prompt → 逐条输出 <code>{红线项, 通过/不通过, 具体问题}</code>。从 <strong>"Agent 自觉自检"</strong>变成<strong>"逐条强制校验"</strong>，避免自己查自己漏判。</div>
+        </div>
+
+        <div class="vl"></div>
+
+        <div class="node s-green">
+          <div class="h"><div class="n">12</div><div class="t">输出 output/ 成稿</div></div>
+          <div class="d">一篇可直接发布的 <strong>Markdown</strong> 文章，不残留占位内容、不暴露内部结构。</div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div class="foot">保智库 · 写作流程示意 · 左 LLM 单 Prompt 直出 · 右 Agent 路由装配</div>
+
+</div>
+</body>
+</html>

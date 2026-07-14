@@ -1,0 +1,23 @@
+# ===== macOS 系统垃圾 =====
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ===== 临时 / 过程产物 =====
+.tmp/
+*.log
+.playwright-mcp/
+__pycache__/
+*.pyc
+
+# ===== 编辑器 / 工具配置（本机专属，不随仓库走）=====
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.codex/
+
+# ===== 调试截图（如需保留可手动删掉对应行）=====
+wiki-axasavings.png
+wiki-images-fixed.png
+wiki-initial.png
+wiki-viewer/*.png

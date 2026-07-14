@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>文章轮换率 · 热力日历 Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2937; }
+  .page { max-width: 1320px; margin: 0 auto; padding: 28px 24px 60px; }
+
+  .header { background: #fff; border-radius: 14px; padding: 22px 26px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06); margin-bottom: 22px; }
+  .header-row { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+  .header-rate { font-size: 56px; font-weight: 700; line-height: 1; letter-spacing: -1px; }
+  .header-rate .pct { font-size: 24px; color: #9ca3af; font-weight: 500; margin-left: 4px; }
+  .header-meta { flex: 1; min-width: 260px; }
+  .header-meta .level { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .header-meta .desc { font-size: 13px; color: #6b7280; line-height: 1.6; }
+  .header-stats { display: flex; gap: 28px; padding-left: 24px; border-left: 1px solid #e5e7eb; flex-wrap: wrap; }
+  .header-stats .stat { display: flex; flex-direction: column; gap: 2px; }
+  .header-stats .stat-label { font-size: 11px; color: #9ca3af; letter-spacing: 0.3px; }
+  .header-stats .stat-value { font-size: 18px; font-weight: 600; color: #111827; }
+
+  .section { background: #fff; border-radius: 14px; padding: 22px 26px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06); margin-bottom: 22px; }
+  .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .section-title h2 { margin: 0; font-size: 15px; font-weight: 600; color: #111827; }
+  .section-title .tip { font-size: 12px; color: #9ca3af; }
+
+  .cal-grid { display: grid; grid-template-columns: 28px repeat(var(--cols), 1fr); gap: 2px; align-items: center; }
+  .cal-cell { aspect-ratio: 1; border-radius: 3px; cursor: default; transition: transform 0.08s; position: relative; }
+  .cal-cell:not(.empty):hover { transform: scale(1.18); z-index: 5; box-shadow: 0 0 0 2px #111827; }
+  .cal-cell.empty { background: transparent !important; }
+  .cal-label { font-size: 10px; color: #9ca3af; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; }
+
+  .legend { display: flex; align-items: center; gap: 10px; margin-top: 18px; font-size: 11px; color: #6b7280; flex-wrap: wrap; }
+  .legend-scale { display: flex; gap: 2px; align-items: center; }
+  .legend-scale .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .legend-num { font-variant-numeric: tabular-nums; }
+
+  .life-toolbar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .filter-pill { font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid #e5e7eb; background: #fff; color: #4b5563; cursor: pointer; user-select: none; transition: all 0.12s; }
+  .filter-pill:hover { border-color: #94a3b8; }
+  .filter-pill.active { background: #111827; color: #fff; border-color: #111827; }
+  .life-toolbar .sep { width: 1px; height: 18px; background: #e5e7eb; margin: 0 4px; }
+  .life-toolbar .info { font-size: 11px; color: #9ca3af; display: flex; align-items: center; padding-left: 4px; }
+
+  .life-wrap { overflow-x: auto; padding-bottom: 8px; }
+  .life-wrap::-webkit-scrollbar { height: 8px; }
+  .life-wrap::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  .life-row { display: grid; grid-template-columns: 280px repeat(var(--cols), minmax(11px, 1fr)); gap: 2px; align-items: center; }
+  .life-row.head { color: #9ca3af; font-size: 11px; }
+  .life-cell { aspect-ratio: 1; min-width: 11px; border-radius: 2px; transition: transform 0.08s; cursor: default; }
+  .life-cell:hover { transform: scale(1.4); z-index: 5; box-shadow: 0 0 0 2px #111827; }
+  .life-cell.absent { background: #f3f4f6; }
+  .life-cell.state-new { background: #fde68a; }
+  .life-cell.state-return { background: #fdba74; }
+  .life-cell.state-short { background: #86efac; }
+  .life-cell.state-stable { background: #22c55e; }
+  .life-cell.state-core { background: #15803d; }
+
+  .life-name { font-size: 12px; color: #374151; padding-right: 10px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .life-name .stab { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; font-weight: 500; }
+  .life-name .stab.常驻 { background: #dcfce7; color: #166534; }
+  .life-name .stab.活跃 { background: #dbeafe; color: #1d4ed8; }
+  .life-name .stab.闪现 { background: #f3f4f6; color: #6b7280; }
+  .life-name .meta { color: #9ca3af; font-size: 10px; flex-shrink: 0; }
+
+  .state-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 14px; font-size: 11px; color: #6b7280; }
+  .state-legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .state-legend .sw { width: 12px; height: 12px; border-radius: 3px; }
+  .state-legend .sw.absent { background: #f3f4f6; border: 1px solid #e5e7eb; }
+  .state-legend .sw.state-new { background: #fde68a; }
+  .state-legend .sw.state-return { background: #fdba74; }
+  .state-legend .sw.state-short { background: #86efac; }
+  .state-legend .sw.state-stable { background: #22c55e; }
+  .state-legend .sw.state-core { background: #15803d; }
+
+  .tooltip { position: fixed; pointer-events: none; background: rgba(17, 24, 39, 0.95); color: #fff; font-size: 12px; padding: 8px 12px; border-radius: 6px; z-index: 9999; line-height: 1.5; max-width: 360px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); opacity: 0; transition: opacity 0.1s; }
+  .tooltip.show { opacity: 1; }
+  .tooltip .tt-title { font-weight: 600; margin-bottom: 4px; }
+  .tooltip .tt-meta { color: #d1d5db; font-size: 11px; }
+
+  .lvl-active { color: #f59e0b; }
+  .lvl-stable { color: #3b82f6; }
+  .lvl-frozen { color: #10b981; }
+  .loading { text-align: center; padding: 60px 0; color: #9ca3af; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header" id="header">
+    <div class="loading">加载数据中…</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <h2>① 30 天轮换率热力日历</h2>
+      <span class="tip">每格 = 一次快照对比 · 颜色越绿越稳、越红越跳</span>
+    </div>
+    <div class="cal-grid" id="cal"><div class="loading">加载中…</div></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <h2>② 文章寿命热力图（按日覆盖 × 连续驻留）</h2>
+      <span class="tip">黄色=首次出现 · 橙色=断档后回归 · 绿色越深代表连续驻留越长</span>
+    </div>
+    <div class="life-toolbar" id="lifeToolbar"></div>
+    <div class="life-wrap">
+      <div class="life-grid" id="lifeGrid"><div class="loading">加载中…</div></div>
+    </div>
+    <div class="state-legend" id="stateLegend"></div>
+  </div>
+</div>
+
+<div class="tooltip" id="tt"></div>
+
+<script>
+const TT = document.getElementById('tt');
+let currentFilter = 'all';
+
+function showTip(html, evt) {
+  TT.innerHTML = html;
+  TT.classList.add('show');
+  const pad = 14;
+  const rect = TT.getBoundingClientRect();
+  let x = evt.clientX + pad;
+  let y = evt.clientY + pad;
+  if (x + rect.width > window.innerWidth) x = evt.clientX - rect.width - pad;
+  if (y + rect.height > window.innerHeight) y = evt.clientY - rect.height - pad;
+  TT.style.left = x + 'px';
+  TT.style.top = y + 'px';
+}
+
+function hideTip() {
+  TT.classList.remove('show');
+}
+
+function rateColor(rate) {
+  if (rate < 0.10) return '#1a8754';
+  if (rate < 0.20) return '#86d49b';
+  if (rate < 0.30) return '#f5d36e';
+  if (rate < 0.45) return '#f59e0b';
+  if (rate < 0.60) return '#ef4444';
+  return '#b91c1c';
+}
+
+function esc(text) {
+  return String(text ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
+}
+
+function getLifeState({ present, prevPresent, nextPresent, runCount, dayRunTotal, firstSeen, date }) {
+  if (!present) return 'absent';
+  if (date === firstSeen) return 'state-new';
+  if (!prevPresent) return 'state-return';
+  if (runCount >= 2 || dayRunTotal >= 3) return 'state-core';
+  if (prevPresent && nextPresent) return 'state-stable';
+  return 'state-short';
+}
+
+function stateLabel(state) {
+  return {
+    absent: '不在榜',
+    'state-new': '首次出现',
+    'state-return': '断档后回归',
+    'state-short': '短驻',
+    'state-stable': '连续驻留',
+    'state-core': '高频霸榜'
+  }[state] || state;
+}
+
+fetch('./demo.json')
+  .then(r => r.json())
+  .then(data => {
+    renderHeader(data);
+    renderCalendar(data);
+    renderLife(data);
+  })
+  .catch(err => {
+    document.getElementById('header').innerHTML =
+      '<div class="loading">加载失败：' + esc(err.message || err) + '（请用本地服务器打开，不能直接 file://）</div>';
+  });
+
+function renderHeader(data) {
+  const { summary, keyword, window_start, window_end } = data;
+  const lvlCls = summary.level === '内容活跃' ? 'lvl-active'
+    : summary.level === '内容稳态' ? 'lvl-stable'
+    : 'lvl-frozen';
+
+  document.getElementById('header').innerHTML = `
+    <div class="header-row">
+      <div class="header-rate ${lvlCls}">${summary.avg_rate_pct}<span class="pct">%</span></div>
+      <div class="header-meta">
+        <div class="level ${lvlCls}">${summary.level}</div>
+        <div class="desc">
+          关键词「${esc(keyword.text)}」在最近 30 天内的内容轮换情况。<br>
+          基于 ${summary.snapshot_count} 次快照、${summary.comparison_count} 次相邻对比；寿命图已隐藏 ${summary.hidden_singletons} 篇“单日单次”噪音文章。
+        </div>
+      </div>
+      <div class="header-stats">
+        <div class="stat"><div class="stat-label">窗口</div><div class="stat-value">${window_start.slice(5)} → ${window_end.slice(5)}</div></div>
+        <div class="stat"><div class="stat-label">快照</div><div class="stat-value">${summary.snapshot_count} 次</div></div>
+        <div class="stat"><div class="stat-label">展示文章</div><div class="stat-value">${summary.distinct_articles} 篇</div></div>
+        <div class="stat"><div class="stat-label">常驻 / 活跃 / 闪现</div><div class="stat-value">${summary.stability_counts['常驻']} / ${summary.stability_counts['活跃']} / ${summary.stability_counts['闪现']}</div></div>
+      </div>
+    </div>`;
+}
+
+function renderCalendar(data) {
+  const { daily_rates, dates } = data;
+  const byDate = new Map();
+  for (const item of daily_rates) {
+    const current = byDate.get(item.date);
+    if (!current || item.rate > current.rate) byDate.set(item.date, item);
+  }
+
+  const colCount = dates.length;
+  const grid = document.getElementById('cal');
+  grid.style.setProperty('--cols', colCount);
+  grid.innerHTML = '';
+
+  const labelEvery = colCount > 20 ? 5 : colCount > 12 ? 3 : 2;
+  const header = document.createElement('div');
+  header.className = 'cal-label';
+  grid.appendChild(header);
+
+  dates.forEach((date, idx) => {
+    const cell = document.createElement('div');
+    cell.className = 'cal-label';
+    cell.style.justifyContent = 'flex-start';
+    cell.style.paddingLeft = '2px';
+    cell.textContent = (idx % labelEvery === 0 || idx === colCount - 1) ? date.slice(5) : '';
+    grid.appendChild(cell);
+  });
+
+  const title = document.createElement('div');
+  title.className = 'cal-label';
+  title.textContent = '轮换率';
+  grid.appendChild(title);
+
+  dates.forEach(date => {
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell';
+    const item = byDate.get(date);
+    if (!item) {
+      cell.classList.add('empty');
+      grid.appendChild(cell);
+      return;
+    }
+
+    cell.style.background = rateColor(item.rate);
+    cell.addEventListener('mouseenter', evt => showTip(
+      `<div class="tt-title">${date} · ${esc(item.time)} · ${(item.rate * 100).toFixed(1)}%</div>
+       <div class="tt-meta">本次 ${item.curr_count} / 上次 ${item.prev_count} · 相同 ${item.same}<br>
+       新增 ${item.new} · 消失 ${item.gone}</div>`, evt));
+    cell.addEventListener('mousemove', evt => showTip(TT.innerHTML, evt));
+    cell.addEventListener('mouseleave', hideTip);
+    grid.appendChild(cell);
+  });
+
+  const stops = [0, 0.1, 0.2, 0.3, 0.45, 0.6];
+  document.getElementById('legend').innerHTML =
+    '<span>低</span><div class="legend-scale">' +
+    stops.map(rate => `<div class="sw" style="background:${rateColor(rate)}"></div>`).join('') +
+    '</div><span>高</span><span class="legend-num" style="margin-left:auto">共 ' + daily_rates.length + ' 次对比</span>';
+}
+
+function renderLife(data) {
+  const { articles, dates, article_presence, article_day_runs } = data;
+  const counts = { all: articles.length, 常驻: 0, 活跃: 0, 闪现: 0 };
+  articles.forEach(article => counts[article.stability]++);
+
+  const toolbar = document.getElementById('lifeToolbar');
+  toolbar.innerHTML = '';
+  ['all', '常驻', '活跃', '闪现'].forEach(group => {
+    const button = document.createElement('button');
+    button.className = 'filter-pill' + (group === currentFilter ? ' active' : '');
+    button.textContent = group === 'all' ? `全部 (${counts.all})` : `${group} (${counts[group]})`;
+    button.onclick = () => {
+      currentFilter = group;
+      renderLife(data);
+    };
+    toolbar.appendChild(button);
+  });
+
+  const sep = document.createElement('div');
+  sep.className = 'sep';
+  toolbar.appendChild(sep);
+
+  const info = document.createElement('span');
+  info.className = 'info';
+  info.textContent = '排序：稳定度 → 覆盖天数 → 快照命中次数 → 连续天数';
+  toolbar.appendChild(info);
+
+  const visible = articles.filter(article => currentFilter === 'all' || article.stability === currentFilter);
+  const grid = document.getElementById('lifeGrid');
+  const colCount = dates.length;
+  const labelEvery = colCount > 20 ? 5 : colCount > 12 ? 3 : 2;
+  grid.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'life-row head';
+  head.style.setProperty('--cols', colCount);
+  const headLabel = document.createElement('div');
+  headLabel.className = 'life-name';
+  headLabel.style.color = '#9ca3af';
+  headLabel.style.fontSize = '11px';
+  headLabel.textContent = `文章 (${visible.length} 篇)`;
+  head.appendChild(headLabel);
+  dates.forEach((date, idx) => {
+    const cell = document.createElement('div');
+    cell.className = 'life-cell absent';
+    cell.style.fontSize = '9px';
+    cell.style.color = '#9ca3af';
+    cell.style.display = 'flex';
+    cell.style.alignItems = 'center';
+    cell.style.justifyContent = 'center';
+    cell.textContent = (idx % labelEvery === 0 || idx === colCount - 1) ? date.slice(5) : '';
+    head.appendChild(cell);
+  });
+  grid.appendChild(head);
+
+  visible.forEach(article => {
+    const row = document.createElement('div');
+    row.className = 'life-row';
+    row.style.setProperty('--cols', colCount);
+
+    const name = document.createElement('div');
+    name.className = 'life-name';
+    name.innerHTML = `
+      <span class="stab ${article.stability}">${article.stability}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(article.title)}</span>
+      <span class="meta">${article.day_count}天 / ${article.run_appearances}次</span>`;
+    name.title = `${article.title} · ${article.account}`;
+    row.appendChild(name);
+
+    const presence = article_presence[article.article_id] || {};
+    const runMap = article_day_runs[article.article_id] || {};
+
+    dates.forEach((date, idx) => {
+      const present = presence[date] === 1;
+      const prevPresent = idx > 0 ? presence[dates[idx - 1]] === 1 : false;
+      const nextPresent = idx < dates.length - 1 ? presence[dates[idx + 1]] === 1 : false;
+      const runCount = runMap[date] || 0;
+      const cell = document.createElement('div');
+      const state = getLifeState({
+        present,
+        prevPresent,
+        nextPresent,
+        runCount,
+        dayRunTotal: runCount,
+        firstSeen: article.first_seen,
+        date,
+      });
+      cell.className = 'life-cell ' + state;
+
+      if (present) {
+        const ratio = Math.round((article.day_presence_ratio || 0) * 100);
+        cell.addEventListener('mouseenter', evt => showTip(
+          `<div class="tt-title">${esc(article.title)}</div>
+           <div class="tt-meta">${esc(article.account)} · ${date} · ${stateLabel(state)}<br>
+           覆盖 ${article.day_count} 天 / 命中 ${article.run_appearances} 次 / 连续最长 ${article.longest_streak} 天<br>
+           首次 ${article.first_seen} · 最近 ${article.last_seen} · 按天覆盖 ${ratio}% · 当日命中 ${runCount} 次</div>`, evt));
+        cell.addEventListener('mousemove', evt => showTip(TT.innerHTML, evt));
+        cell.addEventListener('mouseleave', hideTip);
+      }
+
+      row.appendChild(cell);
+    });
+
+    grid.appendChild(row);
+  });
+
+  document.getElementById('stateLegend').innerHTML = [
+    ['absent', '不在榜'],
+    ['state-new', '首次出现'],
+    ['state-return', '断档后回归'],
+    ['state-short', '短驻'],
+    ['state-stable', '连续驻留'],
+    ['state-core', '高频霸榜']
+  ].map(([cls, label]) => `<span class="item"><span class="sw ${cls}"></span>${label}</span>`).join('');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1882 @@
+{
+  "nodes": [
+    {
+      "id": "友邦财富盈活",
+      "name": "友邦财富盈活",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "财富盈活",
+      "name": "财富盈活",
+      "kind": "topic",
+      "sub": ""
+    },
+    {
+      "id": "友邦环宇盈活",
+      "name": "友邦环宇盈活",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "环宇盈活",
+      "name": "环宇盈活",
+      "kind": "topic",
+      "sub": ""
+    },
+    {
+      "id": "宏利宏挚传承",
+      "name": "宏利宏挚传承",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "宏挚传承",
+      "name": "宏挚传承",
+      "kind": "topic",
+      "sub": ""
+    },
+    {
+      "id": "保诚信守明天",
+      "name": "保诚信守明天",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "信守明天",
+      "name": "信守明天",
+      "kind": "topic",
+      "sub": ""
+    },
+    {
+      "id": "国寿傲珑盛世",
+      "name": "国寿傲珑盛世",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "傲珑盛世",
+      "name": "傲珑盛世",
+      "kind": "topic",
+      "sub": ""
+    },
+    {
+      "id": "港险分红实现",
+      "name": "港险分红实现",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "香港保险传承",
+      "name": "香港保险传承",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "财富盈活环宇",
+      "name": "财富盈活环宇",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "友邦财富盈货靠谱吗",
+      "name": "友邦财富盈货靠谱吗",
+      "kind": "suggestion",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦财富盈活优惠",
+      "name": "友邦财富盈活优惠",
+      "kind": "suggestion",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦财富盈活储蓄计划",
+      "name": "友邦财富盈活储蓄计划",
+      "kind": "suggestion",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦财富盈活和环宇盈活区别",
+      "name": "友邦财富盈活和环宇盈活区别",
+      "kind": "suggestion",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦财富盈活起投门槛",
+      "name": "友邦财富盈活起投门槛",
+      "kind": "suggestion",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦有人民币保单吗",
+      "name": "友邦有人民币保单吗",
+      "kind": "related",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦寰宇盈活的优势",
+      "name": "友邦寰宇盈活的优势",
+      "kind": "related",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦环宇盈活收益表",
+      "name": "友邦环宇盈活收益表",
+      "kind": "related",
+      "sub": "友邦财富盈活"
+    },
+    {
+      "id": "友邦环宇盈活是什么产品",
+      "name": "友邦环宇盈活是什么产品",
+      "kind": "suggestion",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活趸交",
+      "name": "友邦环宇盈活趸交",
+      "kind": "suggestion",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活有哪些优惠政策",
+      "name": "友邦环宇盈活有哪些优惠政策",
+      "kind": "suggestion",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活海报",
+      "name": "友邦环宇盈活海报",
+      "kind": "suggestion",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活和盈御3对比",
+      "name": "友邦环宇盈活和盈御3对比",
+      "kind": "suggestion",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活投资策略",
+      "name": "友邦环宇盈活投资策略",
+      "kind": "related",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "友邦环宇盈活最低保费",
+      "name": "友邦环宇盈活最低保费",
+      "kind": "related",
+      "sub": "友邦环宇盈活"
+    },
+    {
+      "id": "宏利宏挚传承无忧选",
+      "name": "宏利宏挚传承无忧选",
+      "kind": "suggestion",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承投资策略",
+      "name": "宏利宏挚传承投资策略",
+      "kind": "suggestion",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承优惠",
+      "name": "宏利宏挚传承优惠",
+      "kind": "suggestion",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承和宏挚家传承区别",
+      "name": "宏利宏挚传承和宏挚家传承区别",
+      "kind": "suggestion",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承提取密码",
+      "name": "宏利宏挚传承提取密码",
+      "kind": "suggestion",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承保障计划",
+      "name": "宏利宏挚传承保障计划",
+      "kind": "related",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利的宏挚传承是什么",
+      "name": "宏利的宏挚传承是什么",
+      "kind": "related",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "一图读懂宏利宏挚传承",
+      "name": "一图读懂宏利宏挚传承",
+      "kind": "related",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "宏利宏挚传承货币转换",
+      "name": "宏利宏挚传承货币转换",
+      "kind": "related",
+      "sub": "宏利宏挚传承"
+    },
+    {
+      "id": "保诚信守明天优惠",
+      "name": "保诚信守明天优惠",
+      "kind": "suggestion",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天和友邦环宇盈活对比",
+      "name": "保诚信守明天和友邦环宇盈活对比",
+      "kind": "suggestion",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天提取方式",
+      "name": "保诚信守明天提取方式",
+      "kind": "suggestion",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天信托功能",
+      "name": "保诚信守明天信托功能",
+      "kind": "suggestion",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天提取",
+      "name": "保诚信守明天提取",
+      "kind": "suggestion",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "诚信的经典句子",
+      "name": "诚信的经典句子",
+      "kind": "related",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "香港保诚信守明天",
+      "name": "香港保诚信守明天",
+      "kind": "related",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天宣传图",
+      "name": "保诚信守明天宣传图",
+      "kind": "related",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "二年级诚信贵如金",
+      "name": "二年级诚信贵如金",
+      "kind": "related",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "保诚信守明天佣金",
+      "name": "保诚信守明天佣金",
+      "kind": "related",
+      "sub": "保诚信守明天"
+    },
+    {
+      "id": "国寿傲珑盛世和友邦环宇盈活",
+      "name": "国寿傲珑盛世和友邦环宇盈活",
+      "kind": "suggestion",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿傲珑盛世人民币",
+      "name": "国寿傲珑盛世人民币",
+      "kind": "suggestion",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿傲珑盛世货币转换",
+      "name": "国寿傲珑盛世货币转换",
+      "kind": "suggestion",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿傲龙盛世优惠",
+      "name": "国寿傲龙盛世优惠",
+      "kind": "suggestion",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿傲珑盛世5年缴费",
+      "name": "国寿傲珑盛世5年缴费",
+      "kind": "suggestion",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿傲珑创富最新优惠",
+      "name": "国寿傲珑创富最新优惠",
+      "kind": "related",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "中国人寿海外傲珑盛世",
+      "name": "中国人寿海外傲珑盛世",
+      "kind": "related",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "国寿祥瑞终身寿险",
+      "name": "国寿祥瑞终身寿险",
+      "kind": "related",
+      "sub": "国寿傲珑盛世"
+    },
+    {
+      "id": "港险 分红实现率",
+      "name": "港险 分红实现率",
+      "kind": "suggestion",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险分红实现率怎么看",
+      "name": "港险分红实现率怎么看",
+      "kind": "suggestion",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险分红实现率对比图",
+      "name": "港险分红实现率对比图",
+      "kind": "suggestion",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险分红实现率2025",
+      "name": "港险分红实现率2025",
+      "kind": "suggestion",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险分红实现率查询",
+      "name": "港险分红实现率查询",
+      "kind": "suggestion",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险分红达成率",
+      "name": "港险分红达成率",
+      "kind": "related",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "2025各保司分红排名",
+      "name": "2025各保司分红排名",
+      "kind": "related",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "港险锦囊",
+      "name": "港险锦囊",
+      "kind": "related",
+      "sub": "港险分红实现"
+    },
+    {
+      "id": "香港保险的优势和劣势",
+      "name": "香港保险的优势和劣势",
+      "kind": "suggestion",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险传承案例",
+      "name": "香港保险传承案例",
+      "kind": "suggestion",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险传承优势",
+      "name": "香港保险传承优势",
+      "kind": "suggestion",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险宏挚传承",
+      "name": "香港保险宏挚传承",
+      "kind": "suggestion",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险保单传承",
+      "name": "香港保险保单传承",
+      "kind": "suggestion",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港十大保险公司",
+      "name": "香港十大保险公司",
+      "kind": "related",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保单传承",
+      "name": "香港保单传承",
+      "kind": "related",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险十大安全机制",
+      "name": "香港保险十大安全机制",
+      "kind": "related",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港目前最好的储蓄险",
+      "name": "香港目前最好的储蓄险",
+      "kind": "related",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "香港保险的弊端已显现",
+      "name": "香港保险的弊端已显现",
+      "kind": "related",
+      "sub": "香港保险传承"
+    },
+    {
+      "id": "中金财富活钱宝",
+      "name": "中金财富活钱宝",
+      "kind": "suggestion",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "财富自由活成自己想要的样子",
+      "name": "财富自由活成自己想要的样子",
+      "kind": "suggestion",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "财富盈活 环宇盈活",
+      "name": "财富盈活 环宇盈活",
+      "kind": "suggestion",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "环宇盈活趸交优惠",
+      "name": "环宇盈活趸交优惠",
+      "kind": "related",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "环宇盈活储蓄计划",
+      "name": "环宇盈活储蓄计划",
+      "kind": "related",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "友邦盈御3和环宇盈活",
+      "name": "友邦盈御3和环宇盈活",
+      "kind": "related",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "环宇盈活提领密码",
+      "name": "环宇盈活提领密码",
+      "kind": "related",
+      "sub": "财富盈活环宇"
+    },
+    {
+      "id": "kw_7ee9a41f",
+      "name": "2025年保诚财报解读，分红实现率可能会反弹！",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0645a932",
+      "name": "225提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d61ca592",
+      "name": "258提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b8bd872b",
+      "name": "2年缴储蓄险横评",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9706d554",
+      "name": "51010提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_eec458db",
+      "name": "567提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_cea15b37",
+      "name": "AIA Wealth Flex",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8f44140e",
+      "name": "AIA 财富盈活",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_259c6f13",
+      "name": "Prudential Wealth Prestige 中國集友銀行 融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d3fe3ab8",
+      "name": "Singlife Legacy IUL 新加坡 指数型万能寿险",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_540cb6c1",
+      "name": "万通 2025 分红实现率 富饶",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a0e5502b",
+      "name": "万通保险 2026 储蓄险 在售",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_717ea0a3",
+      "name": "万通富饶传家 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_eb1bc5d2",
+      "name": "万通富饶盈家 停售 下架 额度",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9b61616a",
+      "name": "万通富饶盈家 蚂蚁银行 保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_097ac3f0",
+      "name": "万通尚裕",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9a439997",
+      "name": "中银保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_acae78af",
+      "name": "丰饶3保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_cfe32da6",
+      "name": "保诚 2025 分红实现率 信守明天",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_312bfe91",
+      "name": "保诚 世誉财富 集友银行 保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_06629f4b",
+      "name": "保诚 分红实现率 低",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_78f4e794",
+      "name": "保诚世誉财富 × 集友银行保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0e54f5ce",
+      "name": "保诚世誉财富 集友银行 保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b2f5c985",
+      "name": "保诚信守明天 分红实现率 提领 对比",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d8d8245d",
+      "name": "保诚信守明天对比",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_64dd0c50",
+      "name": "保诚骏誉财富 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_20224dfb",
+      "name": "保费融资利率封顶",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d30b020d",
+      "name": "保费融资压力测试",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5b6b25b5",
+      "name": "保费融资资产证明",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a21403b2",
+      "name": "信守提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_6173c5c2",
+      "name": "信守明天分红",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_efd017b1",
+      "name": "信守明天分红实现",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f29ad51c",
+      "name": "信守明天提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_856b3488",
+      "name": "信守明天收益",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0e7f7df5",
+      "name": "信守明天缺点",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d4a97e61",
+      "name": "信守环宇",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_616a9e78",
+      "name": "信守盛利2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_2e560821",
+      "name": "创逸致富",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_45caa541",
+      "name": "匠心传承2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_6985a5dd",
+      "name": "匠心飞越",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b0e93738",
+      "name": "友邦 环宇盈活 对比",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_853f2ac6",
+      "name": "友邦 环宇盈活 提领 对比 分红实现率",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8675d97d",
+      "name": "友邦 环宇盈活 测评",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_65adfb21",
+      "name": "友邦 环宇盈活 缺陷",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d3a7c317",
+      "name": "友邦 盈活 对比 环宇",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f8bfd264",
+      "name": "友邦 财富盈活",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a3d3aa07",
+      "name": "友邦充裕未来 2026 在售",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f9c6eada",
+      "name": "友邦杠杆寿 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_413ca341",
+      "name": "周大福人寿 股东变更 历史 品牌 富通",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_344b2533",
+      "name": "周大福匠心传承 2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_2a45b2a7",
+      "name": "周大福匠心飞越",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_007da05a",
+      "name": "四大保司王牌产品",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_7e79cc5e",
+      "name": "国寿 傲珑盛世 分红实现率 对比",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0c7b91c1",
+      "name": "国寿丰饶传承 3 × 广发银行保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_31a6e0c4",
+      "name": "国寿杠杆寿 终身寿 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_d08fd63d",
+      "name": "安盛 2025 分红实现率",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_166b0805",
+      "name": "安盛 2026 储蓄险 新品",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8ab070e9",
+      "name": "安盛杠杆寿 终身寿 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_ddd1a8f0",
+      "name": "安盛盛利 2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8b8a2c78",
+      "name": "安盛盛利2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_16efa3c6",
+      "name": "安盛盛利2 5年缴 保证回本 缺陷",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_73444731",
+      "name": "安盛盛利2 友邦 环宇盈活 长期收益 对比",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0cafa93e",
+      "name": "安盛盛利2 缺点 保证现金价值 对比 星河尊享2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_53f5cea4",
+      "name": "宏利 Signature Legacy Harvest 分红险",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9b9969a1",
+      "name": "宏就显誉",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_aabfee55",
+      "name": "宏挚盛利2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_fa5670ad",
+      "name": "富卫盈聚天下 2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_7465a247",
+      "name": "富卫盈聚天下2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_c1f49459",
+      "name": "富饶盈家保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_84386194",
+      "name": "广发保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_402ae077",
+      "name": "新加坡_Singlife Legacy IUL",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_29273b01",
+      "name": "新加坡_宏利 Signature Legacy Harvest",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_cfa50cc7",
+      "name": "星河2提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_554fbb99",
+      "name": "星河尊享2保证回本",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_869ec00f",
+      "name": "星河尊享2缺点",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_7a2ebbeb",
+      "name": "杠杆寿横评",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_281c3f5b",
+      "name": "永明卓裕",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_501ff90b",
+      "name": "永明卓裕 杠杆寿 2026",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_725f87c5",
+      "name": "永明星河尊享 2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_3ff7d2be",
+      "name": "永明星河尊享2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8c52d1e1",
+      "name": "活然人生",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b01f0880",
+      "name": "港险保证现价",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_17a9b424",
+      "name": "港险提领功能横评",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_4cd8d2e5",
+      "name": "港险提领密码",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_80e52f28",
+      "name": "港险退保价值",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f7775e5c",
+      "name": "环宇信守",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9bc394cc",
+      "name": "环宇宏挚",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_e7f0a3f5",
+      "name": "环宇提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_78d92363",
+      "name": "环宇盈活分红实现",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_e80e68b0",
+      "name": "环宇盛利2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_3f5c1b4b",
+      "name": "盈传创富3",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_bb397c1f",
+      "name": "盈聚提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_fed1401d",
+      "name": "盈聚盛利2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_6e9e393d",
+      "name": "盛利2保证回本",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b949162b",
+      "name": "盛利2提领",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_6b1320b9",
+      "name": "盛利2星河2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_e5daae95",
+      "name": "盛利2缺点",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_c7ab92a2",
+      "name": "自主未来2",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5206d403",
+      "name": "薪火传承保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_12aa81e5",
+      "name": "蚂蚁保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_4c4edf18",
+      "name": "财富盈活 AIA Wealth",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_6f61775d",
+      "name": "财富盈活 IRR 收益表",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_c99edb67",
+      "name": "财富盈活 vs 星河 盛利 宏挚 对比图",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_4514b617",
+      "name": "财富盈活 优惠 回赠 预缴",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_92d2b02c",
+      "name": "财富盈活 保险",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f652fdbe",
+      "name": "财富盈活 对比 星河 盛利",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_3c2da42a",
+      "name": "财富盈活 提取",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_29e524da",
+      "name": "财富盈活 提领 566 567 578",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a3b93b63",
+      "name": "财富盈活 收益",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_24e5088f",
+      "name": "财富盈活 横评 四大外资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_69850ea8",
+      "name": "财富盈活 横评 对比 星河 盛利 宏挚",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5cbea843",
+      "name": "财富盈活 缺陷 坑 缺点",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_4e11a0e1",
+      "name": "财富盈活 货币转换 红利锁定 保单拆分",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f5eaf35a",
+      "name": "财富盈活 门槛 保费 最低 投保",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_975b1bd3",
+      "name": "财富盈活盛利",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a4709ef8",
+      "name": "鑫安逸",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b38727cb",
+      "name": "香港2年缴",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_04c9a817",
+      "name": "香港3年缴",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_1bd6354c",
+      "name": "香港5年缴",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9fe2a9cc",
+      "name": "香港万通",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_365711cb",
+      "name": "香港人民币保单",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5ed18122",
+      "name": "香港价值保障",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_dfb5f52b",
+      "name": "香港传承守护",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_0bf2cf93",
+      "name": "香港保单分拆",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_2e7e1621",
+      "name": "香港保单暂托人",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_791d4dbe",
+      "name": "香港保诚",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_495e95b5",
+      "name": "香港保费融资",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_eacb7770",
+      "name": "香港保险 分红实现率 排名 2025 忠意",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_bf17b9d5",
+      "name": "香港保险金信托",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5b068790",
+      "name": "香港储蓄险横评",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_4d0e66dc",
+      "name": "香港分红杠杆寿 2026 产品",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_db26c440",
+      "name": "香港友邦",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_64a4d378",
+      "name": "香港双货币户",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_47d05c89",
+      "name": "香港后备持有人",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_2bb99d70",
+      "name": "香港周大福",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_53687401",
+      "name": "香港国寿海外",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_686e1f2c",
+      "name": "香港多币种保单",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_5983b314",
+      "name": "香港太保",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_be1467a3",
+      "name": "香港安盛",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_c9dc48f7",
+      "name": "香港宏利",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_39c5b395",
+      "name": "香港富卫",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_908664de",
+      "name": "香港整付保单",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_61763383",
+      "name": "香港未来心愿",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b66d49c9",
+      "name": "香港杠杆寿",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_a146687b",
+      "name": "香港杠杆寿传承",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9e132d4c",
+      "name": "香港杠杆寿险",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_8e3ac032",
+      "name": "香港永明",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b04058b3",
+      "name": "香港短缴储蓄",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_169a0c03",
+      "name": "香港离岸信托",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_9f8ce76b",
+      "name": "香港第二受保人",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_7e68e7ba",
+      "name": "香港第二持有人",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f5dd13ed",
+      "name": "香港类信托",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_f98663d1",
+      "name": "香港红利解锁",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_20b3bb1d",
+      "name": "香港红利锁定",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_95cb64ec",
+      "name": "香港美元保单",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_54378248",
+      "name": "香港自主入息",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_09a0421b",
+      "name": "香港财富管家",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_b33fe1dd",
+      "name": "香港货币转换",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_942db940",
+      "name": "香港趸交",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_fb02268c",
+      "name": "香港身故分期赔",
+      "kind": "keyword",
+      "sub": ""
+    },
+    {
+      "id": "kw_1c943d85",
+      "name": "香港高客保单",
+      "kind": "keyword",
+      "sub": ""
+    }
+  ],
+  "links": [
+    {
+      "source": "友邦财富盈活",
+      "target": "财富盈活",
+      "type": "belong"
+    },
+    {
+      "source": "友邦环宇盈活",
+      "target": "环宇盈活",
+      "type": "belong"
+    },
+    {
+      "source": "宏利宏挚传承",
+      "target": "宏挚传承",
+      "type": "belong"
+    },
+    {
+      "source": "保诚信守明天",
+      "target": "信守明天",
+      "type": "belong"
+    },
+    {
+      "source": "国寿傲珑盛世",
+      "target": "傲珑盛世",
+      "type": "belong"
+    },
+    {
+      "source": "港险分红实现",
+      "target": "港险分红实现",
+      "type": "belong"
+    },
+    {
+      "source": "香港保险传承",
+      "target": "香港保险传承",
+      "type": "belong"
+    },
+    {
+      "source": "财富盈活环宇",
+      "target": "财富盈活",
+      "type": "belong"
+    },
+    {
+      "source": "友邦财富盈货靠谱吗",
+      "target": "友邦财富盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦财富盈活优惠",
+      "target": "友邦财富盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦财富盈活储蓄计划",
+      "target": "友邦财富盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦财富盈活和环宇盈活区别",
+      "target": "友邦财富盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦财富盈活起投门槛",
+      "target": "友邦财富盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦有人民币保单吗",
+      "target": "友邦财富盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦财富盈活优惠",
+      "target": "友邦财富盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦财富盈活储蓄计划",
+      "target": "友邦财富盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦寰宇盈活的优势",
+      "target": "友邦财富盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活收益表",
+      "target": "友邦财富盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活是什么产品",
+      "target": "友邦环宇盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活趸交",
+      "target": "友邦环宇盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活有哪些优惠政策",
+      "target": "友邦环宇盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活海报",
+      "target": "友邦环宇盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活和盈御3对比",
+      "target": "友邦环宇盈活",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活趸交",
+      "target": "友邦环宇盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活海报",
+      "target": "友邦环宇盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活收益表",
+      "target": "友邦环宇盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活投资策略",
+      "target": "友邦环宇盈活",
+      "type": "related"
+    },
+    {
+      "source": "友邦环宇盈活最低保费",
+      "target": "友邦环宇盈活",
+      "type": "related"
+    },
+    {
+      "source": "宏利宏挚传承无忧选",
+      "target": "宏利宏挚传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "宏利宏挚传承投资策略",
+      "target": "宏利宏挚传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "宏利宏挚传承优惠",
+      "target": "宏利宏挚传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "宏利宏挚传承和宏挚家传承区别",
+      "target": "宏利宏挚传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "宏利宏挚传承提取密码",
+      "target": "宏利宏挚传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "宏利宏挚传承保障计划",
+      "target": "宏利宏挚传承",
+      "type": "related"
+    },
+    {
+      "source": "宏利的宏挚传承是什么",
+      "target": "宏利宏挚传承",
+      "type": "related"
+    },
+    {
+      "source": "宏利宏挚传承优惠",
+      "target": "宏利宏挚传承",
+      "type": "related"
+    },
+    {
+      "source": "一图读懂宏利宏挚传承",
+      "target": "宏利宏挚传承",
+      "type": "related"
+    },
+    {
+      "source": "宏利宏挚传承货币转换",
+      "target": "宏利宏挚传承",
+      "type": "related"
+    },
+    {
+      "source": "保诚信守明天优惠",
+      "target": "保诚信守明天",
+      "type": "suggestion"
+    },
+    {
+      "source": "保诚信守明天和友邦环宇盈活对比",
+      "target": "保诚信守明天",
+      "type": "suggestion"
+    },
+    {
+      "source": "保诚信守明天提取方式",
+      "target": "保诚信守明天",
+      "type": "suggestion"
+    },
+    {
+      "source": "保诚信守明天信托功能",
+      "target": "保诚信守明天",
+      "type": "suggestion"
+    },
+    {
+      "source": "保诚信守明天提取",
+      "target": "保诚信守明天",
+      "type": "suggestion"
+    },
+    {
+      "source": "诚信的经典句子",
+      "target": "保诚信守明天",
+      "type": "related"
+    },
+    {
+      "source": "香港保诚信守明天",
+      "target": "保诚信守明天",
+      "type": "related"
+    },
+    {
+      "source": "保诚信守明天宣传图",
+      "target": "保诚信守明天",
+      "type": "related"
+    },
+    {
+      "source": "二年级诚信贵如金",
+      "target": "保诚信守明天",
+      "type": "related"
+    },
+    {
+      "source": "保诚信守明天佣金",
+      "target": "保诚信守明天",
+      "type": "related"
+    },
+    {
+      "source": "国寿傲珑盛世和友邦环宇盈活",
+      "target": "国寿傲珑盛世",
+      "type": "suggestion"
+    },
+    {
+      "source": "国寿傲珑盛世人民币",
+      "target": "国寿傲珑盛世",
+      "type": "suggestion"
+    },
+    {
+      "source": "国寿傲珑盛世货币转换",
+      "target": "国寿傲珑盛世",
+      "type": "suggestion"
+    },
+    {
+      "source": "国寿傲龙盛世优惠",
+      "target": "国寿傲珑盛世",
+      "type": "suggestion"
+    },
+    {
+      "source": "国寿傲珑盛世5年缴费",
+      "target": "国寿傲珑盛世",
+      "type": "suggestion"
+    },
+    {
+      "source": "国寿傲珑盛世货币转换",
+      "target": "国寿傲珑盛世",
+      "type": "related"
+    },
+    {
+      "source": "国寿傲珑盛世人民币",
+      "target": "国寿傲珑盛世",
+      "type": "related"
+    },
+    {
+      "source": "国寿傲珑创富最新优惠",
+      "target": "国寿傲珑盛世",
+      "type": "related"
+    },
+    {
+      "source": "中国人寿海外傲珑盛世",
+      "target": "国寿傲珑盛世",
+      "type": "related"
+    },
+    {
+      "source": "国寿祥瑞终身寿险",
+      "target": "国寿傲珑盛世",
+      "type": "related"
+    },
+    {
+      "source": "港险 分红实现率",
+      "target": "港险分红实现",
+      "type": "suggestion"
+    },
+    {
+      "source": "港险分红实现率怎么看",
+      "target": "港险分红实现",
+      "type": "suggestion"
+    },
+    {
+      "source": "港险分红实现率对比图",
+      "target": "港险分红实现",
+      "type": "suggestion"
+    },
+    {
+      "source": "港险分红实现率2025",
+      "target": "港险分红实现",
+      "type": "suggestion"
+    },
+    {
+      "source": "港险分红实现率查询",
+      "target": "港险分红实现",
+      "type": "suggestion"
+    },
+    {
+      "source": "港险分红实现率对比图",
+      "target": "港险分红实现",
+      "type": "related"
+    },
+    {
+      "source": "港险分红实现率怎么看",
+      "target": "港险分红实现",
+      "type": "related"
+    },
+    {
+      "source": "港险分红达成率",
+      "target": "港险分红实现",
+      "type": "related"
+    },
+    {
+      "source": "2025各保司分红排名",
+      "target": "港险分红实现",
+      "type": "related"
+    },
+    {
+      "source": "港险锦囊",
+      "target": "港险分红实现",
+      "type": "related"
+    },
+    {
+      "source": "香港保险的优势和劣势",
+      "target": "香港保险传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "香港保险传承案例",
+      "target": "香港保险传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "香港保险传承优势",
+      "target": "香港保险传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "香港保险宏挚传承",
+      "target": "香港保险传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "香港保险保单传承",
+      "target": "香港保险传承",
+      "type": "suggestion"
+    },
+    {
+      "source": "香港十大保险公司",
+      "target": "香港保险传承",
+      "type": "related"
+    },
+    {
+      "source": "香港保单传承",
+      "target": "香港保险传承",
+      "type": "related"
+    },
+    {
+      "source": "香港保险十大安全机制",
+      "target": "香港保险传承",
+      "type": "related"
+    },
+    {
+      "source": "香港目前最好的储蓄险",
+      "target": "香港保险传承",
+      "type": "related"
+    },
+    {
+      "source": "香港保险的弊端已显现",
+      "target": "香港保险传承",
+      "type": "related"
+    },
+    {
+      "source": "中金财富活钱宝",
+      "target": "财富盈活环宇",
+      "type": "suggestion"
+    },
+    {
+      "source": "财富自由活成自己想要的样子",
+      "target": "财富盈活环宇",
+      "type": "suggestion"
+    },
+    {
+      "source": "财富盈活 环宇盈活",
+      "target": "财富盈活环宇",
+      "type": "suggestion"
+    },
+    {
+      "source": "友邦环宇盈活收益表",
+      "target": "财富盈活环宇",
+      "type": "related"
+    },
+    {
+      "source": "环宇盈活趸交优惠",
+      "target": "财富盈活环宇",
+      "type": "related"
+    },
+    {
+      "source": "环宇盈活储蓄计划",
+      "target": "财富盈活环宇",
+      "type": "related"
+    },
+    {
+      "source": "友邦盈御3和环宇盈活",
+      "target": "财富盈活环宇",
+      "type": "related"
+    },
+    {
+      "source": "环宇盈活提领密码",
+      "target": "财富盈活环宇",
+      "type": "related"
+    }
+  ]
+}

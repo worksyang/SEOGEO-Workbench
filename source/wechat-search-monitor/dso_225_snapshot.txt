@@ -1,0 +1,488 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic:
+          - generic [ref=e6] [cursor=pointer]:
+            - generic [ref=e7]:
+              - img [ref=e10]
+              - generic [ref=e11]:
+                - img [ref=e14]
+                - text: 
+              - generic [ref=e16]:
+                - generic [ref=e18]: DSO
+                - generic [ref=e20]: GEO
+              - list [ref=e21]:
+                - listitem [ref=e22]:
+                  - generic [ref=e24]: 首页
+                - listitem [ref=e25]:
+                  - generic [ref=e29]: 关键词
+                - listitem [ref=e30]:
+                  - generic [ref=e34]: 达人&素材
+                - listitem [ref=e35]:
+                  - generic [ref=e39]: AI工具
+                - listitem [ref=e40]:
+                  - generic [ref=e41]:
+                    - text: new
+                    - generic [ref=e44]: 监测
+                - listitem [ref=e45]:
+                  - generic [ref=e47]: DSO游学
+                - listitem [ref=e48]:
+                  - generic [ref=e50]: API服务
+              - generic [ref=e54]:
+                - generic [ref=e57]:
+                  - textbox "请选择" [ref=e58]: 关键词
+                  - generic [ref=e60]: 
+                - textbox "请输入关键词" [ref=e61]
+                - img [ref=e65]
+            - generic [ref=e69]:
+              - generic [ref=e71]:
+                - img [ref=e72]
+                - generic [ref=e73]: 个人版
+              - generic [ref=e74]: 
+          - text: 
+        - main [ref=e77]:
+          - generic [ref=e79]:
+            - generic [ref=e81]:
+              - tablist [ref=e85]:
+                - tab "详情" [selected] [ref=e86]:
+                  - generic [ref=e87]: 详情
+                - tab "关联作品排名" [ref=e88]:
+                  - generic [ref=e89]: 关联作品排名
+                - tab "相关词列表" [ref=e90]:
+                  - generic [ref=e91]: 相关词列表
+                - tab "搜索关联" [ref=e92]:
+                  - generic [ref=e93]: 搜索关联
+                - tab "电商" [ref=e94]:
+                  - generic [ref=e95]: 电商
+                - tab "监测" [ref=e96]:
+                  - generic [ref=e97]: 监测
+              - generic:
+                - tabpanel "详情"
+            - generic [ref=e98]:
+              - generic [ref=e99]:
+                - generic [ref=e100]:
+                  - generic [ref=e101]:
+                    - paragraph [ref=e102]: 225提领
+                    - generic [ref=e103]:
+                      - generic [ref=e104] [cursor=pointer]:
+                        - paragraph [ref=e105]
+                        - paragraph [ref=e106]: 大屏
+                      - generic [ref=e108] [cursor=pointer]:
+                        - paragraph [ref=e109]
+                        - paragraph [ref=e110]: 收藏
+                  - generic [ref=e111]:
+                    - generic [ref=e112]:
+                      - generic [ref=e114]: "2"
+                      - generic [ref=e115]:
+                        - text: 月覆盖人次
+                        - generic [ref=e116] [cursor=pointer]: 
+                    - generic [ref=e117]:
+                      - generic [ref=e121] [cursor=pointer]: "0"
+                      - generic [ref=e122]: 7日平均搜索
+                    - generic [ref=e123]:
+                      - generic [ref=e125]: "0"
+                      - generic [ref=e126]: 下拉词数量
+                    - generic [ref=e127]:
+                      - generic [ref=e129]: "0"
+                      - generic [ref=e130]: 下拉词月覆盖
+                    - generic [ref=e139]: 竞争度
+                    - generic [ref=e140]:
+                      - generic [ref=e142]: "-"
+                      - generic [ref=e143]: 占比最大城市
+                    - generic [ref=e144]:
+                      - generic [ref=e146]: "-"
+                      - generic [ref=e147]: 类型
+                - generic [ref=e149]:
+                  - generic [ref=e151] [cursor=pointer]:
+                    - generic [ref=e152]:
+                      - generic [ref=e153]: 
+                      - paragraph [ref=e154]: 数据展示
+                    - generic [ref=e156]:
+                      - textbox "请选择" [ref=e157]: 225提领
+                      - generic [ref=e160]: 
+                  - generic [ref=e161]:
+                    - paragraph [ref=e162]: 关键词
+                    - generic [ref=e163]:
+                      - generic [ref=e164]:
+                        - textbox [ref=e165]: 225提领
+                        - generic:
+                          - generic: 
+                      - button " 添加关键词" [ref=e168] [cursor=pointer]:
+                        - generic [ref=e169]: 
+                        - text: 添加关键词
+              - generic [ref=e170]:
+                - generic [ref=e172]:
+                  - generic [ref=e173]:
+                    - generic [ref=e176]: 每日搜索人次数据
+                    - generic [ref=e177]:
+                      - generic [ref=e178]:
+                        - paragraph [ref=e179]: 地区筛选
+                        - generic [ref=e181]:
+                          - generic [ref=e182] [cursor=pointer]:
+                            - textbox "全国" [ref=e183]
+                            - generic [ref=e185]: 
+                          - text:                                  
+                      - generic [ref=e186]:
+                        - button "近7天" [ref=e187] [cursor=pointer]
+                        - button "近15天" [ref=e188] [cursor=pointer]
+                        - button "近30天" [ref=e189] [cursor=pointer]
+                  - img [ref=e193]:
+                    - generic [ref=e195]:
+                      - generic [ref=e196]: "0"
+                      - generic [ref=e197]: "0.2"
+                      - generic [ref=e198]: "0.4"
+                      - generic [ref=e199]: "0.6"
+                      - generic [ref=e200]: "0.8"
+                      - generic [ref=e201]: "1"
+                      - generic [ref=e202]: 2026-05-17
+                      - generic [ref=e203]: 2026-05-21
+                      - generic [ref=e204]: 2026-05-25
+                      - generic [ref=e205]: 2026-05-29
+                      - generic [ref=e206]: 2026-06-02
+                      - generic [ref=e207]: 2026-06-06
+                      - generic [ref=e208]: 2026-06-10
+                      - generic [ref=e209]: 2026-06-12
+                      - generic [ref=e212]: 225提领
+                - generic [ref=e220]:
+                  - generic [ref=e221]:
+                    - generic [ref=e224]: 相关搜索
+                    - generic [ref=e226] [cursor=pointer]: 全部对比
+                  - generic [ref=e227]:
+                    - table [ref=e229]:
+                      - rowgroup [ref=e237]:
+                        - row "关键词 月覆盖人次 7日平均搜索 下拉词数量 下拉词月覆盖 操作" [ref=e238]:
+                          - columnheader "关键词" [ref=e239]:
+                            - generic [ref=e240]: 关键词
+                          - columnheader "月覆盖人次" [ref=e241]:
+                            - generic [ref=e242]: 月覆盖人次
+                          - columnheader "7日平均搜索" [ref=e243]:
+                            - generic [ref=e244]: 7日平均搜索
+                          - columnheader "下拉词数量" [ref=e245]:
+                            - generic [ref=e246]: 下拉词数量
+                          - columnheader "下拉词月覆盖" [ref=e247]:
+                            - generic [ref=e248]: 下拉词月覆盖
+                          - columnheader "操作" [ref=e249]:
+                            - generic [ref=e250]: 操作
+                    - table [ref=e252]:
+                      - rowgroup [ref=e260]:
+                        - row "雅诗兰黛225 1759 45 0 0 对比" [ref=e261]:
+                          - cell "雅诗兰黛225" [ref=e262]:
+                            - generic [ref=e265] [cursor=pointer]: 雅诗兰黛225
+                          - cell "1759" [ref=e266]:
+                            - generic [ref=e267]: "1759"
+                          - cell "45" [ref=e268]:
+                            - generic [ref=e272] [cursor=pointer]: "45"
+                          - cell "0" [ref=e273]:
+                            - generic [ref=e274]: "0"
+                          - cell "0" [ref=e275]:
+                            - generic [ref=e276]: "0"
+                          - cell "对比" [ref=e277]:
+                            - generic [ref=e279] [cursor=pointer]: 对比
+                        - row "宝马225 1.62w 261 125 17.67w 对比" [ref=e280]:
+                          - cell "宝马225" [ref=e281]:
+                            - generic [ref=e284] [cursor=pointer]: 宝马225
+                          - cell "1.62w" [ref=e285]:
+                            - generic [ref=e286]: 1.62w
+                          - cell "261" [ref=e287]:
+                            - generic [ref=e291] [cursor=pointer]: "261"
+                          - cell "125" [ref=e292]:
+                            - generic [ref=e293]: "125"
+                          - cell "17.67w" [ref=e294]:
+                            - generic [ref=e295]: 17.67w
+                          - cell "对比" [ref=e296]:
+                            - generic [ref=e298] [cursor=pointer]: 对比
+              - generic [ref=e302]:
+                - generic [ref=e306]: 下拉词
+                - button "全部导出" [ref=e308] [cursor=pointer]:
+                  - generic [ref=e309]: 全部导出
+                - generic [ref=e311]:
+                  - generic [ref=e312]:
+                    - generic [ref=e313]:
+                      - generic [ref=e315]: 关键词
+                      - generic [ref=e316]: 月覆盖人次
+                    - generic [ref=e317]:
+                      - generic [ref=e318] [cursor=pointer]:
+                        - generic [ref=e319]: "1"
+                        - generic [ref=e320]: 225提领
+                      - generic [ref=e321]: "2"
+                    - generic [ref=e322]:
+                      - generic [ref=e323] [cursor=pointer]:
+                        - generic [ref=e324]: "2"
+                        - generic [ref=e325]: 保险225提领是什么意思
+                      - generic [ref=e326]: "0"
+                  - generic [ref=e327]:
+                    - generic [ref=e328]:
+                      - generic [ref=e330]: 关键词
+                      - generic [ref=e331]: 月覆盖人次
+                    - generic [ref=e332]:
+                      - generic [ref=e333] [cursor=pointer]:
+                        - generic [ref=e334]: "3"
+                        - generic [ref=e335]: 225抬前轮
+                      - generic [ref=e336]: "0"
+                    - generic [ref=e337]:
+                      - generic [ref=e338] [cursor=pointer]:
+                        - generic [ref=e339]: "4"
+                        - generic [ref=e340]: 225领是什么车牌
+                      - generic [ref=e341]: "0"
+                  - generic [ref=e342]:
+                    - generic [ref=e343]:
+                      - generic [ref=e345]: 关键词
+                      - generic [ref=e346]: 月覆盖人次
+                    - generic [ref=e347]:
+                      - generic [ref=e348] [cursor=pointer]:
+                        - generic [ref=e349]: "5"
+                        - generic [ref=e350]: 225i提车
+                      - generic [ref=e351]: "0"
+                    - generic [ref=e352]:
+                      - generic [ref=e353] [cursor=pointer]:
+                        - generic [ref=e354]: "6"
+                        - generic [ref=e355]: 225双门提车价格
+                      - generic [ref=e356]: "0"
+                  - generic [ref=e357]:
+                    - generic [ref=e358]:
+                      - generic [ref=e360]: 关键词
+                      - generic [ref=e361]: 月覆盖人次
+                    - generic [ref=e362]:
+                      - generic [ref=e363] [cursor=pointer]:
+                        - generic [ref=e364]: "7"
+                        - generic [ref=e365]: 宝马225li提车
+                      - generic [ref=e366]: "0"
+                    - generic [ref=e367]:
+                      - generic [ref=e368] [cursor=pointer]:
+                        - generic [ref=e369]: "8"
+                        - generic [ref=e370]: 225tuandui
+                      - generic [ref=e371]: "0"
+            - generic [ref=e374]:
+              - generic [ref=e376]: 脑图
+              - generic [ref=e377] [cursor=pointer]: 当前关键词暂无脑图
+            - generic [ref=e379] [cursor=pointer]:
+              - generic [ref=e381]: 关联作品排名
+              - generic [ref=e383]: 点击跳转下一页面
+      - generic [ref=e384]:
+        - generic [ref=e385]:
+          - generic [ref=e386]:
+            - generic [ref=e387]:
+              - generic [ref=e388]:
+                - img [ref=e389]
+                - generic [ref=e390]: 搜索助攻全链路营销
+              - generic [ref=e391]:
+                - list [ref=e392]:
+                  - listitem [ref=e393]: 用户中心
+                  - listitem [ref=e394] [cursor=pointer]: 关于我们
+                  - listitem [ref=e395] [cursor=pointer]: 图文教程
+                  - listitem [ref=e396] [cursor=pointer]: 直播电商数据分析
+                  - listitem [ref=e397] [cursor=pointer]: DSO游学
+                - list [ref=e398]:
+                  - listitem [ref=e399]: 合作咨询
+                  - listitem [ref=e400]: 商务合作
+                  - listitem [ref=e404]: 投放合作
+                  - listitem [ref=e408]: 广告合作
+                - list [ref=e412]:
+                  - listitem [ref=e413]: 联系我们
+                  - listitem [ref=e414]: 北京市朝阳区将台乡安家楼西十里67号4层417室,010-58484096
+            - generic [ref=e415]:
+              - generic [ref=e416]:
+                - img [ref=e417]
+                - paragraph [ref=e418]:
+                  - text: 扫码关注CEO波波
+                  - text: 每周四晚直播
+              - generic [ref=e419]:
+                - img [ref=e420]
+                - paragraph [ref=e421]:
+                  - text: 知识星球365元/年
+                  - text: 讲师团全年为你答疑
+              - generic [ref=e422]:
+                - img [ref=e423]
+                - paragraph [ref=e424]:
+                  - text: 扫码抢先体验产品
+                  - text: 开启精准营销之旅
+              - generic [ref=e425]:
+                - img [ref=e426]
+                - paragraph [ref=e427]:
+                  - text: AIDSO官方公众号
+                  - text: 了解最新行业资讯
+          - generic [ref=e428]:
+            - generic [ref=e429]: 友情链接
+            - generic [ref=e430]:
+              - list [ref=e431]:
+                - listitem [ref=e432]: 抖音大数据平台
+                - listitem [ref=e433]: 爱盈利
+                - listitem [ref=e434]: 爱复盘
+                - listitem [ref=e435]: 青虎AI
+                - listitem [ref=e436]: 萌啦
+              - list
+        - generic [ref=e437]:
+          - generic [ref=e438]:
+            - text: 杭州爱搜全域数据科技有限公司 版权所有 © Copyright 2026 aidso.com All rights reserved
+            - link "京ICP备2020043495号-8" [ref=e439] [cursor=pointer]:
+              - /url: https://beian.miit.gov.cn/
+            - img [ref=e440]
+            - link "京公网安备11010502059145号" [ref=e441] [cursor=pointer]:
+              - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010502059145
+          - generic [ref=e442]: 第三方平台名称及标识仅用于说明爱搜支持的数据监测范围，相关商标与标识权利归原权利人所有
+        - text: 
+    - text: 
+    - list [ref=e443]:
+      - listitem [ref=e445] [cursor=pointer]:
+        - img [ref=e446]
+        - generic [ref=e447]: 提取+改写
+      - listitem [ref=e448] [cursor=pointer]:
+        - img [ref=e449]
+        - generic [ref=e450]: 帮助
+      - listitem [ref=e451] [cursor=pointer]:
+        - img [ref=e452]
+        - generic [ref=e453]: 客服
+      - listitem [ref=e454] [cursor=pointer]:
+        - img [ref=e455]
+        - generic [ref=e456]: 公众号
+      - listitem [ref=e457] [cursor=pointer]:
+        - img [ref=e458]
+        - generic [ref=e459]: 小程序
+  - generic [ref=e462]:
+    - generic [ref=e463]:
+      - generic [ref=e465]: 拖动下方拼图完成验证
+      - img "close" [ref=e467] [cursor=pointer]
+    - img [ref=e471]
+    - generic [ref=e476]:
+      - generic [ref=e478]: 安全验证
+      - img "refresh" [ref=e481] [cursor=pointer]
+  - tooltip "DSO关键词库 搜索词库 热门搜索词汇总查询 电商词库 电商行业核心词收录 行业词库 垂直行业词汇全收录 下拉词库 搜索下拉推荐词汇总 小蓝词榜 抖热门小蓝词合集 行业词热搜榜 行业热搜词实时排行 相关词库 关键词关联词汇推荐 电商词热销榜 电商热销关联词排行 行业词高跑量榜 行业高转化词排行 话题总榜 全平台话题热度总排行 电商词热搜榜 电商搜索热词排行 行业词飙升榜 行业词热度快速上升榜 话题飙升榜 话题热度飙升实时榜 电商词飙升榜 电商词热度飙升排行 搜索排名查询 关键词排名精准查询 RSO关键词 搜索词库 笔记搜索热词汇总 相关词库 种草场景关联词推荐 行业词库 垂类笔记词精准收录 下拉词库 笔记搜索下拉词实时汇 KSO关键词 搜索词库 覆盖核心词，精准引流量 相关词库 关联词拓展，流量破圈 行业词库 行业词聚合，洞察先机 下拉词库 追搜索动态，贴合需求 搜索飙升榜 展示热度飙升事件 WSO关键词 搜索词库 搜一搜热词汇总查询 相关词库 场景化关联词推荐 行业词库 垂直领域词精准收录 下拉词库 搜索下拉推荐词实时汇 BSO关键词 搜索词库 热门UP主关键词汇总 相关词库 BSO优化关联词推荐 下拉词库 搜索下拉热词实时追踪 TSO关键词 搜索词库 海外平台热词汇总 相关词库 热门关联词速查 下拉词库 搜索下拉推荐 电商词榜 电商核心词概览 创意灵感话题榜 赋能广告创作" [ref=e482]:
+    - generic [ref=e485]:
+      - generic [ref=e486]:
+        - generic [ref=e488]:
+          - img [ref=e489]
+          - generic [ref=e490]: DSO关键词库
+        - generic [ref=e491]:
+          - generic [ref=e494] [cursor=pointer]:
+            - generic [ref=e495]: 搜索词库
+            - generic [ref=e496]: 热门搜索词汇总查询
+          - generic [ref=e499] [cursor=pointer]:
+            - generic [ref=e500]: 电商词库
+            - generic [ref=e501]: 电商行业核心词收录
+          - generic [ref=e504] [cursor=pointer]:
+            - generic [ref=e505]: 行业词库
+            - generic [ref=e506]: 垂直行业词汇全收录
+        - generic [ref=e507]:
+          - generic [ref=e510] [cursor=pointer]:
+            - generic [ref=e511]: 下拉词库
+            - generic [ref=e512]: 搜索下拉推荐词汇总
+          - generic [ref=e515] [cursor=pointer]:
+            - generic [ref=e516]: 小蓝词榜
+            - generic [ref=e517]: 抖热门小蓝词合集
+          - generic [ref=e520] [cursor=pointer]:
+            - generic [ref=e521]: 行业词热搜榜
+            - generic [ref=e522]: 行业热搜词实时排行
+        - generic [ref=e523]:
+          - generic [ref=e526] [cursor=pointer]:
+            - generic [ref=e527]: 相关词库
+            - generic [ref=e528]: 关键词关联词汇推荐
+          - generic [ref=e531] [cursor=pointer]:
+            - generic [ref=e532]: 电商词热销榜
+            - generic [ref=e533]: 电商热销关联词排行
+          - generic [ref=e536] [cursor=pointer]:
+            - generic [ref=e537]: 行业词高跑量榜
+            - generic [ref=e538]: 行业高转化词排行
+        - generic [ref=e539]:
+          - generic [ref=e542] [cursor=pointer]:
+            - generic [ref=e543]: 话题总榜
+            - generic [ref=e544]: 全平台话题热度总排行
+          - generic [ref=e547] [cursor=pointer]:
+            - generic [ref=e548]: 电商词热搜榜
+            - generic [ref=e549]: 电商搜索热词排行
+          - generic [ref=e552] [cursor=pointer]:
+            - generic [ref=e553]: 行业词飙升榜
+            - generic [ref=e554]: 行业词热度快速上升榜
+        - generic [ref=e555]:
+          - generic [ref=e558] [cursor=pointer]:
+            - generic [ref=e559]: 话题飙升榜
+            - generic [ref=e560]: 话题热度飙升实时榜
+          - generic [ref=e563] [cursor=pointer]:
+            - generic [ref=e564]: 电商词飙升榜
+            - generic [ref=e565]: 电商词热度飙升排行
+          - generic [ref=e568] [cursor=pointer]:
+            - generic [ref=e569]: 搜索排名查询
+            - generic [ref=e570]: 关键词排名精准查询
+      - generic [ref=e571]:
+        - generic [ref=e573]:
+          - img [ref=e574]
+          - generic [ref=e575]: RSO关键词
+        - generic [ref=e579] [cursor=pointer]:
+          - generic [ref=e580]: 搜索词库
+          - generic [ref=e581]: 笔记搜索热词汇总
+        - generic [ref=e585] [cursor=pointer]:
+          - generic [ref=e586]: 相关词库
+          - generic [ref=e587]: 种草场景关联词推荐
+        - generic [ref=e591] [cursor=pointer]:
+          - generic [ref=e592]: 行业词库
+          - generic [ref=e593]: 垂类笔记词精准收录
+        - generic [ref=e597] [cursor=pointer]:
+          - generic [ref=e598]: 下拉词库
+          - generic [ref=e599]: 笔记搜索下拉词实时汇
+      - generic [ref=e600]:
+        - generic [ref=e602]:
+          - img [ref=e603]
+          - generic [ref=e604]: KSO关键词
+        - generic [ref=e608] [cursor=pointer]:
+          - generic [ref=e609]: 搜索词库
+          - generic [ref=e610]: 覆盖核心词，精准引流量
+        - generic [ref=e614] [cursor=pointer]:
+          - generic [ref=e615]: 相关词库
+          - generic [ref=e616]: 关联词拓展，流量破圈
+        - generic [ref=e620] [cursor=pointer]:
+          - generic [ref=e621]: 行业词库
+          - generic [ref=e622]: 行业词聚合，洞察先机
+        - generic [ref=e626] [cursor=pointer]:
+          - generic [ref=e627]: 下拉词库
+          - generic [ref=e628]: 追搜索动态，贴合需求
+        - generic [ref=e632] [cursor=pointer]:
+          - generic [ref=e633]: 搜索飙升榜
+          - generic [ref=e634]: 展示热度飙升事件
+      - generic [ref=e635]:
+        - generic [ref=e637]:
+          - img [ref=e638]
+          - generic [ref=e639]: WSO关键词
+        - generic [ref=e643] [cursor=pointer]:
+          - generic [ref=e644]: 搜索词库
+          - generic [ref=e645]: 搜一搜热词汇总查询
+        - generic [ref=e649] [cursor=pointer]:
+          - generic [ref=e650]: 相关词库
+          - generic [ref=e651]: 场景化关联词推荐
+        - generic [ref=e655] [cursor=pointer]:
+          - generic [ref=e656]: 行业词库
+          - generic [ref=e657]: 垂直领域词精准收录
+        - generic [ref=e661] [cursor=pointer]:
+          - generic [ref=e662]: 下拉词库
+          - generic [ref=e663]: 搜索下拉推荐词实时汇
+      - generic [ref=e664]:
+        - generic [ref=e666]:
+          - img [ref=e667]
+          - generic [ref=e668]: BSO关键词
+        - generic [ref=e672] [cursor=pointer]:
+          - generic [ref=e673]: 搜索词库
+          - generic [ref=e674]: 热门UP主关键词汇总
+        - generic [ref=e678] [cursor=pointer]:
+          - generic [ref=e679]: 相关词库
+          - generic [ref=e680]: BSO优化关联词推荐
+        - generic [ref=e684] [cursor=pointer]:
+          - generic [ref=e685]: 下拉词库
+          - generic [ref=e686]: 搜索下拉热词实时追踪
+      - generic [ref=e687]:
+        - generic [ref=e689]:
+          - img [ref=e690]
+          - generic [ref=e691]: TSO关键词
+        - generic [ref=e695] [cursor=pointer]:
+          - generic [ref=e696]: 搜索词库
+          - generic [ref=e697]: 海外平台热词汇总
+        - generic [ref=e701] [cursor=pointer]:
+          - generic [ref=e702]: 相关词库
+          - generic [ref=e703]: 热门关联词速查
+        - generic [ref=e707] [cursor=pointer]:
+          - generic [ref=e708]: 下拉词库
+          - generic [ref=e709]: 搜索下拉推荐
+        - generic [ref=e713] [cursor=pointer]:
+          - generic [ref=e714]: 电商词榜
+          - generic [ref=e715]: 电商核心词概览
+        - generic [ref=e719] [cursor=pointer]:
+          - generic [ref=e720]: 创意灵感话题榜
+          - generic [ref=e721]: 赋能广告创作

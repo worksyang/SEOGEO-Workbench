@@ -1,0 +1,39 @@
+# === Python ===
+__pycache__/
+*.pyc
+
+# === OS ===
+.DS_Store
+
+# === 派生层(可由 scripts/rebuild_data.py 重建,不进库) ===
+normalized/*.json
+
+# === 浏览器登录态 + 运行产物(敏感/可重建) ===
+data/state/aidso_*_profile/
+chat/state/ifangzhou_creds.json
+chat/state/chat_monitor_last_run.json
+chat/data/chat.db
+data/runs/
+data/refresh_jobs/
+data/aidso_heat/
+data/tmp/
+data/state/_test_batch*/
+data/agent/
+data/state/agent_claims.json
+
+# === 微信群成员数据(隐私) ===
+raw/
+
+# === MCP / Playwright 自动产物 ===
+.playwright-mcp/
+.playwright-cli/
+cli/
+
+# === 调试产物 ===
+test-results/
+*.png
+*.jpeg
+*.jpg
+
+# === 杂项 ===
+PY

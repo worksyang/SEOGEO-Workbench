@@ -1,0 +1,549 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic:
+          - generic [ref=e6] [cursor=pointer]:
+            - generic [ref=e7]:
+              - img [ref=e10]
+              - generic [ref=e11]:
+                - img [ref=e14]
+                - text: 
+              - generic [ref=e16]:
+                - generic [ref=e18]: DSO
+                - generic [ref=e20]: GEO
+              - list [ref=e21]:
+                - listitem [ref=e22]:
+                  - generic [ref=e24]: 首页
+                - listitem [ref=e25]:
+                  - generic [ref=e29]: 关键词
+                - listitem [ref=e30]:
+                  - generic [ref=e34]: 达人&素材
+                - listitem [ref=e35]:
+                  - generic [ref=e39]: AI工具
+                - listitem [ref=e40]:
+                  - generic [ref=e41]:
+                    - text: new
+                    - generic [ref=e44]: 监测
+                - listitem [ref=e45]:
+                  - generic [ref=e47]: DSO游学
+                - listitem [ref=e48]:
+                  - generic [ref=e50]: API服务
+              - generic [ref=e54]:
+                - generic [ref=e57]:
+                  - textbox "请选择" [ref=e58]: 关键词
+                  - generic [ref=e60]: 
+                - textbox "请输入关键词" [ref=e61]
+                - img [ref=e65]
+            - generic [ref=e69]:
+              - generic [ref=e71]:
+                - img [ref=e72]
+                - generic [ref=e73]: 个人版
+              - generic [ref=e74]: 
+          - text: 
+        - main [ref=e77]:
+          - generic [ref=e79]:
+            - generic [ref=e81]:
+              - tablist [ref=e85]:
+                - tab "详情" [selected] [ref=e86]:
+                  - generic [ref=e87]: 详情
+                - tab "相关词列表" [ref=e88]:
+                  - generic [ref=e89]: 相关词列表
+              - generic:
+                - tabpanel "详情"
+            - generic [ref=e90]:
+              - generic [ref=e92]:
+                - generic [ref=e93]:
+                  - paragraph [ref=e94]: 香港保诚
+                  - generic [ref=e97] [cursor=pointer]:
+                    - paragraph [ref=e98]
+                    - paragraph [ref=e99]: 收藏
+                - list [ref=e102]:
+                  - listitem [ref=e103]:
+                    - generic [ref=e104]: "30"
+                    - generic [ref=e105]:
+                      - text: 月均搜索量
+                      - generic [ref=e106] [cursor=pointer]: 
+                  - listitem [ref=e107]:
+                    - generic [ref=e108]: "20"
+                    - generic [ref=e109]:
+                      - text: 月均点击量
+                      - generic [ref=e110] [cursor=pointer]: 
+                  - listitem [ref=e111]:
+                    - generic [ref=e112]: "868"
+                    - generic [ref=e113]: 下拉词数量
+                  - listitem [ref=e114]:
+                    - generic [ref=e116]:
+                      - generic [ref=e118]: 同行买词
+                      - generic [ref=e120]: 蓝海词
+                    - generic [ref=e121]:
+                      - text: 推荐理由
+                      - generic [ref=e122] [cursor=pointer]: 
+                  - listitem [ref=e123]:
+                    - generic [ref=e131]:
+                      - text: 竞争程度
+                      - generic [ref=e132] [cursor=pointer]: 
+              - generic [ref=e134]:
+                - generic [ref=e137]:
+                  - generic [ref=e141]: 下拉词
+                  - button "全部导出" [ref=e143] [cursor=pointer]:
+                    - generic [ref=e144]: 全部导出
+                  - generic [ref=e146]:
+                    - generic [ref=e147]:
+                      - generic [ref=e148]:
+                        - generic [ref=e150]: 关键词
+                        - generic [ref=e151]: 月覆盖人次
+                      - generic [ref=e152]:
+                        - generic [ref=e153] [cursor=pointer]:
+                          - generic [ref=e154]: "1"
+                          - generic [ref=e155]: 香港保诚保险
+                        - generic [ref=e156]: "50"
+                      - generic [ref=e157]:
+                        - generic [ref=e158] [cursor=pointer]:
+                          - generic [ref=e159]: "2"
+                          - generic [ref=e160]: 香港保诚
+                        - generic [ref=e161]: "30"
+                      - generic [ref=e162]:
+                        - generic [ref=e163] [cursor=pointer]:
+                          - generic [ref=e164]: "3"
+                          - generic [ref=e165]: 香港保诚暴雷
+                        - generic [ref=e166]: "20"
+                      - generic [ref=e167]:
+                        - generic [ref=e168] [cursor=pointer]:
+                          - generic [ref=e169]: "4"
+                          - generic [ref=e170]: 香港保诚2024年分红实现率
+                        - generic [ref=e171]: "20"
+                      - generic [ref=e172]:
+                        - generic [ref=e173] [cursor=pointer]:
+                          - generic [ref=e174]: "5"
+                          - generic [ref=e175]: 香港保诚码险
+                        - generic [ref=e176]: "20"
+                      - generic [ref=e177]:
+                        - generic [ref=e178] [cursor=pointer]:
+                          - generic [ref=e179]: "6"
+                          - generic [ref=e180]: 香港保诚的重疾
+                        - generic [ref=e181]: "20"
+                      - generic [ref=e182]:
+                        - generic [ref=e183] [cursor=pointer]:
+                          - generic [ref=e184]: "7"
+                          - generic [ref=e185]: 香港保诚保险爆雷
+                        - generic [ref=e186]: "10"
+                      - generic [ref=e187]:
+                        - generic [ref=e188] [cursor=pointer]:
+                          - generic [ref=e189]: "8"
+                          - generic [ref=e190]: 香港保诚公众号
+                        - generic [ref=e191]: "10"
+                      - generic [ref=e192]:
+                        - generic [ref=e193] [cursor=pointer]:
+                          - generic [ref=e194]: "9"
+                          - generic [ref=e195]: 香港保诚 重疾
+                        - generic [ref=e196]: "10"
+                      - generic [ref=e197]:
+                        - generic [ref=e198] [cursor=pointer]:
+                          - generic [ref=e199]: "10"
+                          - generic [ref=e200]: 香港保诚的分红好不好
+                        - generic [ref=e201]: "10"
+                    - generic [ref=e202]:
+                      - generic [ref=e203]:
+                        - generic [ref=e205]: 关键词
+                        - generic [ref=e206]: 月覆盖人次
+                      - generic [ref=e207]:
+                        - generic [ref=e208] [cursor=pointer]:
+                          - generic [ref=e209]: "11"
+                          - generic [ref=e210]: 香港保诚客服热线
+                        - generic [ref=e211]: "10"
+                      - generic [ref=e212]:
+                        - generic [ref=e213] [cursor=pointer]:
+                          - generic [ref=e214]: "12"
+                          - generic [ref=e215]: 香港保诚分红实现率
+                        - generic [ref=e216]: "10"
+                      - generic [ref=e217]:
+                        - generic [ref=e218] [cursor=pointer]:
+                          - generic [ref=e219]: "13"
+                          - generic [ref=e220]: 香港保诚寿险
+                        - generic [ref=e221]: "10"
+                      - generic [ref=e222]:
+                        - generic [ref=e223] [cursor=pointer]:
+                          - generic [ref=e224]: "14"
+                          - generic [ref=e225]: 香港保诚重疾险拒赔案例
+                        - generic [ref=e226]: "10"
+                      - generic [ref=e227]:
+                        - generic [ref=e228] [cursor=pointer]:
+                          - generic [ref=e229]: "15"
+                          - generic [ref=e230]: 香港保诚财报解读
+                        - generic [ref=e231]: "10"
+                      - generic [ref=e232]:
+                        - generic [ref=e233] [cursor=pointer]:
+                          - generic [ref=e234]: "16"
+                          - generic [ref=e235]: 香港保诚保险暴雷
+                        - generic [ref=e236]: "10"
+                      - generic [ref=e237]:
+                        - generic [ref=e238] [cursor=pointer]:
+                          - generic [ref=e239]: "17"
+                          - generic [ref=e240]: 香港保诚终身寿险
+                        - generic [ref=e241]: "10"
+                      - generic [ref=e242]:
+                        - generic [ref=e243] [cursor=pointer]:
+                          - generic [ref=e244]: "18"
+                          - generic [ref=e245]: 香港保诚的优势
+                        - generic [ref=e246]: "10"
+                      - generic [ref=e247]:
+                        - generic [ref=e248] [cursor=pointer]:
+                          - generic [ref=e249]: "19"
+                          - generic [ref=e250]: 香港保诚简介
+                        - generic [ref=e251]: "10"
+                      - generic [ref=e252]:
+                        - generic [ref=e253] [cursor=pointer]:
+                          - generic [ref=e254]: "20"
+                          - generic [ref=e255]: 香港保诚公司简介
+                        - generic [ref=e256]: "10"
+                    - generic [ref=e257]:
+                      - generic [ref=e258]:
+                        - generic [ref=e260]: 关键词
+                        - generic [ref=e261]: 月覆盖人次
+                      - generic [ref=e262]:
+                        - generic [ref=e263] [cursor=pointer]:
+                          - generic [ref=e264]: "21"
+                          - generic [ref=e265]: 香港保诚保险招聘
+                        - generic [ref=e266]: "10"
+                      - generic [ref=e267]:
+                        - generic [ref=e268] [cursor=pointer]:
+                          - generic [ref=e269]: "22"
+                          - generic [ref=e270]: 香港保诚美金交保费
+                        - generic [ref=e271]: "10"
+                      - generic [ref=e272]:
+                        - generic [ref=e273] [cursor=pointer]:
+                          - generic [ref=e274]: "23"
+                          - generic [ref=e275]: 香港保诚一生
+                        - generic [ref=e276]: "10"
+                      - generic [ref=e277]:
+                        - generic [ref=e278] [cursor=pointer]:
+                          - generic [ref=e279]: "24"
+                          - generic [ref=e280]: 香港保诚app安卓下载
+                        - generic [ref=e281]: "10"
+                      - generic [ref=e282]:
+                        - generic [ref=e283] [cursor=pointer]:
+                          - generic [ref=e284]: "25"
+                          - generic [ref=e285]: 香港保诚缴费账户
+                        - generic [ref=e286]: "10"
+                      - generic [ref=e287]:
+                        - generic [ref=e288] [cursor=pointer]:
+                          - generic [ref=e289]: "26"
+                          - generic [ref=e290]: 香港保诚和安盛保险哪个好
+                        - generic [ref=e291]: "10"
+                      - generic [ref=e292]:
+                        - generic [ref=e293] [cursor=pointer]:
+                          - generic [ref=e294]: "27"
+                          - generic [ref=e295]: 香港保诚echo
+                        - generic [ref=e296]: "10"
+                      - generic [ref=e297]:
+                        - generic [ref=e298] [cursor=pointer]:
+                          - generic [ref=e299]: "28"
+                          - generic [ref=e300]: 香港保诚内地指定医院
+                        - generic [ref=e301]: "10"
+                      - generic [ref=e302]:
+                        - generic [ref=e303] [cursor=pointer]:
+                          - generic [ref=e304]: "29"
+                          - generic [ref=e305]: 香港保诚爱诚家族
+                        - generic [ref=e306]: "10"
+                      - generic [ref=e307]:
+                        - generic [ref=e308] [cursor=pointer]:
+                          - generic [ref=e309]: "30"
+                          - generic [ref=e310]: 香港保诚和友邦储蓄险对比
+                        - generic [ref=e311]: "10"
+                    - generic [ref=e312]:
+                      - generic [ref=e313]:
+                        - generic [ref=e315]: 关键词
+                        - generic [ref=e316]: 月覆盖人次
+                      - generic [ref=e317]:
+                        - generic [ref=e318] [cursor=pointer]:
+                          - generic [ref=e319]: "31"
+                          - generic [ref=e320]: 香港保诚重疾险等待期多长时间
+                        - generic [ref=e321]: "10"
+                      - generic [ref=e322]:
+                        - generic [ref=e323] [cursor=pointer]:
+                          - generic [ref=e324]: "32"
+                          - generic [ref=e325]: 香港保诚美好人生
+                        - generic [ref=e326]: "10"
+                      - generic [ref=e327]:
+                        - generic [ref=e328] [cursor=pointer]:
+                          - generic [ref=e329]: "33"
+                          - generic [ref=e330]: 香港保诚保诚怎么样
+                        - generic [ref=e331]: "10"
+                      - generic [ref=e332]:
+                        - generic [ref=e333] [cursor=pointer]:
+                          - generic [ref=e334]: "34"
+                          - generic [ref=e335]: 香港保诚保险可靠吗
+                        - generic [ref=e336]: "10"
+                      - generic [ref=e337]:
+                        - generic [ref=e338] [cursor=pointer]:
+                          - generic [ref=e339]: "35"
+                          - generic [ref=e340]: 香港保诚保险介绍
+                        - generic [ref=e341]: "10"
+                      - generic [ref=e342]:
+                        - generic [ref=e343] [cursor=pointer]:
+                          - generic [ref=e344]: "36"
+                          - generic [ref=e345]: 香港保诚隽升
+                        - generic [ref=e346]: "10"
+                      - generic [ref=e347]:
+                        - generic [ref=e348] [cursor=pointer]:
+                          - generic [ref=e349]: "37"
+                          - generic [ref=e350]: 香港保诚保险佣金
+                        - generic [ref=e351]: "10"
+                      - generic [ref=e352]:
+                        - generic [ref=e353] [cursor=pointer]:
+                          - generic [ref=e354]: "38"
+                          - generic [ref=e355]: 香港保诚保险经纪人这个职业怎么样
+                        - generic [ref=e356]: "10"
+                      - generic [ref=e357]:
+                        - generic [ref=e358] [cursor=pointer]:
+                          - generic [ref=e359]: "39"
+                          - generic [ref=e360]: 香港保诚保险理赔流程
+                        - generic [ref=e361]: "10"
+                      - generic [ref=e362]:
+                        - generic [ref=e363] [cursor=pointer]:
+                          - generic [ref=e364]: "40"
+                          - generic [ref=e365]: 香港保诚危疾终身保
+                        - generic [ref=e366]: "10"
+                - generic [ref=e371]:
+                  - button "" [disabled] [ref=e372]:
+                    - generic [ref=e373]: 
+                  - list [ref=e374]:
+                    - listitem [ref=e375]: "1"
+                    - listitem [ref=e376] [cursor=pointer]: "2"
+                    - listitem [ref=e377] [cursor=pointer]: "3"
+                    - listitem [ref=e378] [cursor=pointer]: "4"
+                    - listitem [ref=e379] [cursor=pointer]: 
+                    - listitem [ref=e380] [cursor=pointer]: "20"
+                  - button "" [ref=e381] [cursor=pointer]:
+                    - generic [ref=e382]: 
+            - generic [ref=e384] [cursor=pointer]:
+              - generic [ref=e386]: 相关词列表
+              - generic [ref=e388]: 点击跳转下一页面
+      - generic [ref=e389]:
+        - generic [ref=e390]:
+          - generic [ref=e391]:
+            - generic [ref=e392]:
+              - generic [ref=e393]:
+                - img [ref=e394]
+                - generic [ref=e395]: 搜索助攻全链路营销
+              - generic [ref=e396]:
+                - list [ref=e397]:
+                  - listitem [ref=e398]: 用户中心
+                  - listitem [ref=e399] [cursor=pointer]: 关于我们
+                  - listitem [ref=e400] [cursor=pointer]: 图文教程
+                  - listitem [ref=e401] [cursor=pointer]: 直播电商数据分析
+                  - listitem [ref=e402] [cursor=pointer]: DSO游学
+                - list [ref=e403]:
+                  - listitem [ref=e404]: 合作咨询
+                  - listitem [ref=e405]: 商务合作
+                  - listitem [ref=e409]: 投放合作
+                  - listitem [ref=e413]: 广告合作
+                - list [ref=e417]:
+                  - listitem [ref=e418]: 联系我们
+                  - listitem [ref=e419]: 北京市朝阳区将台乡安家楼西十里67号4层417室,010-58484096
+            - generic [ref=e420]:
+              - generic [ref=e421]:
+                - img [ref=e422]
+                - paragraph [ref=e423]:
+                  - text: 扫码关注CEO波波
+                  - text: 每周四晚直播
+              - generic [ref=e424]:
+                - img [ref=e425]
+                - paragraph [ref=e426]:
+                  - text: 知识星球365元/年
+                  - text: 讲师团全年为你答疑
+              - generic [ref=e427]:
+                - img [ref=e428]
+                - paragraph [ref=e429]:
+                  - text: 扫码抢先体验产品
+                  - text: 开启精准营销之旅
+              - generic [ref=e430]:
+                - img [ref=e431]
+                - paragraph [ref=e432]:
+                  - text: AIDSO官方公众号
+                  - text: 了解最新行业资讯
+          - generic [ref=e433]:
+            - generic [ref=e434]: 友情链接
+            - generic [ref=e435]:
+              - list [ref=e436]:
+                - listitem [ref=e437]: 抖音大数据平台
+                - listitem [ref=e438]: 爱盈利
+                - listitem [ref=e439]: 爱复盘
+                - listitem [ref=e440]: 青虎AI
+                - listitem [ref=e441]: 萌啦
+              - list
+        - generic [ref=e442]:
+          - generic [ref=e443]:
+            - text: 杭州爱搜全域数据科技有限公司 版权所有 © Copyright 2026 aidso.com All rights reserved
+            - link "京ICP备2020043495号-8" [ref=e444] [cursor=pointer]:
+              - /url: https://beian.miit.gov.cn/
+            - img [ref=e445]
+            - link "京公网安备11010502059145号" [ref=e446] [cursor=pointer]:
+              - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010502059145
+          - generic [ref=e447]: 第三方平台名称及标识仅用于说明爱搜支持的数据监测范围，相关商标与标识权利归原权利人所有
+        - text: 
+    - text: 
+    - list [ref=e448]:
+      - listitem [ref=e450] [cursor=pointer]:
+        - img [ref=e451]
+        - generic [ref=e452]: 提取+改写
+      - listitem [ref=e453] [cursor=pointer]:
+        - img [ref=e454]
+        - generic [ref=e455]: 帮助
+      - listitem [ref=e456] [cursor=pointer]:
+        - img [ref=e457]
+        - generic [ref=e458]: 客服
+      - listitem [ref=e459] [cursor=pointer]:
+        - img [ref=e460]
+        - generic [ref=e461]: 公众号
+      - listitem [ref=e462] [cursor=pointer]:
+        - img [ref=e463]
+        - generic [ref=e464]: 小程序
+  - generic [ref=e467]:
+    - generic [ref=e468]:
+      - generic [ref=e470]: 拖动下方拼图完成验证
+      - img "close" [ref=e472] [cursor=pointer]
+    - img [ref=e476]
+    - generic [ref=e481]:
+      - generic [ref=e483]: 安全验证
+      - img "refresh" [ref=e486] [cursor=pointer]
+  - tooltip "DSO关键词库 搜索词库 热门搜索词汇总查询 电商词库 电商行业核心词收录 行业词库 垂直行业词汇全收录 下拉词库 搜索下拉推荐词汇总 小蓝词榜 抖热门小蓝词合集 行业词热搜榜 行业热搜词实时排行 相关词库 关键词关联词汇推荐 电商词热销榜 电商热销关联词排行 行业词高跑量榜 行业高转化词排行 话题总榜 全平台话题热度总排行 电商词热搜榜 电商搜索热词排行 行业词飙升榜 行业词热度快速上升榜 话题飙升榜 话题热度飙升实时榜 电商词飙升榜 电商词热度飙升排行 搜索排名查询 关键词排名精准查询 RSO关键词 搜索词库 笔记搜索热词汇总 相关词库 种草场景关联词推荐 行业词库 垂类笔记词精准收录 下拉词库 笔记搜索下拉词实时汇 KSO关键词 搜索词库 覆盖核心词，精准引流量 相关词库 关联词拓展，流量破圈 行业词库 行业词聚合，洞察先机 下拉词库 追搜索动态，贴合需求 搜索飙升榜 展示热度飙升事件 WSO关键词 搜索词库 搜一搜热词汇总查询 相关词库 场景化关联词推荐 行业词库 垂直领域词精准收录 下拉词库 搜索下拉推荐词实时汇 BSO关键词 搜索词库 热门UP主关键词汇总 相关词库 BSO优化关联词推荐 下拉词库 搜索下拉热词实时追踪 TSO关键词 搜索词库 海外平台热词汇总 相关词库 热门关联词速查 下拉词库 搜索下拉推荐 电商词榜 电商核心词概览 创意灵感话题榜 赋能广告创作" [ref=e487]:
+    - generic [ref=e490]:
+      - generic [ref=e491]:
+        - generic [ref=e493]:
+          - img [ref=e494]
+          - generic [ref=e495]: DSO关键词库
+        - generic [ref=e496]:
+          - generic [ref=e499] [cursor=pointer]:
+            - generic [ref=e500]: 搜索词库
+            - generic [ref=e501]: 热门搜索词汇总查询
+          - generic [ref=e504] [cursor=pointer]:
+            - generic [ref=e505]: 电商词库
+            - generic [ref=e506]: 电商行业核心词收录
+          - generic [ref=e509] [cursor=pointer]:
+            - generic [ref=e510]: 行业词库
+            - generic [ref=e511]: 垂直行业词汇全收录
+        - generic [ref=e512]:
+          - generic [ref=e515] [cursor=pointer]:
+            - generic [ref=e516]: 下拉词库
+            - generic [ref=e517]: 搜索下拉推荐词汇总
+          - generic [ref=e520] [cursor=pointer]:
+            - generic [ref=e521]: 小蓝词榜
+            - generic [ref=e522]: 抖热门小蓝词合集
+          - generic [ref=e525] [cursor=pointer]:
+            - generic [ref=e526]: 行业词热搜榜
+            - generic [ref=e527]: 行业热搜词实时排行
+        - generic [ref=e528]:
+          - generic [ref=e531] [cursor=pointer]:
+            - generic [ref=e532]: 相关词库
+            - generic [ref=e533]: 关键词关联词汇推荐
+          - generic [ref=e536] [cursor=pointer]:
+            - generic [ref=e537]: 电商词热销榜
+            - generic [ref=e538]: 电商热销关联词排行
+          - generic [ref=e541] [cursor=pointer]:
+            - generic [ref=e542]: 行业词高跑量榜
+            - generic [ref=e543]: 行业高转化词排行
+        - generic [ref=e544]:
+          - generic [ref=e547] [cursor=pointer]:
+            - generic [ref=e548]: 话题总榜
+            - generic [ref=e549]: 全平台话题热度总排行
+          - generic [ref=e552] [cursor=pointer]:
+            - generic [ref=e553]: 电商词热搜榜
+            - generic [ref=e554]: 电商搜索热词排行
+          - generic [ref=e557] [cursor=pointer]:
+            - generic [ref=e558]: 行业词飙升榜
+            - generic [ref=e559]: 行业词热度快速上升榜
+        - generic [ref=e560]:
+          - generic [ref=e563] [cursor=pointer]:
+            - generic [ref=e564]: 话题飙升榜
+            - generic [ref=e565]: 话题热度飙升实时榜
+          - generic [ref=e568] [cursor=pointer]:
+            - generic [ref=e569]: 电商词飙升榜
+            - generic [ref=e570]: 电商词热度飙升排行
+          - generic [ref=e573] [cursor=pointer]:
+            - generic [ref=e574]: 搜索排名查询
+            - generic [ref=e575]: 关键词排名精准查询
+      - generic [ref=e576]:
+        - generic [ref=e578]:
+          - img [ref=e579]
+          - generic [ref=e580]: RSO关键词
+        - generic [ref=e584] [cursor=pointer]:
+          - generic [ref=e585]: 搜索词库
+          - generic [ref=e586]: 笔记搜索热词汇总
+        - generic [ref=e590] [cursor=pointer]:
+          - generic [ref=e591]: 相关词库
+          - generic [ref=e592]: 种草场景关联词推荐
+        - generic [ref=e596] [cursor=pointer]:
+          - generic [ref=e597]: 行业词库
+          - generic [ref=e598]: 垂类笔记词精准收录
+        - generic [ref=e602] [cursor=pointer]:
+          - generic [ref=e603]: 下拉词库
+          - generic [ref=e604]: 笔记搜索下拉词实时汇
+      - generic [ref=e605]:
+        - generic [ref=e607]:
+          - img [ref=e608]
+          - generic [ref=e609]: KSO关键词
+        - generic [ref=e613] [cursor=pointer]:
+          - generic [ref=e614]: 搜索词库
+          - generic [ref=e615]: 覆盖核心词，精准引流量
+        - generic [ref=e619] [cursor=pointer]:
+          - generic [ref=e620]: 相关词库
+          - generic [ref=e621]: 关联词拓展，流量破圈
+        - generic [ref=e625] [cursor=pointer]:
+          - generic [ref=e626]: 行业词库
+          - generic [ref=e627]: 行业词聚合，洞察先机
+        - generic [ref=e631] [cursor=pointer]:
+          - generic [ref=e632]: 下拉词库
+          - generic [ref=e633]: 追搜索动态，贴合需求
+        - generic [ref=e637] [cursor=pointer]:
+          - generic [ref=e638]: 搜索飙升榜
+          - generic [ref=e639]: 展示热度飙升事件
+      - generic [ref=e640]:
+        - generic [ref=e642]:
+          - img [ref=e643]
+          - generic [ref=e644]: WSO关键词
+        - generic [ref=e648] [cursor=pointer]:
+          - generic [ref=e649]: 搜索词库
+          - generic [ref=e650]: 搜一搜热词汇总查询
+        - generic [ref=e654] [cursor=pointer]:
+          - generic [ref=e655]: 相关词库
+          - generic [ref=e656]: 场景化关联词推荐
+        - generic [ref=e660] [cursor=pointer]:
+          - generic [ref=e661]: 行业词库
+          - generic [ref=e662]: 垂直领域词精准收录
+        - generic [ref=e666] [cursor=pointer]:
+          - generic [ref=e667]: 下拉词库
+          - generic [ref=e668]: 搜索下拉推荐词实时汇
+      - generic [ref=e669]:
+        - generic [ref=e671]:
+          - img [ref=e672]
+          - generic [ref=e673]: BSO关键词
+        - generic [ref=e677] [cursor=pointer]:
+          - generic [ref=e678]: 搜索词库
+          - generic [ref=e679]: 热门UP主关键词汇总
+        - generic [ref=e683] [cursor=pointer]:
+          - generic [ref=e684]: 相关词库
+          - generic [ref=e685]: BSO优化关联词推荐
+        - generic [ref=e689] [cursor=pointer]:
+          - generic [ref=e690]: 下拉词库
+          - generic [ref=e691]: 搜索下拉热词实时追踪
+      - generic [ref=e692]:
+        - generic [ref=e694]:
+          - img [ref=e695]
+          - generic [ref=e696]: TSO关键词
+        - generic [ref=e700] [cursor=pointer]:
+          - generic [ref=e701]: 搜索词库
+          - generic [ref=e702]: 海外平台热词汇总
+        - generic [ref=e706] [cursor=pointer]:
+          - generic [ref=e707]: 相关词库
+          - generic [ref=e708]: 热门关联词速查
+        - generic [ref=e712] [cursor=pointer]:
+          - generic [ref=e713]: 下拉词库
+          - generic [ref=e714]: 搜索下拉推荐
+        - generic [ref=e718] [cursor=pointer]:
+          - generic [ref=e719]: 电商词榜
+          - generic [ref=e720]: 电商核心词概览
+        - generic [ref=e724] [cursor=pointer]:
+          - generic [ref=e725]: 创意灵感话题榜
+          - generic [ref=e726]: 赋能广告创作

@@ -1,0 +1,1340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>确定性四层模型 · 逼近平台排序算法</title>
+<style>
+:root {
+  --ink: #262018;
+  --muted: #6d6256;
+  --faint: #9a8f82;
+  --paper: rgba(255,252,247,0.88);
+  --paper-solid: #fffcf7;
+  --line: rgba(71,54,35,0.14);
+  --line-strong: rgba(71,54,35,0.22);
+  --shadow: 0 20px 44px rgba(68,50,31,0.10);
+  --shadow-sm: 0 6px 20px rgba(68,50,31,0.06);
+
+  --blue:   #115f7c;  --blue-soft:   rgba(17,95,124,0.10);
+  --green:  #2f6d53;  --green-soft:  rgba(47,109,83,0.10);
+  --red:    #ba5d40;  --red-soft:    rgba(186,93,64,0.10);
+  --gold:   #8a6a2f;  --gold-soft:   rgba(138,106,47,0.12);
+  --purple: #6b4c8a;  --purple-soft: rgba(107,76,138,0.10);
+
+  --l1: #5b7a99;  --l1-soft: rgba(91,122,153,0.12);
+  --l2: #6b4c8a;  --l2-soft: rgba(107,76,138,0.12);
+  --l3: #ba5d40;  --l3-soft: rgba(186,93,64,0.12);
+  --l4: #2f6d53;  --l4-soft: rgba(47,109,83,0.12);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  font-family: "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  color: var(--ink);
+  line-height: 1.6;
+  background:
+    radial-gradient(circle at 15% 8%, rgba(17,95,124,0.10), transparent 30%),
+    radial-gradient(circle at 85% 12%, rgba(186,93,64,0.09), transparent 26%),
+    radial-gradient(circle at 50% 90%, rgba(47,109,83,0.07), transparent 30%),
+    linear-gradient(180deg, #f8f4ec 0%, #f1eadf 55%, #ece3d6 100%);
+  min-height: 100vh;
+}
+
+.shell {
+  width: min(1320px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 34px 0 80px;
+}
+
+/* ── Hero ── */
+.hero {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 32px;
+  padding: 40px 44px 36px;
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+.hero::after {
+  content: '';
+  position: absolute;
+  top: -60px; right: -40px;
+  width: 280px; height: 280px;
+  background: radial-gradient(circle, rgba(17,95,124,0.08), transparent 70%);
+  pointer-events: none;
+}
+.eyebrow {
+  display: inline-block;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(38,32,24,0.06);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: clamp(32px, 5.2vw, 54px);
+  line-height: 1.04;
+  letter-spacing: -0.045em;
+  font-weight: 800;
+  margin-bottom: 16px;
+  position: relative;
+}
+.hero .thesis {
+  font-size: 17px;
+  color: var(--muted);
+  max-width: 780px;
+  line-height: 1.7;
+}
+.hero .thesis strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ── 四层总览 ── */
+.overview {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.layer-card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 22px 20px 20px;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+  transition: transform 0.15s, box-shadow 0.15s;
+  cursor: default;
+}
+.layer-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px rgba(68,50,31,0.12);
+}
+.layer-card .layer-num {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.layer-card .layer-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.layer-card .layer-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.55;
+  margin-bottom: 14px;
+}
+.layer-card .certainty {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.layer-card .certainty-num {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.layer-card .certainty-label {
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.04em;
+}
+.layer-card .certainty-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(71,54,35,0.08);
+  overflow: hidden;
+}
+.layer-card .certainty-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.l1-card .layer-num, .l1-card .certainty-num { color: var(--l1); }
+.l1-card .certainty-fill { background: var(--l1); }
+.l2-card .layer-num, .l2-card .certainty-num { color: var(--l2); }
+.l2-card .certainty-fill { background: var(--l2); }
+.l3-card .layer-num, .l3-card .certainty-num { color: var(--l3); }
+.l3-card .certainty-fill { background: var(--l3); }
+.l4-card .layer-num, .l4-card .certainty-num { color: var(--l4); }
+.l4-card .certainty-fill { background: var(--l4); }
+
+.l3-card {
+  border-color: rgba(186,93,64,0.30);
+  box-shadow: 0 8px 28px rgba(186,93,64,0.10);
+}
+.l3-card .asym-tag {
+  position: absolute;
+  top: 14px; right: 14px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--l3);
+  color: #fff;
+}
+
+/* ── Section 通用 ── */
+.section {
+  margin-top: 44px;
+}
+.section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 20px;
+}
+.section-head h2 {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+.section-head .section-sub {
+  font-size: 14px;
+  color: var(--muted);
+  text-align: right;
+  max-width: 380px;
+  line-height: 1.55;
+}
+
+.badge {
+  display: inline-block;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.badge.blue  { color: var(--blue);  background: var(--blue-soft); }
+.badge.green { color: var(--green); background: var(--green-soft); }
+.badge.red   { color: var(--red);   background: var(--red-soft); }
+.badge.gold  { color: var(--gold);  background: var(--gold-soft); }
+.badge.purple{ color: var(--purple);background: var(--purple-soft); }
+
+/* ── 层详解卡片 ── */
+.layer-detail {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  padding: 30px 32px;
+  box-shadow: var(--shadow-sm);
+}
+.layer-detail .detail-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.layer-detail .detail-num {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+.layer-detail .detail-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.layer-detail .detail-q {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.layer-detail .detail-q strong {
+  color: var(--ink);
+}
+
+.l1-detail .detail-num { background: var(--l1); }
+.l2-detail .detail-num { background: var(--l2); }
+.l3-detail .detail-num { background: var(--l3); }
+.l4-detail .detail-num { background: var(--l4); }
+
+/* ── 信号网格 ── */
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.signal-item {
+  background: rgba(255,255,255,0.55);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.signal-item .sig-name {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.signal-item .sig-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.signal-item .sig-source {
+  font-size: 10px;
+  color: var(--faint);
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ── 能/不能 ── */
+.qa-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.qa-box {
+  border-radius: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+}
+.qa-box.can  { background: rgba(47,109,83,0.06); border-color: rgba(47,109,83,0.18); }
+.qa-box.cant { background: rgba(186,93,64,0.05); border-color: rgba(186,93,64,0.16); }
+.qa-box .qa-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.qa-box.can  .qa-label { color: var(--green); }
+.qa-box.cant .qa-label { color: var(--red); }
+.qa-box ul {
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+.qa-box ul li {
+  padding-left: 16px;
+  position: relative;
+}
+.qa-box.can  ul li::before { content: '✓'; position: absolute; left: 0; color: var(--green); font-weight: 700; }
+.qa-box.cant ul li::before { content: '✕'; position: absolute; left: 0; color: var(--red); font-weight: 700; }
+
+/* ── 数据资产条 ── */
+.asset-row {
+  display: flex;
+  gap: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  margin-bottom: 20px;
+  background: rgba(255,255,255,0.45);
+}
+.asset-item {
+  flex: 1;
+  padding: 14px 12px;
+  text-align: center;
+  border-right: 1px solid var(--line);
+}
+.asset-item:last-child { border-right: none; }
+.asset-item .asset-num {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--l1);
+}
+.asset-item .asset-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ── 漏斗 ── */
+.funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 20px 0;
+}
+.funnel-stage {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.50);
+  transition: transform 0.12s;
+  position: relative;
+  overflow: hidden;
+}
+.funnel-stage:hover { transform: translateX(4px); }
+.funnel-stage .funnel-bar {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  opacity: 0.08;
+}
+.funnel-stage .funnel-icon {
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+  color: #fff;
+}
+.funnel-stage .funnel-body { flex: 1; position: relative; z-index: 1; }
+.funnel-stage .funnel-name {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.funnel-stage .funnel-metrics {
+  font-size: 12px;
+  color: var(--muted);
+}
+.funnel-stage .funnel-metrics code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: rgba(71,54,35,0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--ink);
+}
+.funnel-stage .funnel-why {
+  font-size: 11px;
+  color: var(--faint);
+  text-align: right;
+  max-width: 240px;
+  line-height: 1.45;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── 中介变量图 ── */
+.mediator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin: 24px 0;
+  flex-wrap: wrap;
+}
+.med-node {
+  border-radius: 16px;
+  padding: 16px 20px;
+  text-align: center;
+  border: 2px solid;
+  background: var(--paper-solid);
+  min-width: 140px;
+}
+.med-node .med-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.med-node .med-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+.med-node.public { border-color: var(--l1); }
+.med-node.hidden { border-color: var(--l3); border-style: dashed; }
+.med-node.result { border-color: var(--l4); }
+
+.med-arrow {
+  flex: 1;
+  min-width: 50px;
+  max-width: 100px;
+  text-align: center;
+  position: relative;
+  padding: 0 8px;
+}
+.med-arrow .med-label {
+  font-size: 10px;
+  color: var(--faint);
+  margin-bottom: 2px;
+  letter-spacing: 0.04em;
+}
+.med-arrow .med-line {
+  height: 2px;
+  background: var(--line-strong);
+  position: relative;
+}
+.med-arrow .med-line::after {
+  content: '';
+  position: absolute;
+  right: 0; top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-left-color: var(--line-strong);
+}
+.med-arrow.unknown .med-line {
+  background: repeating-linear-gradient(90deg, var(--line-strong) 0 4px, transparent 4px 8px);
+}
+.med-arrow.unknown .med-line::after {
+  border-left-color: transparent;
+  border-top-color: var(--line-strong);
+  border-right-color: var(--line-strong);
+  border-bottom-color: var(--line-strong);
+  right: -2px;
+  border-width: 4px;
+  transform: translateY(-50%) rotate(45deg);
+}
+.med-arrow.unknown .med-label { color: var(--red); font-weight: 700; }
+
+/* ── 实验表 ── */
+.experiment-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 16px;
+}
+.experiment-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-strong);
+}
+.experiment-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.experiment-table td:first-child { font-weight: 700; }
+.experiment-table .exp-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.exp-tag.control { background: var(--blue-soft); color: var(--blue); }
+.exp-tag.observe { background: var(--gold-soft); color: var(--gold); }
+
+/* ── 叠加效应 ── */
+.stack-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-top: 18px;
+}
+.stack-item {
+  border-radius: 14px;
+  padding: 16px 14px;
+  text-align: center;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.50);
+}
+.stack-item .stack-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
+}
+.stack-item .stack-val {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.stack-item .stack-note {
+  font-size: 10px;
+  color: var(--faint);
+  margin-top: 4px;
+}
+
+/* ── 不对称总结 ── */
+.asym-summary {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  padding: 34px 36px;
+  box-shadow: var(--shadow);
+  margin-top: 44px;
+  position: relative;
+  overflow: hidden;
+}
+.asym-summary::before {
+  content: '';
+  position: absolute;
+  top: -40px; left: -30px;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(186,93,64,0.08), transparent 70%);
+  pointer-events: none;
+}
+.asym-summary h2 {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 14px;
+}
+.asym-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 22px;
+}
+.asym-item {
+  border-radius: 16px;
+  padding: 20px 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.45);
+}
+.asym-item .asym-q {
+  font-size: 12px;
+  color: var(--faint);
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+}
+.asym-item .asym-a {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.asym-item.highlight {
+  background: var(--l3-soft);
+  border-color: rgba(186,93,64,0.25);
+}
+.asym-item.highlight .asym-a { color: var(--l3); }
+
+/* ── 路线图 ── */
+.roadmap {
+  margin-top: 18px;
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+}
+.road-step {
+  flex: 1;
+  padding: 20px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.50);
+  position: relative;
+  text-align: center;
+}
+.road-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: -8px; top: 50%;
+  transform: translateY(-50%);
+  width: 16px; height: 2px;
+  background: var(--line-strong);
+  z-index: 2;
+}
+.road-step:not(:last-child) {
+  margin-right: 8px;
+}
+.road-step .road-phase {
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.road-step .road-name {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.road-step .road-cert {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.road-step .road-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ── 响应式 ── */
+@media (max-width: 1080px) {
+  .overview { grid-template-columns: repeat(2, 1fr); }
+  .signal-grid { grid-template-columns: repeat(2, 1fr); }
+  .asym-grid { grid-template-columns: 1fr; }
+  .stack-grid { grid-template-columns: repeat(2, 1fr); }
+  .roadmap { flex-direction: column; gap: 10px; }
+  .road-step:not(:last-child)::after { display: none; }
+  .road-step:not(:last-child) { margin-right: 0; }
+}
+@media (max-width: 720px) {
+  .shell { padding: 20px 0 60px; }
+  .hero { border-radius: 22px; padding: 28px 22px; }
+  .hero h1 { font-size: 28px; }
+  .overview { grid-template-columns: 1fr; }
+  .signal-grid { grid-template-columns: 1fr; }
+  .qa-row { grid-template-columns: 1fr; }
+  .layer-detail { border-radius: 20px; padding: 22px 18px; }
+  .asym-summary { border-radius: 20px; padding: 24px 20px; }
+  .section-head { flex-direction: column; align-items: flex-start; }
+  .section-head .section-sub { text-align: left; }
+  .mediator { flex-direction: column; }
+  .med-arrow { transform: rotate(90deg); min-width: 40px; max-width: 40px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ════════ HERO ════════ -->
+  <div class="hero">
+    <span class="eyebrow">方法论框架 · 2026.07</span>
+    <h1>逼近平台排序算法的<br>确定性四层模型</h1>
+    <p class="thesis">
+      纯观测数据只能告诉你<strong>谁在排</strong>，内容解析告诉你<strong>什么样的内容在排</strong>，
+      第一方互动数据告诉你<strong>为什么排</strong>，可控实验告诉你<strong>确定怎么排</strong>。
+      四层叠加，每消一层不确定性，离平台真实算法就近一步。
+      其中<strong>第三层是唯一一个"你永远比所有竞品多一个信息维度"的层</strong>——
+      这是结构性的信息不对称。
+    </p>
+  </div>
+
+  <!-- ════════ 四层总览 ════════ -->
+  <div class="overview">
+    <div class="layer-card l1-card">
+      <div class="layer-num">LAYER 01</div>
+      <div class="layer-name">公开观测数据</div>
+      <div class="layer-desc">排名位置、关键词、时间、账号、搜索建议词</div>
+      <div class="certainty">
+        <span class="certainty-num">~50%</span>
+        <span class="certainty-label">确定性</span>
+      </div>
+      <div class="certainty-bar"><div class="certainty-fill" style="width:50%"></div></div>
+    </div>
+    <div class="layer-card l2-card">
+      <div class="layer-num">LAYER 02</div>
+      <div class="layer-name">LLM 内容解析</div>
+      <div class="layer-desc">体裁、结构、标签、论证模式、信息密度</div>
+      <div class="certainty">
+        <span class="certainty-num">~65%</span>
+        <span class="certainty-label">确定性</span>
+      </div>
+      <div class="certainty-bar"><div class="certainty-fill" style="width:65%"></div></div>
+    </div>
+    <div class="layer-card l3-card">
+      <span class="asym-tag">非对称</span>
+      <div class="layer-num">LAYER 03</div>
+      <div class="layer-name">第一方互动数据</div>
+      <div class="layer-desc">完读率、搜索流量来源、关键词归因、互动漏斗</div>
+      <div class="certainty">
+        <span class="certainty-num">~80%</span>
+        <span class="certainty-label">确定性</span>
+      </div>
+      <div class="certainty-bar"><div class="certainty-fill" style="width:80%"></div></div>
+    </div>
+    <div class="layer-card l4-card">
+      <div class="layer-num">LAYER 04</div>
+      <div class="layer-name">可控实验</div>
+      <div class="layer-desc">同号同题不同变量，观测排名与互动的因果链</div>
+      <div class="certainty">
+        <span class="certainty-num">~90%+</span>
+        <span class="certainty-label">确定性</span>
+      </div>
+      <div class="certainty-bar"><div class="certainty-fill" style="width:92%"></div></div>
+    </div>
+  </div>
+
+  <!-- ════════ LAYER 1 详解 ════════ -->
+  <div class="section">
+    <div class="section-head">
+      <h2>第一层：公开观测数据</h2>
+      <div class="section-sub">现有系统已经做得很扎实的一层。核心瓶颈：只知道"谁在排"，不知道"为什么排"。</div>
+    </div>
+
+    <div class="layer-detail l1-detail">
+      <div class="detail-head">
+        <div class="detail-num">1</div>
+        <div>
+          <div class="detail-title">公开观测数据</div>
+          <div class="detail-q">能回答：<strong>什么在排</strong>　不能回答：<strong>为什么排</strong></div>
+        </div>
+      </div>
+
+      <div class="badge blue">现有数据资产</div>
+      <div class="asset-row">
+        <div class="asset-item">
+          <div class="asset-num">194</div>
+          <div class="asset-label">监控关键词</div>
+        </div>
+        <div class="asset-item">
+          <div class="asset-num">5,640</div>
+          <div class="asset-label">搜索快照</div>
+        </div>
+        <div class="asset-item">
+          <div class="asset-num">56,069</div>
+          <div class="asset-label">排名命中</div>
+        </div>
+        <div class="asset-item">
+          <div class="asset-num">95,877</div>
+          <div class="asset-label">搜索建议词</div>
+        </div>
+        <div class="asset-item">
+          <div class="asset-num">1,452</div>
+          <div class="asset-label">账号</div>
+        </div>
+        <div class="asset-item">
+          <div class="asset-num">3,917</div>
+          <div class="asset-label">文章</div>
+        </div>
+      </div>
+
+      <div class="badge blue">信号维度</div>
+      <div class="signal-grid">
+        <div class="signal-item">
+          <div class="sig-name">排名位置</div>
+          <div class="sig-desc">每条命中第几名，15天轨迹</div>
+          <div class="sig-source">ranking_hit.rank</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">关键词文本</div>
+          <div class="sig-desc">监控词原文 + topic 词根折叠 + bucket 意图分类</div>
+          <div class="sig-source">keyword_text / topic / keyword_bucket</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">抓取时间</div>
+          <div class="sig-desc">每次搜索的精确时间锚点</div>
+          <div class="sig-source">captured_at</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">发布时间</div>
+          <div class="sig-desc">文章的发文时间，可算"发文到上榜"的时间差</div>
+          <div class="sig-source">published_at</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">账号身份</div>
+          <div class="sig-desc">公众号名 + 15天得分 + 历史轨迹</div>
+          <div class="sig-source">canonical_name / account_score</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">搜索建议词</div>
+          <div class="sig-desc">平台认为"相关"的词，揭示语义聚类</div>
+          <div class="sig-source">snapshot_terms</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">关键词热度</div>
+          <div class="sig-desc">WSO/DSO 月搜索量，含幂律估算</div>
+          <div class="sig-source">aidso_{wso,dso}_heat</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">文章标题</div>
+          <div class="sig-desc">抓取时的原始标题（尚未深度利用）</div>
+          <div class="sig-source">title_raw</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">文章摘要</div>
+          <div class="sig-desc">搜索结果页的摘要文本（尚未深度利用）</div>
+          <div class="sig-source">summary_raw</div>
+        </div>
+      </div>
+
+      <div class="qa-row">
+        <div class="qa-box can">
+          <div class="qa-label">能回答</div>
+          <ul>
+            <li>谁排在第几名，排了多久</li>
+            <li>排名变化趋势（上升/下降/新进/消失）</li>
+            <li>哪些关键词热度高、值得盯</li>
+            <li>哪些账号持续上榜、哪些是黑马</li>
+            <li>15天窗口内的账号评分排序</li>
+          </ul>
+        </div>
+        <div class="qa-box cant">
+          <div class="qa-label">不能回答</div>
+          <ul>
+            <li>为什么排上来（内容质量？账号权重？时机？）</li>
+            <li>内容本身的什么特征在起作用</li>
+            <li>账号权重 vs 内容质量的归因分解</li>
+            <li>用户是否真的喜欢这篇内容</li>
+            <li>排上来之后流量价值是多少</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ LAYER 2 详解 ════════ -->
+  <div class="section">
+    <div class="section-head">
+      <h2>第二层：LLM 内容解析</h2>
+      <div class="section-sub">把数万篇文章从"标题+摘要"升级为结构化标签矩阵。瓶颈仍在：观测有混淆变量，相关性 ≠ 因果性。</div>
+    </div>
+
+    <div class="layer-detail l2-detail">
+      <div class="detail-head">
+        <div class="detail-num">2</div>
+        <div>
+          <div class="detail-title">LLM 内容解析</div>
+          <div class="detail-q">能回答：<strong>什么样的内容在排</strong>　不能回答：<strong>是内容好导致排上来，还是排上来恰好内容好</strong></div>
+        </div>
+      </div>
+
+      <div class="badge purple">可提取的内容特征矩阵</div>
+      <div class="signal-grid">
+        <div class="signal-item">
+          <div class="sig-name">体裁分类</div>
+          <div class="sig-desc">测评 / 对比 / 攻略 / 解读 / 故事 / 新闻播报</div>
+          <div class="sig-source">article_type</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">论证模式</div>
+          <div class="sig-desc">数据驱动 / 情感驱动 / 案例驱动 / 权威引用</div>
+          <div class="sig-source">argumentation_pattern</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">信息密度</div>
+          <div class="sig-desc">干货占比 vs 营销话术占比，量化"水分"</div>
+          <div class="sig-source">info_density_score</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">原创度</div>
+          <div class="sig-desc">原创研究 / 汇编整理 / 观点转述</div>
+          <div class="sig-source">originality_level</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">产品关联</div>
+          <div class="sig-desc">主推产品、竞品提及方式（拉踩/并列/不提）</div>
+          <div class="sig-source">product_mentions[]</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">结构特征</div>
+          <div class="sig-desc">标题长度、段落数、是否含数据表/IRR/案例演示</div>
+          <div class="sig-source">structure_features{}</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">合规信号</div>
+          <div class="sig-desc">风险提示、免责声明、从业资质信号</div>
+          <div class="sig-source">compliance_signals[]</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">情绪标记</div>
+          <div class="sig-desc">感叹号密度、营销词密度（"王炸""秒杀""必看"）</div>
+          <div class="sig-source">emotion_markers{}</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">选题角度</div>
+          <div class="sig-desc">收益对比/提领方案/传承/税务/真实案例</div>
+          <div class="sig-source">topic_angle</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">受众指向</div>
+          <div class="sig-desc">高净值 / 中产 / 新手 / 从业者</div>
+          <div class="sig-source">target_audience</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">时效性</div>
+          <div class="sig-desc">蹭热点事件 vs 常青内容</div>
+          <div class="sig-source">timeliness_type</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">标题模式</div>
+          <div class="sig-desc">含数字/含括号/含疑问/含对比/含情绪词</div>
+          <div class="sig-source">title_pattern{}</div>
+        </div>
+      </div>
+
+      <div class="badge purple">新增的分析能力</div>
+      <div class="signal-grid">
+        <div class="signal-item">
+          <div class="sig-name">条件概率分析</div>
+          <div class="sig-desc">P(排名前3 | 体裁=攻略, 账号权重&lt;0.3) → 控制变量看纯内容效应</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">分层分析</div>
+          <div class="sig-desc">按账号权重分层，在每层内部独立观测内容因素的影响</div>
+        </div>
+        <div class="signal-item">
+          <div class="sig-name">边际衰减</div>
+          <div class="sig-desc">某特征（如含IRR）是越多越好，还是到阈值后饱和</div>
+        </div>
+      </div>
+
+      <div class="qa-row">
+        <div class="qa-box can">
+          <div class="qa-label">新增能力</div>
+          <ul>
+            <li>什么样的标题结构更容易上前三</li>
+            <li>什么体裁在低权重号上也能排上来</li>
+            <li>内容饱和度：同一角度从第1篇到第10篇的排名衰减</li>
+            <li>伪强号识别：高排名 + 低信息密度 = 标题党</li>
+            <li>热点锚词的新鲜度曲线（007文档机制的基础）</li>
+          </ul>
+        </div>
+        <div class="qa-box cant">
+          <div class="qa-label">仍然不能回答</div>
+          <ul>
+            <li>排上来是因为内容好，还是因为账号强（混淆变量仍在）</li>
+            <li>用户读完之后觉得好不好（完读率未知）</li>
+            <li>排名带来了多少真实流量</li>
+            <li>平台算法到底用哪个互动信号做排序</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ LAYER 3 详解 ════════ -->
+  <div class="section">
+    <div class="section-head">
+      <h2>第三层：第一方互动数据 <span style="font-size:14px;color:var(--l3);font-weight:700">· 非对称信息层</span></h2>
+      <div class="section-sub">竞品永远看不到你的完读率，你也永远看不到对手的。这是唯一一个结构性信息不对称的层。需要主动注入。</div>
+    </div>
+
+    <div class="layer-detail l3-detail">
+      <div class="detail-head">
+        <div class="detail-num">3</div>
+        <div>
+          <div class="detail-title">第一方互动数据</div>
+          <div class="detail-q">能回答：<strong>为什么排</strong>　核心竞争力：<strong>用自己号的 ground truth 解码算法的质量信号</strong></div>
+        </div>
+      </div>
+
+      <div class="badge red">需要注入的完整数据漏斗</div>
+
+      <div class="funnel">
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--l1); width:100%"></div>
+          <div class="funnel-icon" style="background:var(--l1)">①</div>
+          <div class="funnel-body">
+            <div class="funnel-name">触达层 — 流量来源结构</div>
+            <div class="funnel-metrics">
+              <code>搜一搜占比</code> <code>会话占比</code> <code>朋友圈占比</code> <code>转发占比</code> <code>历史消息占比</code> <code>其他占比</code>
+            </div>
+          </div>
+          <div class="funnel-why">搜一搜占比高 = 平台主动推你；会话占比高 = 私域撑的，搜索权重不一定高</div>
+        </div>
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--l3); width:82%"></div>
+          <div class="funnel-icon" style="background:var(--l3)">②</div>
+          <div class="funnel-body">
+            <div class="funnel-name">消费层 — 内容质量代理变量</div>
+            <div class="funnel-metrics">
+              <code>完读率</code> <code>人均阅读时长</code> <code>跳出位置曲线</code>
+            </div>
+          </div>
+          <div class="funnel-why">算法最可能用来衡量"内容质量"的隐藏信号。完读率 = 用户用脚投票的地面真值</div>
+        </div>
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--green); width:60%"></div>
+          <div class="funnel-icon" style="background:var(--green)">③</div>
+          <div class="funnel-body">
+            <div class="funnel-name">传播层 — 正反馈放大器</div>
+            <div class="funnel-metrics">
+              <code>分享率</code> <code>收藏率</code> <code>在看率</code>
+            </div>
+          </div>
+          <div class="funnel-why">传播信号大概率是排名的正反馈放大器。高收藏率可能延长在榜寿命</div>
+        </div>
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--gold); width:38%"></div>
+          <div class="funnel-icon" style="background:var(--gold)">④</div>
+          <div class="funnel-body">
+            <div class="funnel-name">转化层 — 长期权重积累</div>
+            <div class="funnel-metrics">
+              <code>新增关注数</code> <code>留言率</code> <code>取关数</code>
+            </div>
+          </div>
+          <div class="funnel-why">关注转化反映内容对账号权重的长期贡献，不只看单篇排名</div>
+        </div>
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--purple); width:25%"></div>
+          <div class="funnel-icon" style="background:var(--purple)">⑤</div>
+          <div class="funnel-body">
+            <div class="funnel-name">搜索层 — 关键词归因（最关键）</div>
+            <div class="funnel-metrics">
+              <code>搜一搜带来关键词</code> <code>每词点击数</code> <code>每词完读率</code> <code>搜索结果曝光位置</code>
+            </div>
+          </div>
+          <div class="funnel-why">直接看到平台在用哪个词把你匹配出去 → 排名→流量的真实换算率</div>
+        </div>
+        <div class="funnel-stage">
+          <div class="funnel-bar" style="background:var(--blue); width:15%"></div>
+          <div class="funnel-icon" style="background:var(--blue)">⑥</div>
+          <div class="funnel-body">
+            <div class="funnel-name">时间序列 — 冷启动与衰减</div>
+            <div class="funnel-metrics">
+              <code>1h</code> <code>6h</code> <code>24h</code> <code>72h</code> <code>7d</code> 各项指标
+            </div>
+          </div>
+          <div class="funnel-why">冷启动速度 + 衰减曲线 = 内容生命周期的完整画像</div>
+        </div>
+      </div>
+
+      <div class="badge red">中介变量模型 — 为什么第三层是"解码器"</div>
+      <p style="font-size:14px; color:var(--muted); margin-bottom:8px; line-height:1.7">
+        算法本质上在用公开信号猜一个隐藏变量：<strong style="color:var(--ink)">这篇内容用户会不会喜欢</strong>。
+        而完读率、分享率这些第一方数据，就是"用户喜不喜欢"的<strong style="color:var(--ink)">地面真值（ground truth）</strong>。
+        把它插在内容和排名之间，黑箱就被打开了：
+      </p>
+
+      <div class="mediator">
+        <div class="med-node public">
+          <div class="med-title">内容特征</div>
+          <div class="med-sub">所有人都能看到</div>
+        </div>
+        <div class="med-arrow unknown">
+          <div class="med-label">黑箱</div>
+          <div class="med-line"></div>
+        </div>
+        <div class="med-node hidden">
+          <div class="med-title">互动指标</div>
+          <div class="med-sub">只有你自己能看到</div>
+        </div>
+        <div class="med-arrow">
+          <div class="med-label">大概率正相关</div>
+          <div class="med-line"></div>
+        </div>
+        <div class="med-node result">
+          <div class="med-title">排名位置</div>
+          <div class="med-sub">所有人都能看到</div>
+        </div>
+      </div>
+
+      <div class="qa-row">
+        <div class="qa-box can">
+          <div class="qa-label">第三层解锁的能力</div>
+          <ul>
+            <li><strong>排名归因分解</strong>：同样排第3，A篇完读率45%+搜一搜60% = 质量驱动；B篇完读率12%+会话80% = 私域撑的</li>
+            <li><strong>算法质量偏好反推</strong>：在自己号上发不同体裁，完读率×排名的相关性 → 确认算法在用哪个信号</li>
+            <li><strong>估算竞品隐藏指标</strong>：用"内容特征→完读率"模型，反推竞品文章的完读率区间。对手的完读率是商业机密，但你估出来了</li>
+            <li><strong>排名→流量换算率</strong>：排第2带来320次搜索阅读，排第5带来41次 → 第5到第2的流量价值量化</li>
+            <li><strong>跳出位置诊断</strong>：读者在IRR表格处流失 → 信息密度过载的精确位置</li>
+          </ul>
+        </div>
+        <div class="qa-box cant">
+          <div class="qa-label">仍然不能回答</div>
+          <ul>
+            <li>平台算法的完整公式（只能逼近，不能还原）</li>
+            <li>账号历史权重的精确积累规则</li>
+            <li>平台是否有白名单/人工干预机制</li>
+            <li>跨账号的互动数据对比（只有自己的）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ LAYER 4 详解 ════════ -->
+  <div class="section">
+    <div class="section-head">
+      <h2>第四层：可控实验</h2>
+      <div class="section-sub">确定性最高，但理论上竞品也能做。关键：有了第三层之后，每次实验的信息量翻倍。</div>
+    </div>
+
+    <div class="layer-detail l4-detail">
+      <div class="detail-head">
+        <div class="detail-num">4</div>
+        <div>
+          <div class="detail-title">可控实验</div>
+          <div class="detail-q">能回答：<strong>确定怎么排</strong>　核心机制：<strong>控制变量 → 观测结果 → 因果归因</strong></div>
+        </div>
+      </div>
+
+      <div class="badge green">实验设计矩阵</div>
+      <table class="experiment-table">
+        <thead>
+          <tr>
+            <th>实验类型</th>
+            <th>控制变量（不变）</th>
+            <th>自变量（变化）</th>
+            <th>观测变量</th>
+            <th>回答的问题</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>标题 A/B</td>
+            <td><span class="exp-tag control">同选题</span> <span class="exp-tag control">同账号</span> <span class="exp-tag control">同时间</span></td>
+            <td>标题结构（含数字 vs 不含；疑问句 vs 陈述句）</td>
+            <td>排名位置、完读率、搜索流量</td>
+            <td>标题结构是否影响排名？通过完读率还是通过点击率？</td>
+          </tr>
+          <tr>
+            <td>发文时间</td>
+            <td><span class="exp-tag control">同选题</span> <span class="exp-tag control">同标题</span> <span class="exp-tag control">同账号</span></td>
+            <td>发布时间段（早8点 vs 午12点 vs 晚8点）</td>
+            <td>48h内排名、冷启动速度</td>
+            <td>发文时间是否影响冷启动速度？哪个时段平台给量最多？</td>
+          </tr>
+          <tr>
+            <td>选题饱和度</td>
+            <td><span class="exp-tag control">同产品</span> <span class="exp-tag control">同账号</span></td>
+            <td>切入角度（收益对比 vs 提领方案 vs 传承架构）</td>
+            <td>排名上限、在榜天数、衰减速度</td>
+            <td>哪个角度的天花板最高？饱和后换角度能否刷新排名？</td>
+          </tr>
+          <tr>
+            <td>锚词嫁接</td>
+            <td><span class="exp-tag control">同产品词</span> <span class="exp-tag control">同账号</span></td>
+            <td>是否嫁接热点锚词（"美联储""600亿" vs 纯产品词）</td>
+            <td>上榜速度、排名峰值、窗口期长度</td>
+            <td>007文档的"锚词加持"效应能否量化？红利窗口多久？</td>
+          </tr>
+          <tr>
+            <td>发文频率</td>
+            <td><span class="exp-tag control">同账号</span> <span class="exp-tag control">同选题方向</span></td>
+            <td>发文节奏（日更 vs 周更 vs 憋大招）</td>
+            <td>账号整体排名变化、完读率趋势</td>
+            <td>频率对账号权重的影响？高频是否稀释单篇质量？</td>
+          </tr>
+          <tr>
+            <td>内容结构</td>
+            <td><span class="exp-tag control">同选题</span> <span class="exp-tag control">同账号</span> <span class="exp-tag control">同标题模式</span></td>
+            <td>是否含IRR计算表 / 案例演示 / 风险提示</td>
+            <td>完读率、跳出位置、排名</td>
+            <td>哪个内容结构真正提升完读率？算法是否认这个完读率？</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="badge green">叠加效应 — 有了第三层，实验信息量翻倍</div>
+      <div class="stack-grid">
+        <div class="stack-item">
+          <div class="stack-label">无第三层时</div>
+          <div class="stack-val" style="color:var(--l1)">1×</div>
+          <div class="stack-note">只看到排名变了<br>不知道为什么变</div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-label">排名 + 完读率</div>
+          <div class="stack-val" style="color:var(--l3)">2×</div>
+          <div class="stack-note">排名变 + 完读率变<br>= 内容质量驱动</div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-label">排名变 + 完读率不变</div>
+          <div class="stack-val" style="color:var(--gold)">2×</div>
+          <div class="stack-note">排名变 + 完读率没变<br>= 算法权重调整</div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-label">排名不变 + 完读率变</div>
+          <div class="stack-val" style="color:var(--purple)">2×</div>
+          <div class="stack-note">内容质量变了<br>但算法没认 → 算法不看这个</div>
+        </div>
+      </div>
+
+      <div class="qa-row" style="margin-top:18px">
+        <div class="qa-box can">
+          <div class="qa-label">第四层解锁的能力</div>
+          <ul>
+            <li>因果级别的确认：X 变量确实导致排名变化 Y</li>
+            <li>精确量化每个变量的边际效应（改标题→排名+1.3位）</li>
+            <li>建立"发文策略→排名结果"的预测模型</li>
+            <li>逐步逼近算法的真实权重分配</li>
+          </ul>
+        </div>
+        <div class="qa-box cant">
+          <div class="qa-label">永远消不掉的不确定性</div>
+          <ul>
+            <li>平台算法会变，历史结论有保质期</li>
+            <li>黑箱部分（白名单、人工干预、AB测试分流）无法还原</li>
+            <li>实验样本量受限于发文频率和账号数量</li>
+            <li>跨品类结论不可迁移（港险的经验不一定适用其他品类）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 信息不对称总结 ════════ -->
+  <div class="asym-summary">
+    <span class="badge red">核心结论</span>
+    <h2>为什么第三层是唯一的"结构性信息不对称"</h2>
+    <p style="font-size:15px; color:var(--muted); line-height:1.7; max-width:880px">
+      四层中，第一层所有人都能爬，第二层有技术力的团队都能做，第四层有发文能力的都能试。
+      只有第三层——<strong style="color:var(--ink)">完读率、搜索流量来源、关键词归因</strong>——
+      是平台只给发布者看的后台数据，<strong style="color:var(--ink)">竞品永远拿不到你的，你也永远拿不到对手的</strong>。
+      但你同时是发布者和观测者，所以你能用自己号的 ground truth 训练出"质量预测器"，再拿去估测整个市场。
+    </p>
+
+    <div class="asym-grid">
+      <div class="asym-item">
+        <div class="asym-q">竞品能复制第一层吗？</div>
+        <div class="asym-a">能。公开排名数据，谁都能爬。</div>
+      </div>
+      <div class="asym-item">
+        <div class="asym-q">竞品能复制第二层吗？</div>
+        <div class="asym-a">能。有技术力的团队都能做 LLM 内容解析。</div>
+      </div>
+      <div class="asym-item highlight">
+        <div class="asym-q">竞品能复制第三层吗？</div>
+        <div class="asym-a">不能。完读率是平台后台私有数据，只有发布者自己能看到。</div>
+      </div>
+      <div class="asym-item">
+        <div class="asym-q">竞品能复制第四层吗？</div>
+        <div class="asym-a">理论上能。但没第三层加持，实验效率只有你的一半。</div>
+      </div>
+      <div class="asym-item">
+        <div class="asym-q">你的终极优势是什么？</div>
+        <div class="asym-a">同时拥有四层数据，且第三层是独占的。竞品最多叠三层。</div>
+      </div>
+      <div class="asym-item">
+        <div class="asym-q">这个优势可持续吗？</div>
+        <div class="asym-a">只要平台不公开完读率，且你持续发文积累 ground truth，优势就是结构性的。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 推进路线图 ════════ -->
+  <div class="section">
+    <div class="section-head">
+      <h2>推进路线</h2>
+      <div class="section-sub">不是四层同时做，而是逐层叠加。每层的产出直接喂给下一层。</div>
+    </div>
+    <div class="roadmap">
+      <div class="road-step">
+        <div class="road-phase">PHASE 1 · 现在</div>
+        <div class="road-name">榨干现有数据</div>
+        <div class="road-cert" style="color:var(--l1)">~50%</div>
+        <div class="road-desc">标题特征分析 + 时间模式挖掘 + 跨关键词共现矩阵 + 建议词演化分析</div>
+      </div>
+      <div class="road-step">
+        <div class="road-phase">PHASE 2</div>
+        <div class="road-name">LLM 内容解析</div>
+        <div class="road-cert" style="color:var(--l2)">~65%</div>
+        <div class="road-desc">数万文章体裁/结构/标签化 + 分层分析 + 内容类型×排名条件概率</div>
+      </div>
+      <div class="road-step">
+        <div class="road-phase">PHASE 3</div>
+        <div class="road-name">第一方数据注入</div>
+        <div class="road-cert" style="color:var(--l3)">~80%</div>
+        <div class="road-desc">接入公众号后台完读率/搜索流量/关键词归因 + 中介变量模型 + 竞品完读率估算</div>
+      </div>
+      <div class="road-step">
+        <div class="road-phase">PHASE 4 · 终局</div>
+        <div class="road-name">可控实验</div>
+        <div class="road-cert" style="color:var(--l4)">~90%+</div>
+        <div class="road-desc">同号同题不同变量 + 因果归因 + 发文策略预测模型</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

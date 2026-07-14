@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>账号研究价值判断稿</title>
+  <style>
+    :root {
+      --ink: #262018;
+      --muted: #6d6256;
+      --paper: rgba(255, 252, 247, 0.88);
+      --line: rgba(71, 54, 35, 0.14);
+      --shadow: 0 20px 44px rgba(68, 50, 31, 0.1);
+      --blue: #115f7c;
+      --blue-soft: rgba(17, 95, 124, 0.1);
+      --green: #2f6d53;
+      --green-soft: rgba(47, 109, 83, 0.1);
+      --red: #ba5d40;
+      --red-soft: rgba(186, 93, 64, 0.1);
+      --gold: #8a6a2f;
+      --gold-soft: rgba(138, 106, 47, 0.12);
+      --bg:
+        radial-gradient(circle at top left, rgba(17, 95, 124, 0.12), transparent 28%),
+        radial-gradient(circle at 82% 16%, rgba(186, 93, 64, 0.1), transparent 24%),
+        linear-gradient(180deg, #f8f4ec 0%, #f1eadf 55%, #ece3d6 100%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1320px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 34px 0 64px;
+    }
+
+    .hero,
+    .card,
+    .formula,
+    .topic-card,
+    .account-card,
+    .rule-card,
+    .step-card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      border-radius: 32px;
+      padding: 36px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      top: -90px;
+      width: 280px;
+      height: 280px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(17, 95, 124, 0.12), transparent 66%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: rgba(38, 32, 24, 0.06);
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+    }
+
+    h1 {
+      margin: 18px 0 14px;
+      font-size: clamp(34px, 5.8vw, 60px);
+      line-height: 1.03;
+      letter-spacing: -0.05em;
+      max-width: 980px;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 980px;
+      font-size: 18px;
+      line-height: 1.75;
+      color: var(--muted);
+    }
+
+    .hero-grid,
+    .section-grid,
+    .topic-grid,
+    .account-grid,
+    .rules-grid,
+    .steps-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 24px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 38px 0 18px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 29px;
+      letter-spacing: -0.03em;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .card {
+      border-radius: 24px;
+      padding: 24px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .badge.blue {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .badge.green {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .badge.red {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .badge.gold {
+      color: var(--gold);
+      background: var(--gold-soft);
+    }
+
+    .card h3,
+    .formula h3,
+    .topic-card h3,
+    .account-card h3,
+    .rule-card h3,
+    .step-card h3 {
+      margin: 0 0 10px;
+      font-size: 25px;
+      letter-spacing: -0.03em;
+    }
+
+    .card p,
+    .formula p,
+    .topic-card p,
+    .account-card p,
+    .rule-card p,
+    .step-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    .section-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .field-list {
+      display: grid;
+      gap: 16px;
+    }
+
+    .field-item {
+      border-top: 1px dashed rgba(71, 54, 35, 0.16);
+      padding-top: 16px;
+    }
+
+    .field-item:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .field-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+
+    .field-meta strong {
+      font-size: 18px;
+    }
+
+    .field-meta span {
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .field-place {
+      margin: 6px 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .field-example {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--ink);
+      background: rgba(38, 32, 24, 0.05);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+
+    .topic-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .topic-card {
+      border-radius: 24px;
+      padding: 22px;
+    }
+
+    .topic-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 10px;
+    }
+
+    .topic-key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: var(--blue);
+      background: var(--blue-soft);
+      padding: 7px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chips span {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(38, 32, 24, 0.05);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .account-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .account-card {
+      border-radius: 26px;
+      padding: 24px;
+    }
+
+    .account-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+
+    .score {
+      text-align: right;
+      min-width: 88px;
+    }
+
+    .score strong {
+      display: block;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .score span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .stat {
+      border-radius: 16px;
+      padding: 14px;
+      background: rgba(38, 32, 24, 0.05);
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 26px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .rules-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .rule-card {
+      border-radius: 22px;
+      padding: 22px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .rule-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, rgba(17, 95, 124, 0.82), rgba(17, 95, 124, 0.08));
+    }
+
+    .rule-card strong {
+      display: inline-block;
+      margin: 8px 0 10px;
+      font-size: 18px;
+    }
+
+    .formula-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .formula {
+      border-radius: 24px;
+      padding: 24px;
+    }
+
+    .formula code {
+      display: block;
+      margin: 12px 0;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(17, 95, 124, 0.08);
+      color: #11465a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .steps-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .step-card {
+      border-radius: 24px;
+      padding: 22px;
+      position: relative;
+    }
+
+    .step-no {
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .summary {
+      margin-top: 24px;
+      border-radius: 26px;
+      padding: 26px;
+      background: linear-gradient(135deg, rgba(17, 95, 124, 0.11), rgba(255, 255, 255, 0.56));
+      border: 1px solid rgba(17, 95, 124, 0.14);
+      box-shadow: var(--shadow);
+    }
+
+    .summary strong {
+      display: block;
+      font-size: 19px;
+      margin-bottom: 10px;
+    }
+
+    footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1080px) {
+      .hero-grid,
+      .section-grid,
+      .topic-grid,
+      .account-grid,
+      .rules-grid,
+      .formula-grid,
+      .steps-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(100% - 24px, 1320px);
+        padding: 18px 0 34px;
+      }
+
+      .hero,
+      .card,
+      .formula,
+      .topic-card,
+      .account-card,
+      .rule-card,
+      .step-card,
+      .summary {
+        border-radius: 22px;
+        padding: 20px;
+      }
+
+      .account-row {
+        flex-direction: column;
+      }
+
+      .score {
+        text-align: left;
+      }
+
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <span class="eyebrow">账号研究价值判断稿 · {{ window_days }} 天窗口 · 基于当前真实数据</span>
+      <h1>账号分要衡量的是长期研究价值，<br />不是同一篇文章打中了多少相似关键词。</h1>
+      <p>
+        这件事现在已经可以拍板了。你要的不是“谁在某个变体词上今天很猛”，而是“哪些账号跨主题、跨天、跨多篇文章，持续值得我研究”。所以接下去的字段和评分逻辑，都应该围绕这个目标去定。
+      </p>
+
+      <div class="hero-grid">
+        <article class="card">
+          <span class="badge blue">拍板 01</span>
+          <h3>主题要加</h3>
+          <p>但不是随手加一个裸字符串。主题应该成为一个稳定分组键，挂在关键词上，用来折叠变体词。</p>
+        </article>
+        <article class="card">
+          <span class="badge green">拍板 02</span>
+          <h3>去重要两层</h3>
+          <p>原子层先识别“是不是同一篇内容”，计分层再汇总为“同账号同天同主题的真实存在感”。</p>
+        </article>
+        <article class="card">
+          <span class="badge gold">拍板 03</span>
+          <h3>持续性单独奖励</h3>
+          <p>命中天数和连续天数必须单独入模，否则短时爆发永远会压过长期强账号。</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="section-title">
+      <h2>主题字段怎么落</h2>
+      <span>我的建议是：前台字段简单，后台语义解耦</span>
+    </div>
+
+    <section class="section-grid">
+      <article class="card" style="grid-column: span 2;">
+        <span class="badge blue">推荐结构</span>
+        <div class="field-list">
+          {% for item in field_plan %}
+          <div class="field-item">
+            <div class="field-meta">
+          <strong>{{ item.field }}</strong>
+              <span>{{ item.decision }}</span>
+            </div>
+            <div class="field-place">{{ item.where }}</div>
+            <p>{{ item.why }}</p>
+            <div class="field-example">{{ item.example }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </article>
+
+      <article class="card">
+        <span class="badge gold">最终判断</span>
+        <h3>不是只加一个 `topic` 文本</h3>
+        <p>
+          现阶段先别搞复杂。真正要落地的是一个简单的 <code>topic</code>，比如 <code>财富盈活</code>。先把产品词折叠做好，后面再讨论更复杂的主题树。
+        </p>
+        <div class="field-example">
+          V1 建议：1 个 keyword 只对应 1 个 primary topic。<br />
+          先把骨架做稳，不急着做一词多主题。
+        </div>
+      </article>
+    </section>
+
+    <div class="section-title">
+      <h2>当前数据里，主题簇大概会长这样</h2>
+      <span>下面这些样本直接来自你现在已经入库的关键词</span>
+    </div>
+
+    <section class="topic-grid">
+      {% for item in topic_examples %}
+      <article class="topic-card">
+        <div class="topic-head">
+          <h3>{{ item.topic }}</h3>
+          <span class="topic-key">{{ item.topic }}</span>
+        </div>
+        <p>{{ item.note }}</p>
+        <div class="field-example">{{ item.keyword_count }} 个现有关键词会先归到这个主题</div>
+        <div class="chips">
+          {% for keyword in item.keywords %}
+          <span>{{ keyword }}</span>
+          {% endfor %}
+          {% if item.extra_count > 0 %}
+          <span>+{{ item.extra_count }} 个变体词</span>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+    <div class="section-title">
+      <h2>为什么你认可的账号应该往前走</h2>
+      <span>这一步不是改公式，是先把价值判断说死</span>
+    </div>
+
+    <section class="account-grid">
+      <article class="account-card">
+        <span class="badge green">应该上升</span>
+        {% for account in promoted_accounts %}
+        <div class="account-row" style="{% if not loop.first %}padding-top: 18px; margin-top: 18px; border-top: 1px dashed rgba(71,54,35,0.14);{% endif %}">
+          <div>
+            <h3 style="font-size: 24px; margin-bottom: 8px;">{{ account.name }}</h3>
+            <p>这类账号更接近“长期可研究样本”：关键词分布更广、文章数更厚、跨天命中更稳定。</p>
+          </div>
+          <div class="score">
+            <strong>{{ "%.2f"|format(account.score) }}</strong>
+            <span>当前旧分</span>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat">
+            <strong>{{ account.hit_days }}</strong>
+            <span>命中天数</span>
+          </div>
+          <div class="stat">
+            <strong>{{ account.article_count }}</strong>
+            <span>独立文章数</span>
+          </div>
+          <div class="stat">
+            <strong>{{ account.kw_count }}</strong>
+            <span>命中关键词数</span>
+          </div>
+        </div>
+        {% endfor %}
+      </article>
+
+      <article class="account-card">
+        <span class="badge red">应该回落</span>
+        {% for account in demoted_accounts %}
+        <div class="account-row" style="{% if not loop.first %}padding-top: 18px; margin-top: 18px; border-top: 1px dashed rgba(71,54,35,0.14);{% endif %}">
+          <div>
+            <h3 style="font-size: 24px; margin-bottom: 8px;">{{ account.name }}</h3>
+            <p>这类账号更像“单篇内容击中很多变体词”。研究价值不是没有，但不该天然压过长期强账号。</p>
+          </div>
+          <div class="score">
+            <strong>{{ "%.2f"|format(account.score) }}</strong>
+            <span>当前旧分</span>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat">
+            <strong>{{ account.hit_days }}</strong>
+            <span>命中天数</span>
+          </div>
+          <div class="stat">
+            <strong>{{ account.article_count }}</strong>
+            <span>独立文章数</span>
+          </div>
+          <div class="stat">
+            <strong>{{ account.kw_count }}</strong>
+            <span>命中关键词数</span>
+          </div>
+        </div>
+        {% endfor %}
+      </article>
+    </section>
+
+    <div class="section-title">
+      <h2>“同账号、同一天、同主题、同文章只记一次”会不会有意外</h2>
+      <span>会有边界情况，但可控，而且比现在公允得多</span>
+    </div>
+
+    <section class="rules-grid">
+      {% for item in dedupe_rules %}
+      <article class="rule-card">
+        <span class="badge blue">去重规则 {{ loop.index }}</span>
+        <h3>{{ item.scene }}</h3>
+        <strong>{{ item.rule }}</strong>
+        <p>{{ item.impact }}</p>
+      </article>
+      {% endfor %}
+    </section>
+
+    <div class="section-title">
+      <h2>我建议的研究价值算分骨架</h2>
+      <span>系数以后能调，但骨架最好现在就定</span>
+    </div>
+
+    <section class="formula-grid">
+      {% for item in scoring_blocks %}
+      <article class="formula">
+        <span class="badge gold">评分层 {{ loop.index }}</span>
+        <h3>{{ item.title }}</h3>
+        <code>{{ item.formula }}</code>
+        <p>{{ item.desc }}</p>
+      </article>
+      {% endfor %}
+    </section>
+
+    <div class="section-title">
+      <h2>这套方案落地时，最重要的 4 个实现原则</h2>
+      <span>这几条能防止后面 AI Agent 又把结构做乱</span>
+    </div>
+
+    <section class="steps-grid">
+      {% for item in implementation_points %}
+      <article class="step-card">
+        <div class="step-no">Principle {{ loop.index }}</div>
+        <h3>{{ item.title }}</h3>
+        <p>{{ item.desc }}</p>
+      </article>
+      {% endfor %}
+    </section>
+
+    <section class="summary">
+      <strong>我最后的建议</strong>
+      <p>
+        现在就可以把目标函数拍板为“账号长期研究价值”。字段层先给 keyword 增加一个简单的 <code>topic</code>，并把主题配置放到控制层；计分层先按“同账号 + 同天 + 同主题”折叠主曝光，再用小额内容加分、持续性系数和主题广度系数去拉开真正强账号。这样改完，维港保典、小冯妮儿、kiki、懂安这类账号自然会上升，而靠单篇文章横扫变体词的账号会自然回落。
+      </p>
+    </section>
+
+    <footer>
+      数据时间：{{ generated_at or "未知" }} · 页面路径：<code>/account-score-analysis</code>
+    </footer>
+  </main>
+</body>
+</html>
