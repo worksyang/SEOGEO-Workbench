@@ -20,6 +20,7 @@ from content_hub.features.system.router import router as system_router
 from content_hub.features.wechat.router import router as wechat_router
 from content_hub.features.mp.router import router as mp_router
 from content_hub.features.xhs.router import router as xhs_router
+from content_hub.features.geo.router import router as geo_router
 from content_hub.logging import configure_logging
 
 logger = logging.getLogger("content_hub.http")
@@ -117,6 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(wechat_router)
     app.include_router(mp_router)
     app.include_router(xhs_router)
+    app.include_router(geo_router)
     _mount_frontend(app, resolved_settings.frontend_dist)
     return app
 

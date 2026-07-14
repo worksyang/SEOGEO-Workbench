@@ -48,6 +48,10 @@ class Settings:
     xhs_normalized_root: Path
     xhs_settings_db_path: Path
     xhs_source_timeout_seconds: float
+    geo_source_root: Path
+    geo_database_path: Path
+    geo_platforms_path: Path
+    geo_redfox_root: Path
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -124,6 +128,21 @@ class Settings:
                 "/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/data/state/app.db",
             )).expanduser().resolve(),
             xhs_source_timeout_seconds=float(os.getenv("HUB_XHS_SOURCE_TIMEOUT_SECONDS", "5")),
+            geo_source_root=Path(os.getenv(
+                "HUB_GEO_SOURCE_ROOT", "/Users/works14/Documents/zkcode/GEOProMax"
+            )).expanduser().resolve(),
+            geo_database_path=Path(os.getenv(
+                "HUB_GEO_DATABASE_PATH",
+                "/Users/works14/Documents/zkcode/GEOProMax/data/index/geopromax.sqlite",
+            )).expanduser().resolve(),
+            geo_platforms_path=Path(os.getenv(
+                "HUB_GEO_PLATFORMS_PATH",
+                "/Users/works14/Documents/zkcode/GEOProMax/data/platforms.json",
+            )).expanduser().resolve(),
+            geo_redfox_root=Path(os.getenv(
+                "HUB_GEO_REDFOX_ROOT",
+                "/Users/works14/Documents/zkcode/GEOProMax/data/redfox",
+            )).expanduser().resolve(),
         )
         settings.ensure_directories()
         return settings
