@@ -31,6 +31,7 @@ unified-content-platform-demo.png
 .playwright-cli/
 
 # 汇入源码中的运行数据与凭证
+source/_local_full_backup/
 source/**/data/raw/
 source/**/data/state/
 source/**/data/runs/
