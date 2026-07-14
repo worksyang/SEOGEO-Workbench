@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import httpx
+import pytest
+
+from content_hub.app import create_app
+from content_hub.db.connection import connect
+
+
+def _fixture_settings(settings, tmp_path: Path):
+    root = tmp_path / "legacy"
+    (root / "normalized").mkdir(parents=True)
+    def write(name, value):
+        (root / "normalized" / name).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    write("monitor-data.json", {"generated_at": "2026-07-14T01:00:00", "window_days": 1, "keywords": [{"keyword_id": "kw_1", "keyword": "港险", "topic": "港险", "keyword_bucket": "主题"}], "accounts": [{"account_id": "acct_1", "canonical_name": "作者"}]})
+    write("accounts.json", [{"account_id": "acct_1", "canonical_name": "作者", "first_seen_at": "2026-07-13T00:00:00"}])
+    write("articles.json", [{"article_id": "art_1", "normalized_url": "https://mp.weixin.qq.com/s/1", "title": "标题", "account_id": "acct_1", "published_at": "2026-07-13T10:00:00", "read_count": 8}])
+    write("snapshots.json", [{"snapshot_id": "snap_1", "keyword_id": "kw_1", "captured_at": "2026-07-14T00:00:00", "result_count": 1}])
+    write("snapshot_registry.json", {str(root / "source.md"): {"keyword_text": "港险"}})
+    write("snapshot_terms.json", [{"term_id": "term_1", "snapshot_id": "snap_1", "term_type": "suggestion", "position": 1, "term_text": "港险"}])
+    write("ranking_hits.json", [{"hit_id": "hit_1", "snapshot_id": "snap_1", "rank": 1, "article_id": "art_1", "title_raw": "标题", "account_name_raw": "作者"}])
+    write("article_metric_observations.json", [{"observation_id": "obs_1", "article_id": "art_1", "observed_at": "2026-07-14T00:00:00", "read_count": 8}])
+    return replace(settings, wechat_source_url="http://127.0.0.1:1", wechat_source_root=root)
+
+
+def test_wechat_degraded_bootstrap_and_idempotent_import(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    async def run():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                bootstrap = await client.get("/api/v1/wechat/bootstrap")
+                assert bootstrap.status_code == 200
+                assert bootstrap.json()["data"]["source_status"]["status"] == "degraded"
+                assert bootstrap.json()["data"]["summary"]["keyword_count"] == 1
+                dry = await client.post("/api/v1/wechat/import", json={"dry_run": True})
+                assert dry.json()["data"]["counts"]["contents"] == 1
+                first = await client.post("/api/v1/wechat/import")
+                second = await client.post("/api/v1/wechat/import")
+                assert first.status_code == second.status_code == 200
+                assert first.json()["data"]["batch_id"] == second.json()["data"]["batch_id"]
+                with connect(configured, readonly=True) as connection:
+                    assert connection.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == 1
+                    assert connection.execute("SELECT COUNT(*) FROM ingestion_batches").fetchone()[0] == 1
+                article = await client.get("/api/v1/wechat/articles/art_1")
+                assert article.status_code == 200
+                assert article.json()["data"]["article"]["title"] == "标题"
+    asyncio.run(run())
+
+
+def test_wechat_refresh_requires_confirmation_and_refuses_unavailable_source(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    async def run():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+                missing = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={})
+                assert missing.status_code == 422
+                refused = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
+                assert refused.status_code == 409
+                assert refused.json()["error"]["code"] == "CONFLICT"
+    asyncio.run(run())
+
+
+def test_wechat_manifest_timezone_canonical_placeholder_and_closure(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import WechatAdapter
+    adapter = WechatAdapter(configured)
+    records, manifest, audit = adapter.import_records(limit=1)
+    assert len(records["snapshots"]) == 1
+    assert len(records["hits"]) == 1
+    assert {x["article_id"] for x in records["articles"]} == {"art_1"}
+    assert audit["registry_count"] == 1
+    first = adapter.manifest_id(manifest)
+    article_path = configured.wechat_source_root / "normalized/articles.json"
+    article_path.write_text(article_path.read_text(encoding="utf-8").replace("标题", "标题2"), encoding="utf-8")
+    _, changed_manifest, _ = adapter.import_records(limit=1)
+    assert adapter.manifest_id(changed_manifest) != first
+    from content_hub.features.wechat.service import _safe_url, _source_time
+    assert _safe_url("https://mp.weixin.qq.com/s/1?utm_source=x") == "https://mp.weixin.qq.com/s/1"
+    assert _safe_url("placeholder://作者/标题") is None
+    assert _source_time("2026-07-14 10:00:00") == "2026-07-14T02:00:00Z"
+    assert _source_time("26/07/10") == "2026-07-09T16:00:00Z"
+
+
+def test_wechat_schema_invalid_and_audit_reconcile(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    bad = configured.wechat_source_root / "normalized/accounts.json"
+    bad.write_text(json.dumps({"not": "rows"}), encoding="utf-8")
+    async def run():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+                response = await client.post("/api/v1/wechat/import", json={"dry_run": True})
+                assert response.status_code == 409
+                assert response.json()["error"]["code"] == "CONFLICT"
+    asyncio.run(run())
+
+
+def test_wechat_refresh_preserves_200_202_409(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import RemoteResponse, WechatAdapter, WechatSourceError
+    from content_hub.features.wechat.service import WechatService
+    monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: {"keyword_id": keyword_id, "keyword": "港险"})
+    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "running"}, 200))
+    service = WechatService(configured)
+    assert service.refresh("kw_1", True)["http_status"] == 200
+    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "queued"}, 202))
+    assert service.refresh("kw_1", True)["http_status"] == 202
+    def rejected(self, keyword_id, keyword):
+        raise WechatSourceError("batch running", kind="remote_http", status=409, payload={"status": "rejected", "reason": "batch_running"})
+    monkeypatch.setattr(WechatAdapter, "remote_refresh", rejected)
+    result = service.refresh("kw_1", True)
+    assert result["http_status"] == 409
+    assert result["result"]["status"] == "rejected"
+
+
+def test_wechat_snapshot_slice_contract_and_term_features(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    root = configured.wechat_source_root / "normalized"
+    (root / "snapshots.json").write_text(json.dumps([
+        {"snapshot_id": "snap_1", "keyword_id": "kw_1", "captured_at": "2026-07-14T00:00:00", "result_count": 1, "trigger_type": "manual"},
+        {"snapshot_id": "snap_2", "keyword_id": "kw_1", "captured_at": "2026-07-14T01:00:00", "result_count": 1, "trigger_type": "scheduled"},
+    ]), encoding="utf-8")
+    (root / "articles.json").write_text(json.dumps([
+        {"article_id": "art_1", "normalized_url": "https://mp.weixin.qq.com/s/1", "title": "旧文章", "account_id": "acct_1"},
+        {"article_id": "art_2", "normalized_url": "https://mp.weixin.qq.com/s/2", "title": "新文章", "account_id": "acct_1"},
+    ]), encoding="utf-8")
+    (root / "ranking_hits.json").write_text(json.dumps([
+        {"hit_id": "hit_1", "snapshot_id": "snap_1", "rank": 2, "article_id": "art_1"},
+        {"hit_id": "hit_2", "snapshot_id": "snap_2", "rank": 1, "article_id": "art_2"},
+    ]), encoding="utf-8")
+    (root / "snapshot_terms.json").write_text(json.dumps([
+        {"term_id": "term_1", "snapshot_id": "snap_1", "term_type": "suggestion", "position": 1, "term_text": "旧词"},
+        {"term_id": "term_2", "snapshot_id": "snap_2", "term_type": "related", "position": 1, "term_text": "新词"},
+    ]), encoding="utf-8")
+    (root / "article_metric_observations.json").write_text(json.dumps([
+        {"observation_id": "obs_1", "article_id": "art_1", "source_snapshot_id": "snap_1", "observed_at": "2026-07-14T00:00:00", "read_count": 1},
+        {"observation_id": "obs_2", "article_id": "art_2", "source_snapshot_id": "snap_2", "observed_at": "2026-07-14T01:00:00", "read_count": 2},
+    ]), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    payload = WechatService(configured).keyword("kw_1")
+    views = payload["snapshots"]
+    assert [view["snapshot_id"] for view in views] == ["snap_1", "snap_2"]
+    assert views[0]["hits"][0]["rank"] == 2 and views[1]["hits"][0]["rank"] == 1
+    assert views[0]["articles"][0]["article_id"] == "art_1"
+    assert views[1]["articles"][0]["article_id"] == "art_2"
+    assert views[0]["features"]["suggestions"][0]["term"] == "旧词"
+    assert views[1]["features"]["related"][0]["term"] == "新词"
+    assert views[0]["observations"][0]["observation_id"] == "obs_1"
+    assert views[1]["observations"][0]["observation_id"] == "obs_2"
+
+
+def test_wechat_import_features_platform_and_zero_growth(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    from content_hub.db.migrations import migrate
+    migrate(configured)
+    service = WechatService(configured)
+    first = service.import_history(dry_run=False, limit=None)
+    with connect(configured, readonly=True) as con:
+        before = {table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("keywords", "creators", "contents", "content_identifiers", "search_snapshots", "search_hits", "content_discoveries", "metric_definitions", "metric_observations", "ingestion_batches")}
+        features = con.execute("SELECT features_json,platform FROM search_snapshots WHERE snapshot_id='snap_1'").fetchone()
+        assert json.loads(features[0])["suggestions"][0]["term"] == "港险"
+        assert features[1] == "wechat-search"
+        assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.snapshot_term'").fetchone()[0] == 0
+    second = service.import_history(dry_run=False, limit=None)
+    assert first["batch_id"] == second["batch_id"]
+    with connect(configured, readonly=True) as con:
+        after = {table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in before}
+    assert after == before
+
+
+def test_wechat_limit_and_full_have_distinct_batches_and_consistency_gate(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    limited = service.import_history(dry_run=True, limit=1)
+    full = service.import_history(dry_run=True, limit=None)
+    assert limited["batch_id"] != full["batch_id"]
+    from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
+    adapter = WechatAdapter(configured)
+    original = adapter.all_records
+    def changing():
+        result = original()
+        path = configured.wechat_source_root / "normalized/articles.json"
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        return result
+    monkeypatch.setattr(adapter, "all_records", changing)
+    try:
+        adapter.import_records(max_consistency_attempts=1)
+    except WechatSourceError as exc:
+        assert exc.kind == "source_changed_during_read"
+    else:
+        raise AssertionError("必须拒绝读中变更的源文件")
+
+
+def test_wechat_rejected_metrics_and_status_time(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    root = configured.wechat_source_root / "normalized/article_metric_observations.json"
+    root.write_text(json.dumps([
+        {"observation_id": "bad_1", "article_id": "art_1", "observed_at": "not-a-time", "read_count": 9},
+        {"observation_id": "bad_2", "article_id": "art_1", "observed_at": "2026-07-14T00:00:00", "read_count": "not-a-number"},
+    ]), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    result = WechatService(configured).import_history(dry_run=False, limit=None)
+    reasons = {item["reason"] for item in result["audit"]["rejected"]}
+    assert "invalid_observed_at" in reasons and "invalid_numeric" in reasons
+    with connect(configured, readonly=True) as con:
+        row = con.execute("SELECT status,records_failed,records_written FROM ingestion_batches").fetchone()
+        assert row[0] == "partial_failed" and row[1] >= 1
+        status = con.execute("SELECT status,last_checked_at FROM system_connections WHERE system_key='wechat-search'").fetchone()
+        assert status[0] == "degraded" and status[1]
+
+
+def test_wechat_hit_pk_unique_and_snapshot_unique_conflicts(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    hits_path = configured.wechat_source_root / "normalized/ranking_hits.json"
+    hits_path.write_text(json.dumps([{"hit_id": "hit_new", "snapshot_id": "snap_other", "rank": 1, "article_id": "art_1", "title_raw": "变化"}]), encoding="utf-8")
+    snapshots_path = configured.wechat_source_root / "normalized/snapshots.json"
+    snapshots_path.write_text(json.dumps([{"snapshot_id": "snap_other", "keyword_id": "kw_1", "captured_at": "2026-07-14T00:00:00", "result_count": 1}]), encoding="utf-8")
+    result = service.import_history(dry_run=False, limit=None)
+    assert result["audit"]["rejected"] == []
+    with connect(configured, readonly=True) as con:
+        assert con.execute("SELECT COUNT(*) FROM search_snapshots").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM search_hits").fetchone()[0] == 1
+        row = con.execute("SELECT hit_id,title_raw FROM search_hits").fetchone()
+        assert row[0] == "hit_new" and row[1] == "变化"
+
+
+def test_wechat_refresh_route_preserves_http_status_and_body(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import RemoteResponse, WechatAdapter, WechatSourceError
+    monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: {"keyword_id": keyword_id, "keyword": "港险"})
+    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "queued", "job_id": "job_1"}, 202))
+    async def run():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+                queued = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
+                assert queued.status_code == 202 and queued.json()["data"]["result"]["job_id"] == "job_1"
+                def rejected(self, keyword_id, keyword):
+                    raise WechatSourceError("batch running", kind="remote_http", status=409, payload={"status": "rejected", "reason": "batch_running"})
+                monkeypatch.setattr(WechatAdapter, "remote_refresh", rejected)
+                blocked = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
+                assert blocked.status_code == 409
+                assert blocked.json()["data"]["result"]["reason"] == "batch_running"
+    asyncio.run(run())
+
+
+def test_wechat_cache_replaces_version_without_accumulating(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import WechatAdapter
+    adapter = WechatAdapter(configured)
+    first = adapter.local_json("normalized/articles.json")
+    path = configured.wechat_source_root / "normalized/articles.json"
+    path.write_text(json.dumps([{**first[0], "title": "版本二"}]), encoding="utf-8")
+    second = adapter.local_json("normalized/articles.json")
+    assert second[0]["title"] == "版本二"
+    key = (str(configured.wechat_source_root), "normalized/articles.json")
+    assert len([cache_key for cache_key in WechatAdapter._json_cache if cache_key == key]) == 1
+
+
+@pytest.mark.parametrize(
+    ("filename", "bad_value"),
+    [
+        ("accounts.json", [{}]),
+        ("articles.json", [{}]),
+        ("snapshots.json", [{}]),
+        ("ranking_hits.json", [{}]),
+        ("snapshot_terms.json", [{}]),
+        ("article_metric_observations.json", [{}]),
+    ],
+)
+def test_wechat_each_source_schema_enforces_required_fields(settings, tmp_path, filename, bad_value):
+    configured = _fixture_settings(settings, tmp_path)
+    path = configured.wechat_source_root / "normalized" / filename
+    path.write_text(json.dumps(bad_value), encoding="utf-8")
+    from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
+    with pytest.raises(WechatSourceError, match="Schema"):
+        WechatAdapter(configured).local_json(f"normalized/{filename}")
+
+
+def test_wechat_markdown_audit_stream_limit_is_observable(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    root = configured.wechat_source_root
+    markdown = root / "large.md"
+    markdown.write_text(("正文\n" * 12000) + "#### 文章列表\n", encoding="utf-8")
+    snapshots = root / "normalized/snapshots.json"
+    snapshots.write_text(json.dumps([{"snapshot_id": "snap_1", "keyword_id": "kw_1", "captured_at": "2026-07-14T00:00:00", "source_file_path": "large.md"}]), encoding="utf-8")
+    registry = root / "normalized/snapshot_registry.json"
+    registry.write_text(json.dumps({str(markdown): {"keyword_text": "港险"}}), encoding="utf-8")
+    from content_hub.adapters.wechat import WechatAdapter
+    _, _, audit = WechatAdapter(configured).import_records(limit=None)
+    assert audit["scan_limited_count"] == 1
+    assert audit["markdown_missing_article_list_count"] == 0
+
+
+def test_wechat_hub_article_snapshots_are_snapshot_objects(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    payload = service.article("art_1")
+    assert payload["snapshots"]
+    assert "hits" in payload["snapshots"][0]
+    assert payload["snapshots"][0]["snapshot_id"] == "snap_1"
+    assert payload["snapshots"][0]["hits"][0]["hit_id"] == "hit_1"
+
+
+def test_wechat_keyword_prefers_hub_after_import_and_keeps_slices(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
+
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    monkeypatch.setattr(WechatAdapter, "detail_records", lambda self: (_ for _ in ()).throw(AssertionError("不应读取 normalized 详情")))
+    monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: (_ for _ in ()).throw(WechatSourceError("旧服务不可用")))
+    payload = service.keyword("kw_1")
+    assert payload["source_status"]["source"] == "hub_db"
+    assert payload["snapshots"][0]["snapshot_id"] == "snap_1"
+    assert payload["snapshots"][0]["hits"][0]["hit_id"] == "hit_1"
+    assert payload["snapshots"][0]["articles"][0]["article_id"] == "art_1"
+    assert payload["snapshots"][0]["features"]["suggestions"][0]["term"] == "港险"
+
+
+def test_wechat_keyword_summary_preserves_remote_score_fields(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import WechatAdapter
+    from content_hub.features.wechat.service import WechatService
+
+    remote_detail = {
+        "keyword_id": "kw_1",
+        "keyword": "港险",
+        "history_best": [1, 2],
+        "history_hits": [3, 4],
+        "turnover_runs": [{"run_id": "run_1"}],
+        "kw_score": 91.5,
+    }
+    monkeypatch.setattr(
+        WechatAdapter,
+        "remote_bootstrap",
+        lambda self: {"keywords": [remote_detail], "accounts": []},
+    )
+    monkeypatch.setattr(
+        WechatAdapter,
+        "remote_keyword",
+        lambda self, keyword_id: {**remote_detail, "keyword_id": keyword_id},
+    )
+    service = WechatService(configured)
+    summary = service.bootstrap()["keywords"][0]
+    assert "history_best" not in summary
+    assert "history_hits" not in summary
+    assert "turnover_runs" not in summary
+    assert "kw_score" not in summary
+    payload = service.keyword("kw_1")
+    assert payload["keyword"]["history_best"] == [1, 2]
+    assert payload["keyword"]["history_hits"] == [3, 4]
+    assert payload["keyword"]["turnover_runs"] == [{"run_id": "run_1"}]
+    assert payload["keyword"]["kw_score"] == 91.5
+
+
+def test_wechat_article_hub_read_does_not_promote_offline_connection(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    with connect(configured) as con:
+        con.execute(
+            "UPDATE system_connections SET status='offline',last_checked_at='2026-07-14T00:00:00Z' WHERE system_key='wechat-search'"
+        )
+        con.commit()
+    payload = service.article("art_1")
+    assert payload["source_status"]["source"] == "hub_db"
+    with connect(configured, readonly=True) as con:
+        assert con.execute(
+            "SELECT status FROM system_connections WHERE system_key='wechat-search'"
+        ).fetchone()[0] == "offline"
+
+
+def test_wechat_import_releases_source_json_cache(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.adapters.wechat import WechatAdapter
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    root_key = str(configured.wechat_source_root)
+    assert not [key for key in WechatAdapter._json_cache if key[0] == root_key]
+
+
+def test_wechat_placeholder_url_is_warning_but_invalid_url_is_rejected(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    articles_path = configured.wechat_source_root / "normalized/articles.json"
+    articles_path.write_text(
+        json.dumps([
+            {
+                "article_id": "art_1",
+                "normalized_url": "placeholder://作者/标题",
+                "title": "标题",
+                "account_id": "acct_1",
+            }
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    placeholder_result = service.import_history(dry_run=False, limit=None)
+    assert placeholder_result["audit"]["rejected"] == []
+    assert placeholder_result["audit"]["placeholder_count"] == 1
+    assert placeholder_result["audit"]["placeholder_samples"][0]["value"] == "placeholder://作者/标题"
+    with connect(configured, readonly=True) as con:
+        content = con.execute(
+            "SELECT canonical_url,payload_json FROM contents WHERE content_id='art_1'"
+        ).fetchone()
+        assert content[0] is None
+        assert json.loads(content[1])["normalized_url"] == "placeholder://作者/标题"
+        batch = con.execute(
+            "SELECT status,records_failed FROM ingestion_batches WHERE batch_id=?",
+            (placeholder_result["batch_id"],),
+        ).fetchone()
+        assert tuple(batch) == ("succeeded", 0)
+        assert con.execute(
+            "SELECT status FROM system_connections WHERE system_key='wechat-search'"
+        ).fetchone()[0] == "healthy"
+
+    articles_path.write_text(
+        json.dumps([
+            {
+                "article_id": "art_1",
+                "normalized_url": "这不是合法 URL",
+                "title": "标题",
+                "account_id": "acct_1",
+            }
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    invalid_result = service.import_history(dry_run=False, limit=None)
+    assert invalid_result["audit"]["placeholder_count"] == 0
+    assert any(
+        item["reason"] == "invalid_url"
+        for item in invalid_result["audit"]["rejected"]
+    )
+    with connect(configured, readonly=True) as con:
+        batch = con.execute(
+            "SELECT status,records_failed FROM ingestion_batches WHERE batch_id=?",
+            (invalid_result["batch_id"],),
+        ).fetchone()
+        assert batch[0] == "partial_failed"
+        assert batch[1] >= 1
+        assert con.execute(
+            "SELECT status FROM system_connections WHERE system_key='wechat-search'"
+        ).fetchone()[0] == "degraded"

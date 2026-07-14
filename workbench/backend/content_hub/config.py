@@ -31,6 +31,9 @@ class Settings:
     log_level: str
     allowed_roots: tuple[Path, ...]
     cors_origins: tuple[str, ...]
+    wechat_source_url: str
+    wechat_source_root: Path
+    wechat_source_timeout_seconds: float
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -71,6 +74,16 @@ class Settings:
             log_level=os.getenv("HUB_LOG_LEVEL", "INFO").upper(),
             allowed_roots=configured_roots or default_roots,
             cors_origins=cors_origins,
+            wechat_source_url=os.getenv("HUB_WECHAT_SOURCE_URL", "http://127.0.0.1:8765"),
+            wechat_source_root=Path(
+                os.getenv(
+                    "HUB_WECHAT_SOURCE_ROOT",
+                    "/Users/works14/.claude/监控/wechat-ybxhyyh-top3",
+                )
+            ).expanduser().resolve(),
+            wechat_source_timeout_seconds=float(
+                os.getenv("HUB_WECHAT_SOURCE_TIMEOUT_SECONDS", "3")
+            ),
         )
         settings.ensure_directories()
         return settings

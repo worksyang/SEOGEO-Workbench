@@ -45,3 +45,26 @@ export interface StatusResponse {
     }
   }
 }
+
+export type WechatSourceStatus = 'healthy' | 'degraded' | 'offline' | 'unknown' | string
+
+export interface WechatBootstrapResponse {
+  ok?: boolean
+  data?: {
+    source_status?: WechatSourceStatus | null
+    summary?: Record<string, unknown> | null
+    keywords?: unknown[] | null
+    updated_at?: string | null
+    [key: string]: unknown
+  } | null
+}
+
+export interface WechatKeywordResponse {
+  ok?: boolean
+  data?: Record<string, unknown> | null
+}
+
+export interface WechatArticleResponse {
+  ok?: boolean
+  data?: Record<string, unknown> | null
+}
