@@ -408,8 +408,18 @@ class WechatService:
             "rejected": [],
             "placeholder_count": 0,
             "placeholder_samples": [],
+            "metric_fact_count": 0,
+            "metric_unique_count": 0,
+            "metric_collision_extra_count": 0,
+            "metric_collision_group_count": 0,
+            "metric_collision_same_value_count": 0,
+            "metric_collision_value_diff_count": 0,
+            "metric_collisions": [],
         }
         if dry_run:
+            with connect(self.settings, readonly=True) as con:
+                ids, snapshot_map = self._metric_context(con, records)
+                self._prepare_metric_facts(con, records, ids, snapshot_map, report, planned_snapshot_ids=set(snapshot_map.values()))
             self._connection_status("healthy", success_at=_utc_now())
             self._audit("wechat.import", "succeeded", details={"dry_run": True, "batch_id": batch_id, "counts": counts, "audit": report})
             return {"dry_run": True, "source": "legacy_normalized", "counts": counts, "batch_id": batch_id, "audit": report}
@@ -504,14 +514,10 @@ class WechatService:
             if mapped:
                 snapshot_time = con.execute("SELECT captured_at FROM search_snapshots WHERE snapshot_id=?", (sid,)).fetchone()[0]
                 con.execute("INSERT OR IGNORE INTO content_discoveries(discovery_id,content_id,discovery_system,discovery_channel,discovered_at,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?)", (_id("discovery", f"{mapped}:{sid}"),mapped,"wechat-search","keyword-rank",snapshot_time,sid,row.get("url_raw"),_json(row)))
-        for row in records["observations"]:
-            cid = ids.get(str(row.get("article_id"))); observed = _source_time(row.get("observed_at"))
-            metric_row = {**row, "source_snapshot_id": snapshot_map.get(str(row.get("source_snapshot_id"))) if row.get("source_snapshot_id") else None}
-            metric_accepted = False
-            for key, label in (("read_count","微信阅读数"),("like_count","微信点赞数"),("friends_follow_count","微信在看数"),("original_article_count","微信原创数")):
-                metric_accepted = self._metric(con,cid,metric_row,key,label,observed,report,source_observation_id=row.get("observation_id")) or metric_accepted
-            if metric_accepted:
-                accept("observations", row.get("observation_id"))
+        facts = self._prepare_metric_facts(con, records, ids, snapshot_map, report)
+        for fact in facts:
+            self._write_metric_fact(con, fact)
+            accept("observations", fact["source_observation_id"])
         records_failed = len(report["rejected"])
         records_written = sum(len(values) for values in accepted_rows.values())
         batch_status = "partial_failed" if records_failed else "succeeded"
@@ -519,18 +525,141 @@ class WechatService:
         con.execute("INSERT INTO ingestion_checkpoints(adapter_key,checkpoint_key,cursor_value,source_hash,last_success_at,batch_id,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(adapter_key,checkpoint_key) DO UPDATE SET cursor_value=excluded.cursor_value,source_hash=excluded.source_hash,last_success_at=excluded.last_success_at,batch_id=excluded.batch_id,payload_json=excluded.payload_json", ("wechat-search","normalized",now,report["manifest_id"],now,batch_id,_json(report)))
 
     @staticmethod
-    def _metric(con: sqlite3.Connection, subject_id: str | None, row: dict[str, Any], key: str, label: str, observed: str | None, report: dict[str, Any], *, source_observation_id: str | None = None) -> bool:
-        if not subject_id or row.get(key) is None:
-            return False
-        if observed is None:
-            report["rejected"].append({"kind":"metric","source_observation_id":source_observation_id,"metric":key,"value":row.get(key),"reason":"invalid_observed_at"})
-            return False
-        value = _number(row.get(key))
-        if value is None: report["rejected"].append({"kind":"metric","source_observation_id":source_observation_id,"metric":key,"value":row.get(key),"reason":"invalid_numeric"}); return False
-        metric_key = f"wechat.{key}"
-        con.execute("INSERT OR IGNORE INTO metric_definitions(metric_key,platform,subject_type,display_name,value_type,unit,accumulation_mode,description) VALUES(?,?,?,?,?,?,?,?)", (metric_key,"wechat-search","content",label,"number","count","gauge","旧微信 normalized 事实"))
-        oid = f"{source_observation_id}:{metric_key}" if source_observation_id else _id("observation", f"{subject_id}:{metric_key}:{observed}")
-        snapshot_id = row.get("source_snapshot_id")
-        if snapshot_id and con.execute("SELECT 1 FROM search_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone() is None: snapshot_id = None
-        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(observation_id) DO UPDATE SET numeric_value=excluded.numeric_value,observed_at=excluded.observed_at,snapshot_id=excluded.snapshot_id,payload_json=excluded.payload_json", (oid,"content",subject_id,metric_key,observed,value,snapshot_id,row.get("source_file_path"),_json({**row,"source_observation_id":source_observation_id})))
-        return True
+    def _time_precision(value: Any) -> str | None:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if re.fullmatch(r"\d{2}[-/]\d{2}[-/]\d{2}", raw):
+            return "date_2digit_year"
+        if re.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}", raw):
+            return "date"
+        if "T" in raw or re.search(r"\d{2}:\d{2}", raw):
+            return "datetime"
+        return None
+
+    @staticmethod
+    def _candidate_sort_key(fact: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            fact["observation_id"],
+            str(fact.get("source_file_path") or ""),
+            str(fact["numeric_value"]),
+            fact["canonical_row_json"],
+        )
+
+    def _metric_context(self, con: sqlite3.Connection, records: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+        ids: dict[str, str] = {}
+        source_url_ids: dict[str, str] = {}
+        for row in records["articles"]:
+            source_id = str(row.get("article_id") or _id("content", row.get("title")))
+            url = _safe_url(row.get("normalized_url") or row.get("raw_url"))
+            existing = con.execute("SELECT content_id FROM contents WHERE canonical_url=?", (url,)).fetchone() if url else None
+            ids[source_id] = str(existing[0]) if existing else source_url_ids.get(url, source_id)
+            if url:
+                source_url_ids.setdefault(url, ids[source_id])
+        snapshot_map: dict[str, str] = {}
+        source_snapshot_keys: dict[tuple[str, str, str], str] = {}
+        for row in records["snapshots"]:
+            sid = str(row.get("snapshot_id") or "")
+            captured = _source_time(row.get("captured_at"))
+            kid = row.get("keyword_id")
+            keyword = next((x.get("keyword") for x in records["keywords"] if x.get("keyword_id") == kid), str(kid or ""))
+            existing = con.execute("SELECT snapshot_id FROM search_snapshots WHERE platform=? AND keyword=? AND captured_at=?", ("wechat-search", keyword, captured)).fetchone() if captured else None
+            mapped = con.execute("SELECT snapshot_id FROM search_snapshots WHERE snapshot_id=?", (sid,)).fetchone()
+            if existing:
+                snapshot_map[sid] = str(existing[0])
+            elif mapped:
+                snapshot_map[sid] = str(mapped[0])
+            elif sid and captured:
+                snapshot_map[sid] = source_snapshot_keys.setdefault(("wechat-search", keyword, captured), sid)
+            if sid and captured and (("wechat-search", keyword, captured) not in source_snapshot_keys):
+                source_snapshot_keys[("wechat-search", keyword, captured)] = snapshot_map[sid]
+        return ids, snapshot_map
+
+    def _prepare_metric_facts(self, con: sqlite3.Connection, records: dict[str, Any], ids: dict[str, str], snapshot_map: dict[str, str], report: dict[str, Any], *, planned_snapshot_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        planned_snapshot_ids = planned_snapshot_ids or set()
+        groups: dict[tuple[str, str, str, str, str | None], list[dict[str, Any]]] = {}
+        labels = (("read_count", "微信阅读数"), ("like_count", "微信点赞数"), ("friends_follow_count", "微信在看数"), ("original_article_count", "微信原创数"))
+        for row in records["observations"]:
+            cid = ids.get(str(row.get("article_id")))
+            observed = _source_time(row.get("observed_at"))
+            source_oid = str(row.get("observation_id") or "")
+            snapshot_id = snapshot_map.get(str(row.get("source_snapshot_id"))) if row.get("source_snapshot_id") else None
+            if snapshot_id and snapshot_id not in planned_snapshot_ids and con.execute("SELECT 1 FROM search_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone() is None:
+                snapshot_id = None
+            for key, label in labels:
+                if not cid or row.get(key) is None:
+                    continue
+                if observed is None:
+                    report["rejected"].append({"kind": "metric", "source_observation_id": source_oid, "metric": key, "value": row.get(key), "reason": "invalid_observed_at"})
+                    continue
+                value = _number(row.get(key))
+                if value is None:
+                    report["rejected"].append({"kind": "metric", "source_observation_id": source_oid, "metric": key, "value": row.get(key), "reason": "invalid_numeric"})
+                    continue
+                metric_key = f"wechat.{key}"
+                raw_observed_at = row.get("raw_observed_at") or row.get("observed_at")
+                source_precision = row.get("observed_at_precision") or self._time_precision(raw_observed_at)
+                source_origin = row.get("observed_at_source")
+                source_file_path = row.get("source_file_path") or row.get("source_ref")
+                canonical_row_json = _json(row)
+                oid = f"{source_oid}:{metric_key}" if source_oid else _id("observation", f"{cid}:{metric_key}:{observed}:{snapshot_id}:{canonical_row_json}")
+                fact = {
+                    "observation_id": oid, "source_observation_id": source_oid, "subject_id": cid,
+                    "metric_key": metric_key, "metric_label": label, "observed_at": observed,
+                    "numeric_value": value, "snapshot_id": snapshot_id, "source_ref": source_file_path,
+                    "source_file_path": source_file_path, "raw_observed_at": raw_observed_at,
+                    "observed_at_precision": source_precision, "observed_at_source": source_origin,
+                    "canonical_row_json": canonical_row_json,
+                    "row": {**row, "source_snapshot_id": snapshot_id},
+                }
+                groups.setdefault(("content", cid, metric_key, observed, snapshot_id), []).append(fact)
+        # A reused source observation_id must not make two different natural keys
+        # fight over one PRIMARY KEY. Keep the base id where possible, and add a
+        # deterministic variant only for cross-natural-key reuse.
+        by_base_id: dict[str, list[tuple[tuple[str, str, str, str, str | None], dict[str, Any]]]] = {}
+        for natural_key, candidates in groups.items():
+            for candidate in candidates:
+                by_base_id.setdefault(candidate["observation_id"], []).append((natural_key, candidate))
+        for base_id, entries in by_base_id.items():
+            natural_keys = {entry[0] for entry in entries}
+            if len(natural_keys) > 1:
+                for natural_key, candidate in entries:
+                    candidate["observation_id"] = f"{base_id}:{_id('variant', _json({'natural_key': natural_key, 'candidate': candidate['canonical_row_json']}))[-20:]}"
+        winners: list[dict[str, Any]] = []
+        for natural_key in sorted(groups, key=lambda x: tuple("" if v is None else str(v) for v in x)):
+            candidates = sorted(groups[natural_key], key=self._candidate_sort_key)
+            winner = candidates[0]
+            winners.append(winner)
+            if len(candidates) > 1:
+                same_value = len({str(x["numeric_value"]) for x in candidates}) == 1
+                report["metric_collisions"].append({
+                    "natural_key": {"subject_type": natural_key[0], "subject_id": natural_key[1], "metric_key": natural_key[2], "observed_at": natural_key[3], "snapshot_id": natural_key[4]},
+                    "same_value": same_value,
+                    "candidates": [{
+                        "observation_id": x["observation_id"],
+                        "numeric_value": x["numeric_value"],
+                        "source_file_path": x["source_file_path"],
+                        "source_ref": x["source_ref"],
+                        "raw_observed_at": x["raw_observed_at"],
+                        "observed_at_precision": x["observed_at_precision"],
+                        "observed_at_source": x["observed_at_source"],
+                        "winner": x is winner,
+                    } for x in candidates],
+                })
+        report["metric_fact_count"] = sum(len(v) for v in groups.values())
+        report["metric_unique_count"] = len(groups)
+        report["metric_collision_group_count"] = len(report["metric_collisions"])
+        report["metric_collision_extra_count"] = sum(len(v) - 1 for v in groups.values() if len(v) > 1)
+        report["metric_collision_same_value_count"] = sum(1 for x in report["metric_collisions"] if x["same_value"])
+        report["metric_collision_value_diff_count"] = sum(1 for x in report["metric_collisions"] if not x["same_value"])
+        return winners
+
+    @staticmethod
+    def _write_metric_fact(con: sqlite3.Connection, fact: dict[str, Any]) -> None:
+        con.execute("INSERT OR IGNORE INTO metric_definitions(metric_key,platform,subject_type,display_name,value_type,unit,accumulation_mode,description) VALUES(?,?,?,?,?,?,?,?)", (fact["metric_key"], "wechat-search", "content", fact["metric_label"], "number", "count", "gauge", "旧微信 normalized 事实"))
+        key = (fact["subject_id"], fact["metric_key"], fact["observed_at"], fact["snapshot_id"])
+        con.execute("DELETE FROM metric_observations WHERE subject_type='content' AND subject_id=? AND metric_key=? AND observed_at=? AND COALESCE(snapshot_id,'no-snapshot')=COALESCE(?,'no-snapshot') AND observation_id<>?", (*key, fact["observation_id"]))
+        existing = con.execute("SELECT subject_type,subject_id,metric_key,observed_at,snapshot_id FROM metric_observations WHERE observation_id=?", (fact["observation_id"],)).fetchone()
+        if existing and tuple(existing) != ("content", *key):
+            con.execute("DELETE FROM metric_observations WHERE observation_id=?", (fact["observation_id"],))
+        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(observation_id) DO UPDATE SET subject_type=excluded.subject_type,subject_id=excluded.subject_id,metric_key=excluded.metric_key,observed_at=excluded.observed_at,numeric_value=excluded.numeric_value,snapshot_id=excluded.snapshot_id,source_ref=excluded.source_ref,payload_json=excluded.payload_json", (fact["observation_id"], "content", fact["subject_id"], fact["metric_key"], fact["observed_at"], fact["numeric_value"], fact["snapshot_id"], fact["source_ref"], _json({**fact["row"], "source_observation_id": fact["source_observation_id"]})))

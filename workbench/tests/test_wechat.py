@@ -219,6 +219,113 @@ def test_wechat_rejected_metrics_and_status_time(settings, tmp_path):
         assert status[0] == "degraded" and status[1]
 
 
+def test_wechat_metric_collisions_are_canonical_audited_and_idempotent(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    metric_path = configured.wechat_source_root / "normalized/article_metric_observations.json"
+    rows = [
+        {"observation_id": "z_same", "article_id": "art_1", "source_snapshot_id": "missing", "observed_at": "2026-07-14T00:00:00", "observed_at_precision": "date", "observed_at_source": "filename", "raw_observed_at": "2026-07-14", "read_count": 3, "source_file_path": "history-z.md"},
+        {"observation_id": "a_same", "article_id": "art_1", "source_snapshot_id": "also-missing", "observed_at": "2026-07-14T00:00:00", "observed_at_precision": "date", "observed_at_source": "filename", "raw_observed_at": "2026-07-14", "read_count": 3, "source_file_path": "history-a.md"},
+        {"observation_id": "c_diff", "article_id": "art_1", "source_snapshot_id": "snap_1", "observed_at": "2026-07-14T01:00:00", "read_count": 6, "source_file_path": "history-c.md"},
+        {"observation_id": "b_diff", "article_id": "art_1", "source_snapshot_id": "snap_1", "observed_at": "2026-07-14T01:00:00", "read_count": 5, "source_file_path": "history-b.md"},
+    ]
+    metric_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    from content_hub.db.migrations import migrate
+    migrate(configured)
+    service = WechatService(configured)
+    dry = service.import_history(dry_run=True, limit=None)
+    result = service.import_history(dry_run=False, limit=None)
+    assert dry["audit"]["metric_fact_count"] == result["audit"]["metric_fact_count"] == 4
+    assert result["audit"]["metric_unique_count"] == 2
+    assert result["audit"]["metric_collision_group_count"] == 2
+    assert result["audit"]["metric_collision_extra_count"] == 2
+    assert result["audit"]["metric_collision_same_value_count"] == 1
+    assert result["audit"]["metric_collision_value_diff_count"] == 1
+    assert result["audit"]["rejected"] == []
+    collisions = result["audit"]["metric_collisions"]
+    assert {c["same_value"] for c in collisions} == {True, False}
+    assert {candidate["observation_id"] for c in collisions for candidate in c["candidates"]} == {
+        "a_same:wechat.read_count", "z_same:wechat.read_count", "b_diff:wechat.read_count", "c_diff:wechat.read_count",
+    }
+    date_collision = next(c for c in collisions if c["same_value"])
+    assert {candidate["observed_at_precision"] for candidate in date_collision["candidates"]} == {"date"}
+    assert {candidate["observed_at_source"] for candidate in date_collision["candidates"]} == {"filename"}
+    assert {candidate["raw_observed_at"] for candidate in date_collision["candidates"]} == {"2026-07-14"}
+    with connect(configured, readonly=True) as con:
+        values = con.execute("SELECT observation_id,numeric_value,snapshot_id FROM metric_observations ORDER BY observed_at,snapshot_id").fetchall()
+        assert [(row[0], row[1], row[2]) for row in values] == [
+            ("a_same:wechat.read_count", 3.0, None),
+            ("b_diff:wechat.read_count", 5.0, "snap_1"),
+        ]
+        payload = con.execute("SELECT payload_json FROM ingestion_batches WHERE batch_id=?", (result["batch_id"],)).fetchone()[0]
+        assert json.loads(payload)["metric_collisions"] == collisions
+    repeated = service.import_history(dry_run=False, limit=None)
+    assert repeated["batch_id"] == result["batch_id"]
+    with connect(configured, readonly=True) as con:
+        assert con.execute("SELECT observation_id,numeric_value,snapshot_id FROM metric_observations ORDER BY observed_at,snapshot_id").fetchall() == values
+
+
+def test_wechat_metric_collision_order_does_not_change_winner(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    metric_path = configured.wechat_source_root / "normalized/article_metric_observations.json"
+    rows = [
+        {"observation_id": "winner", "article_id": "art_1", "observed_at": "2026-07-14", "read_count": 8},
+        {"observation_id": "loser", "article_id": "art_1", "observed_at": "2026-07-14", "read_count": 9},
+    ]
+    metric_path.write_text(json.dumps(rows), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    first = service.import_history(dry_run=False, limit=None)
+    metric_path.write_text(json.dumps(list(reversed(rows))), encoding="utf-8")
+    second = service.import_history(dry_run=False, limit=None)
+    assert first["audit"]["metric_collisions"][-1]["candidates"][0]["observation_id"] == "loser:wechat.read_count"
+    with connect(configured, readonly=True) as con:
+        row = con.execute("SELECT observation_id,numeric_value FROM metric_observations").fetchone()
+        assert tuple(row) == ("loser:wechat.read_count", 9.0)
+        assert second["audit"]["metric_collision_value_diff_count"] == 1
+
+
+def test_wechat_metric_collision_same_or_missing_id_is_order_independent(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    metric_path = configured.wechat_source_root / "normalized/article_metric_observations.json"
+    rows = [
+        {"observation_id": "reused", "article_id": "art_1", "observed_at": "2026-07-14", "read_count": 9, "source_file_path": "b.md"},
+        {"observation_id": "reused", "article_id": "art_1", "observed_at": "2026-07-14", "read_count": 8, "source_file_path": "a.md"},
+        {"observation_id": "", "article_id": "art_1", "observed_at": "2026-07-14T01:00:00", "read_count": 7, "source_file_path": "d.md"},
+        {"observation_id": "", "article_id": "art_1", "observed_at": "2026-07-14T01:00:00", "read_count": 6, "source_file_path": "c.md"},
+    ]
+    metric_path.write_text(json.dumps(rows), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    first = service.import_history(dry_run=False, limit=None)
+    with connect(configured, readonly=True) as con:
+        first_rows = [tuple(row) for row in con.execute("SELECT observation_id,numeric_value,payload_json FROM metric_observations ORDER BY observed_at")]
+    metric_path.write_text(json.dumps(list(reversed(rows))), encoding="utf-8")
+    second = service.import_history(dry_run=False, limit=None)
+    with connect(configured, readonly=True) as con:
+        second_rows = [tuple(row) for row in con.execute("SELECT observation_id,numeric_value,payload_json FROM metric_observations ORDER BY observed_at")]
+    assert first["audit"]["metric_collisions"] == second["audit"]["metric_collisions"]
+    assert first_rows == second_rows
+    assert [(row[1]) for row in second_rows] == [8.0, 7.0]
+
+
+def test_wechat_metric_collision_replaces_preexisting_noncanonical_row(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    metric_path = configured.wechat_source_root / "normalized/article_metric_observations.json"
+    old = {"observation_id": "z_old", "article_id": "art_1", "observed_at": "2026-07-14", "read_count": 4}
+    metric_path.write_text(json.dumps([old]), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    canonical = {**old, "observation_id": "a_new", "read_count": 4}
+    metric_path.write_text(json.dumps([old, canonical]), encoding="utf-8")
+    result = service.import_history(dry_run=False, limit=None)
+    assert result["audit"]["rejected"] == []
+    with connect(configured, readonly=True) as con:
+        rows = con.execute("SELECT observation_id,numeric_value FROM metric_observations").fetchall()
+        assert [tuple(row) for row in rows] == [("a_new:wechat.read_count", 4.0)]
+
+
 def test_wechat_hit_pk_unique_and_snapshot_unique_conflicts(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
     from content_hub.features.wechat.service import WechatService
