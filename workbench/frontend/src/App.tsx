@@ -3,18 +3,21 @@ import {useWorkbenchData} from './hooks/useWorkbenchData'
 import WechatPage from './features/wechat/WechatPage'
 import MpPage from './features/mp/MpPage'
 import XhsPage from './features/xhs/XhsPage'
+import GeoPage from './features/geo/GeoPage'
 import './styles/app.css'
 
-const NAV_ITEMS = [
-  ['overview', '总览', '⌂'],
-  ['wechat', '微信搜一搜', '微'],
-  ['mp', '公众号监控', '公'],
-  ['xhs', '小红书', '红'],
-  ['geo', 'GEO', 'G'],
-  ['wiki', 'Wiki 母文章库', 'W'],
-  ['writing', 'WritingMoney', '写'],
-  ['publish', '发布中心', '发'],
-] as const
+type NavKey = 'overview' | 'wechat' | 'mp' | 'xhs' | 'geo' | 'wiki' | 'writing' | 'publish'
+type NavGroup = {label: string; items: ReadonlyArray<readonly [NavKey, string]>}
+
+const NAV_GROUPS: ReadonlyArray<NavGroup> = [
+  {label: '主页', items: [['overview', '统一首页']]},
+  {label: '选题发现', items: [['wechat', '微信关键词'], ['xhs', '小红书关键词'], ['geo', 'GEO 观察']]},
+  {label: '内容采集', items: [['mp', '公众号监控']]},
+  {label: '内容资产', items: [['wiki', '母文章 Wiki']]},
+  {label: '内容生产', items: [['writing', 'WritingMoney']]},
+  {label: '内容发布', items: [['publish', '写作与发布']]},
+]
+const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
 
 const COUNT_CARDS = [
   ['contents', '统一内容'],
@@ -29,11 +32,26 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+function NavIcon({name}: {name: NavKey}) {
+  const paths: Record<string, React.ReactNode> = {
+    overview: <><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></>,
+    wechat: <><path d="M4 17V7h16v10" /><path d="M7 11h10M7 14h7" /></>,
+    xhs: <><circle cx="12" cy="12" r="8" /><path d="M8 12h8M12 8v8" /></>,
+    geo: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4a13 13 0 0 1 0 16M12 4a13 13 0 0 0 0 16" /></>,
+    mp: <><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
+    wiki: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z" /><path d="M4 5.5v16" /></>,
+    writing: <><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10z" /><path d="m13.5 7 3.5 3.5" /></>,
+    publish: <><path d="M12 16V3" /><path d="m7 8 5-5 5 5" /><path d="M5 13v7h14v-7" /></>,
+  }
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>
+}
+
 export default function App() {
-  const [active, setActive] = useState('overview')
+  const [active, setActive] = useState<NavKey>('overview')
   const [wechatSourceStatus, setWechatSourceStatus] = useState('unknown')
   const [mpSourceStatus, setMpSourceStatus] = useState('unknown')
   const [xhsSourceStatus, setXhsSourceStatus] = useState('unknown')
+  const [geoSourceStatus, setGeoSourceStatus] = useState('unknown')
   const {overview, status, loading, error, reload} = useWorkbenchData()
   const wechatNavStatus = active === 'wechat' && wechatSourceStatus === 'unknown'
     ? '检查中'
@@ -45,47 +63,53 @@ export default function App() {
       : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[mpSourceStatus] ?? mpSourceStatus)
   const xhsNavStatus = xhsSourceStatus === 'unknown'
     ? '未检查'
-    : ({healthy: '健康', ready: '健康', online: '健康', degraded: '历史回放', partial: '历史回放', offline: '离线', unavailable: '离线'}[xhsSourceStatus] ?? xhsSourceStatus)
+      : ({healthy: '健康', ready: '健康', online: '健康', degraded: '历史回放', partial: '历史回放', offline: '离线', unavailable: '离线'}[xhsSourceStatus] ?? xhsSourceStatus)
+  const geoNavStatus = geoSourceStatus === 'unknown'
+    ? '检查中'
+    : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[geoSourceStatus] ?? geoSourceStatus)
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">全</span>
-          <span>
-            <strong>全域内容工作台</strong>
-            <small>CONTENT OPERATIONS</small>
-          </span>
+          <strong>内容工作台</strong>
+          <small>监控、资产、生产与发布</small>
         </div>
         <nav aria-label="主导航">
-          {NAV_ITEMS.map(([key, label, icon]) => (
-            <button
-              className={active === key ? 'nav-item active' : 'nav-item'}
-              key={key}
-              onClick={() => setActive(key)}
-              type="button"
-            >
-              <span className="nav-icon" aria-hidden="true">{icon}</span>
-              <span>{label}</span>
-              {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : '待接入'}</span>}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-label">{group.label}</div>
+              {group.items.map(([key, label]) => (
+                <button
+                  className={active === key ? 'nav-item active' : 'nav-item'}
+                  key={key}
+                  onClick={() => setActive(key)}
+                  type="button"
+                >
+                  <span className="nav-icon"><NavIcon name={key} /></span>
+                  <span>{label}</span>
+                  {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : key === 'geo' ? `nav-state-${geoSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : key === 'geo' ? geoNavStatus : '待接入'}</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-footer">
-          <span className={`status-dot ${status?.database.status ?? 'unknown'}`} />
-          <span>Hub {status?.database.status === 'healthy' ? '运行正常' : '等待检查'}</span>
+          <div><span>运行状态</span><span className={`status-dot ${status?.database.status ?? 'unknown'}`} /></div>
+          <small>七套系统结构保留</small>
+          <small>统一灰色外壳 · 本地工作台</small>
         </div>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">LOCAL-FIRST · 127.0.0.1</p>
-            <h1>{NAV_ITEMS.find(([key]) => key === active)?.[1]}</h1>
+          <div className="topbar-title">
+            <strong>{NAV_ITEMS.find(([key]) => key === active)?.[1]}</strong>
+            <small>从这里进入原来的每一套系统</small>
           </div>
           <div className="topbar-actions">
             <span className="schema-pill">Schema v{status?.database.schema_version ?? '—'}</span>
-            <button className="secondary-button" type="button" onClick={reload}>重新检查</button>
+            <button className="secondary-button primary" type="button" onClick={reload}>重新检查</button>
           </div>
         </header>
 
@@ -182,6 +206,8 @@ export default function App() {
           <MpPage onSourceStatus={setMpSourceStatus} />
         ) : active === 'xhs' ? (
           <XhsPage onSourceStatus={setXhsSourceStatus} />
+        ) : active === 'geo' ? (
+          <GeoPage onSourceStatus={setGeoSourceStatus} />
         ) : (
           <section className="module-placeholder">
             <p className="eyebrow">真实接入进行中</p>

@@ -32,6 +32,14 @@ def status(request: Request): return {"ok": True, "data": svc(request).status()}
 def questions(request: Request, limit: int = 100, offset: int = 0):
     return {"ok": True, "data": svc(request).questions(limit=max(1, min(limit, 10000)), offset=max(0, offset))}
 
+@router.get("/questions/{question_id}")
+def question(question_id: str, request: Request):
+    return {"ok": True, "data": svc(request).question_detail(question_id)}
+
+@router.get("/source-overview")
+def source_overview(request: Request, platform: str | None = None, q: str | None = None, limit: int = 100, offset: int = 0):
+    return {"ok": True, "data": svc(request).source_overview(platform=platform, q=q, limit=limit, offset=offset)}
+
 @router.get("/redfox/read-only")
 def redfox_read_only(request: Request): return {"ok": True, "data": svc(request).redfox_read_only()}
 

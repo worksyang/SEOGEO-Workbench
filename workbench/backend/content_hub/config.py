@@ -52,6 +52,7 @@ class Settings:
     geo_database_path: Path
     geo_platforms_path: Path
     geo_redfox_root: Path
+    geo_redfox_api_key_configured: bool
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -143,6 +144,7 @@ class Settings:
                 "HUB_GEO_REDFOX_ROOT",
                 "/Users/works14/Documents/zkcode/GEOProMax/data/redfox",
             )).expanduser().resolve(),
+            geo_redfox_api_key_configured=bool(os.getenv("HUB_GEO_REDFOX_API_KEY", "").strip()),
         )
         settings.ensure_directories()
         return settings

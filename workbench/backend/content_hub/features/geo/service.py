@@ -4,8 +4,9 @@ import hashlib
 import json
 import os
 import sqlite3
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Any
 from urllib.parse import urlparse
@@ -90,6 +91,55 @@ class GeoService:
         self.adapter = GeoAdapter(settings)
         self.redfox = RedfoxAdapter(settings)
 
+    def _refresh_state(self) -> dict[str, Any]:
+        configured = bool(self.settings.geo_redfox_api_key_configured)
+        blocked_reason = "not_integrated" if configured else "missing_api_key"
+        message = "RedFox API Key 已配置，但付费刷新尚未接入。" if configured else "未配置 RedFox API Key，当前只能查看历史快照。"
+        return {
+            "configured": configured,
+            "available": False,
+            "blocked_reason": blocked_reason,
+            "message": message,
+            "paid": True,
+            "requires_confirm": True,
+        }
+
+    def _platform_mapper(self):
+        aliases = self.adapter.platform_rules()["aliases"]
+
+        def mapper(raw: str | None) -> tuple[str, bool]:
+            value = str(raw or "").strip()
+            if value in aliases:
+                return aliases[value], True
+            return value or "其他网页", False
+
+        return mapper
+
+    def _markdown_available(self, relative: str | None) -> bool:
+        if not relative:
+            return False
+        root = Path(self.settings.geo_source_root).resolve()
+        path = Path(relative)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            resolved = path.resolve(strict=True)
+            if root != resolved and root not in resolved.parents:
+                return False
+            current = path
+            while current != root and current != current.parent:
+                if current.is_symlink():
+                    return False
+                current = current.parent
+            return resolved.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _captured_at(row: dict[str, Any] | sqlite3.Row) -> tuple[str | None, str | None]:
+        raw = row["finished_at"] or row["started_at"]
+        return raw, _utc(raw)
+
     def _redfox_summary(self) -> dict[str, Any]:
         rows = self.redfox.scan()
         bad = [row for row in rows if row["markdown"].get("error") == "bad_frontmatter"]
@@ -102,7 +152,7 @@ class GeoService:
             "bad_frontmatter": len(bad),
             "manifest_id": _sorted_hash(manifest),
             "batch_import": False,
-            "refresh": {"configured": False, "available": False, "paid": True, "batch": False},
+            "refresh": {**self._refresh_state(), "batch": False},
         }
 
     def status(self) -> dict[str, Any]:
@@ -124,9 +174,10 @@ class GeoService:
 
     def bootstrap(self) -> dict[str, Any]:
         result = self.status()
+        result["refresh"] = self._refresh_state()
         result["capabilities"] = {
             "read": True, "dry_run": True, "history_import": True,
-            "manual_paid_refresh": {"configured": False, "available": False, "requires_confirm": True},
+            "manual_paid_refresh": self._refresh_state(),
             "batch_refresh": False,
             "redfox": {"historical_read_only_available": True, "batch_import": False},
         }
@@ -154,10 +205,10 @@ class GeoService:
                 })
         return scrub({"items": rows, "count": len(rows), "total": total, "limit": limit, "offset": offset, "source": "geopromax_sqlite"})
 
-    def questions(self, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-        limit = _validate_limit(limit)
+    def _question_summaries(self) -> tuple[list[dict[str, Any]], int]:
+        mapper = self._platform_mapper()
         with self.adapter._connect() as con:
-            rows = con.execute(
+            answer_rows = con.execute(
                 """
                 SELECT a.id,a.question,a.status,a.mode,a.new_context,a.started_at,a.finished_at,
                        a.duration_seconds,a.share_link,a.markdown_path,a.error,
@@ -165,22 +216,205 @@ class GeoService:
                        b.raw_file,b.input_file,b.output_file
                 FROM answers a JOIN batches b ON b.id=a.batch_id
                 WHERE trim(COALESCE(a.question,'')) <> ''
-                ORDER BY COALESCE(a.question,''),COALESCE(a.finished_at,a.started_at),a.id
+                ORDER BY a.question,COALESCE(a.finished_at,a.started_at),a.id
                 """
             ).fetchall()
-            grouped: dict[str, list[dict[str, Any]]] = {}
-            for row in rows:
-                item = dict(row)
-                item["captured_at_raw"] = item.get("finished_at") or item.get("started_at")
-                item["captured_at"] = _utc(item["captured_at_raw"])
-                grouped.setdefault(item["question"], []).append(item)
-        items = [
-            {"question": question, "answer_count": len(answers), "answers": sorted(answers, key=lambda item: (item.get("captured_at") or "", item["id"]))}
-            for question, answers in grouped.items()
-        ]
+            excluded = con.execute(
+                "SELECT COUNT(*) FROM answers WHERE trim(COALESCE(question,''))=''"
+            ).fetchone()[0]
+            relation_counts = con.execute(
+                """
+                SELECT answer_id,COUNT(*) AS relation_count,
+                       COUNT(DISTINCT source_id) AS source_count
+                FROM source_relations
+                GROUP BY answer_id
+                """
+            ).fetchall()
+            relation_type_rows = con.execute(
+                "SELECT answer_id,type,COUNT(*) AS type_count FROM source_relations GROUP BY answer_id,type"
+            ).fetchall()
+            platform_rows = con.execute(
+                """
+                SELECT DISTINCT r.answer_id,s.platform
+                FROM source_relations r JOIN sources s ON s.id=r.source_id
+                """
+            ).fetchall()
+            creator_rows = con.execute(
+                """
+                SELECT DISTINCT r.answer_id,s.platform,s.author,s.author_profile_link
+                FROM source_relations r JOIN sources s ON s.id=r.source_id
+                WHERE trim(COALESCE(s.author,''))<>''
+                """
+            ).fetchall()
+
+        stats: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "relation_count": 0,
+            "source_count": 0,
+            "platforms": set(),
+            "creators": set(),
+            "relation_types": Counter(),
+        })
+        for row in relation_counts:
+            item = stats[row["answer_id"]]
+            item["relation_count"] = row["relation_count"]
+            item["source_count"] = row["source_count"]
+        for row in relation_type_rows:
+            stats[row["answer_id"]]["relation_types"][row["type"]] = row["type_count"]
+        for row in platform_rows:
+            canonical, _ = mapper(row["platform"])
+            stats[row["answer_id"]]["platforms"].add(canonical)
+        for row in creator_rows:
+            canonical, _ = mapper(row["platform"])
+            author = str(row["author"] or "").strip()
+            stats[row["answer_id"]]["creators"].add(
+                self._creator_id(canonical, author, row["author_profile_link"])[0]
+            )
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in answer_rows:
+            snapshot = dict(row)
+            captured_raw, captured_at = self._captured_at(row)
+            answer_stats = stats[row["id"]]
+            snapshot.update({
+                "captured_at_raw": captured_raw,
+                "captured_at": captured_at,
+                "markdown_available": self._markdown_available(row["markdown_path"]),
+                "relation_count": answer_stats["relation_count"],
+                "source_count": answer_stats["source_count"],
+                "platform_count": len(answer_stats["platforms"]),
+                "creator_count": len(answer_stats["creators"]),
+                "relation_type_counts": dict(sorted(answer_stats["relation_types"].items())),
+            })
+            grouped[row["question"]].append(snapshot)
+
+        items = []
+        for question, snapshots in grouped.items():
+            snapshots.sort(key=lambda item: (item.get("captured_at") is None, item.get("captured_at") or "", item["id"]))
+            status_counts = Counter(item["status"] for item in snapshots)
+            captured_snapshots = [item for item in snapshots if item.get("captured_at")]
+            first_snapshot = captured_snapshots[0] if captured_snapshots else snapshots[0]
+            latest_snapshot = captured_snapshots[-1] if captured_snapshots else snapshots[-1]
+            items.append({
+                "question_id": _id("geo_question", question),
+                "question": question,
+                "answer_count": len(snapshots),
+                "first_captured_at": first_snapshot.get("captured_at"),
+                "latest_captured_at": latest_snapshot.get("captured_at"),
+                "latest_answer_id": latest_snapshot["id"],
+                "status_counts": dict(sorted(status_counts.items())),
+                "answers": snapshots,
+                "snapshots": snapshots,
+            })
         items.sort(key=lambda item: item["question"])
-        total = len(items)
-        return scrub({"items": items[offset:offset + limit], "count": len(items[offset:offset + limit]), "total": total, "limit": limit, "offset": offset, "source": "geopromax_sqlite"})
+        return items, excluded
+
+    def questions(self, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        limit = _validate_limit(limit)
+        items, excluded = self._question_summaries()
+        page = items[offset:offset + limit]
+        return scrub({
+            "items": page,
+            "count": len(page),
+            "total": len(items),
+            "excluded_answer_count": excluded,
+            "limit": limit,
+            "offset": offset,
+            "source": "geopromax_sqlite",
+        })
+
+    def question_detail(self, question_id: str) -> dict[str, Any]:
+        summaries, excluded = self._question_summaries()
+        summary = next((item for item in summaries if item["question_id"] == question_id), None)
+        if summary is None:
+            raise NotFoundError("geo_question", question_id)
+        question = summary["question"]
+        mapper = self._platform_mapper()
+        with self.adapter._connect() as con:
+            relation_rows = con.execute(
+                """
+                SELECT r.id AS relation_id,r.answer_id,r.source_id,r.type,r.position,
+                       s.title,s.url,s.platform,s.author,s.author_profile_link,s.published_at
+                FROM source_relations r
+                JOIN answers a ON a.id=r.answer_id
+                LEFT JOIN sources s ON s.id=r.source_id
+                WHERE a.question=?
+                ORDER BY r.answer_id,r.position,r.id
+                """,
+                (question,),
+            ).fetchall()
+
+        snapshots = summary["snapshots"]
+        columns = [
+            {"answer_id": item["id"], "captured_at": item["captured_at"], "status": item["status"]}
+            for item in snapshots
+        ]
+        column_index = {item["answer_id"]: index for index, item in enumerate(columns)}
+        captured_by_answer = {item["id"]: item["captured_at"] for item in snapshots}
+        sources: dict[str, dict[str, Any]] = {}
+        relation_count = 0
+        for row in relation_rows:
+            relation_count += 1
+            source_id = row["source_id"]
+            if not source_id:
+                continue
+            canonical, mapped = mapper(row["platform"])
+            source = sources.setdefault(source_id, {
+                "source_id": source_id,
+                "title": row["title"],
+                "url": row["url"],
+                "raw_platform": row["platform"],
+                "canonical_platform": canonical,
+                "platform_mapped": mapped,
+                "author": row["author"],
+                "author_profile_link": row["author_profile_link"],
+                "published_at": row["published_at"],
+                "ranks": [None] * len(columns),
+                "relation_types": set(),
+                "_hit_answers": set(),
+                "_cited_at": [],
+            })
+            index = column_index[row["answer_id"]]
+            rank = row["position"]
+            current = source["ranks"][index]
+            if rank is not None and (current is None or rank < current):
+                source["ranks"][index] = rank
+            source["relation_types"].add(row["type"])
+            source["_hit_answers"].add(row["answer_id"])
+            cited_at = captured_by_answer.get(row["answer_id"])
+            if cited_at:
+                source["_cited_at"].append(cited_at)
+
+        matrix_rows = []
+        for source in sources.values():
+            ranks = [rank for rank in source["ranks"] if rank is not None]
+            cited_at = sorted(source.pop("_cited_at"))
+            hit_answers = source.pop("_hit_answers")
+            source["relation_types"] = sorted(source["relation_types"])
+            source.update({
+                "hit_snapshots": len(hit_answers),
+                "best_rank": min(ranks) if ranks else None,
+                "first_cited_at": cited_at[0] if cited_at else None,
+                "last_cited_at": cited_at[-1] if cited_at else None,
+            })
+            matrix_rows.append(source)
+        matrix_rows.sort(key=lambda item: (item["best_rank"] is None, item["best_rank"] or 0, item["title"] or "", item["source_id"]))
+        creator_ids = {
+            self._creator_id(item["canonical_platform"], item["author"], item["author_profile_link"])[0]
+            for item in matrix_rows if str(item.get("author") or "").strip()
+        }
+        result = {
+            **summary,
+            "excluded_answer_count": excluded,
+            "citation_matrix": {"columns": columns, "rows": matrix_rows},
+            "totals": {
+                "snapshot_count": len(snapshots),
+                "source_count": len(matrix_rows),
+                "platform_count": len({item["canonical_platform"] for item in matrix_rows}),
+                "creator_count": len(creator_ids),
+                "relation_count": relation_count,
+            },
+        }
+        return scrub(result)
 
     def detail(self, kind: str, item_id: int) -> dict[str, Any]:
         if kind not in {"batch", "answer"}:
@@ -206,24 +440,310 @@ class GeoService:
                 for key in ("app", "channel", "mode", "new_context", "status", "started_at",
                             "finished_at", "duration_seconds", "raw_file", "input_file", "output_file")
             }
+            captured_raw, captured_at = self._captured_at(row)
+            result["captured_at_raw"] = captured_raw
+            result["captured_at"] = captured_at
             tools = [dict(item) for item in con.execute("SELECT * FROM tools WHERE answer_id=? ORDER BY position", (item_id,))]
             result["tools"] = tools
             tool_ids = [item["id"] for item in tools]
             placeholders = ",".join("?" for _ in tool_ids) or "NULL"
-            result["keywords"] = [dict(item) for item in con.execute(f"SELECT * FROM tool_search_keywords WHERE tool_id IN ({placeholders}) ORDER BY tool_id,position", tuple(tool_ids))]
+            keywords = [dict(item) for item in con.execute(f"SELECT * FROM tool_search_keywords WHERE tool_id IN ({placeholders}) ORDER BY tool_id,position", tuple(tool_ids))]
+            result["keywords"] = keywords
+            keywords_by_tool: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            for keyword in keywords:
+                keywords_by_tool[keyword["tool_id"]].append(keyword)
+            result["tools_nested"] = [
+                {**tool, "search_keywords": keywords_by_tool.get(tool["id"], [])}
+                for tool in tools
+            ]
             relations = [dict(item) for item in con.execute("SELECT * FROM source_relations WHERE answer_id=? ORDER BY position,id", (item_id,))]
             result["relations"] = relations
-            source_ids = [item["source_id"] for item in relations if item["source_id"]]
+            source_ids = sorted({item["source_id"] for item in relations if item["source_id"]})
             placeholders = ",".join("?" for _ in source_ids) or "NULL"
             sources = [dict(item) for item in con.execute(f"SELECT * FROM sources WHERE id IN ({placeholders}) ORDER BY id", tuple(source_ids))]
+            mapper = self._platform_mapper()
+            markdown_cache: dict[str, dict[str, Any]] = {}
             for source in sources:
-                canonical, mapped = self.adapter.canonical_platform(source.get("platform"))
-                source.update({"raw_platform": source.get("platform"), "canonical_platform": canonical, "platform_mapped": mapped, "identity_expected": stable_source_id(str(source.get("platform") or ""), source["url"]), "identity_valid": stable_source_id(str(source.get("platform") or ""), source["url"]) == source["id"], "domain": urlparse(source["url"]).hostname})
+                canonical, mapped = mapper(source.get("platform"))
+                markdown_path = str(source.get("markdown_path") or "")
+                if markdown_path not in markdown_cache:
+                    markdown_cache[markdown_path] = self.adapter.markdown(source.get("markdown_path"))
+                markdown = markdown_cache[markdown_path]
+                source.update({
+                    "raw_platform": source.get("platform"),
+                    "canonical_platform": canonical,
+                    "platform_mapped": mapped,
+                    "identity_expected": stable_source_id(str(source.get("platform") or ""), source["url"]),
+                    "identity_valid": stable_source_id(str(source.get("platform") or ""), source["url"]) == source["id"],
+                    "domain": urlparse(source["url"]).hostname,
+                    "markdown_available": markdown.get("exists", False),
+                    "file_hash": markdown.get("file_hash"),
+                    "content_hash": markdown.get("content_hash") or source.get("content_hash"),
+                    "markdown": markdown,
+                })
             result["sources"] = sources
             result["suggested_questions"] = [dict(item) for item in con.execute("SELECT * FROM suggested_questions WHERE answer_id=? ORDER BY position", (item_id,))]
-            result["metrics"] = [dict(item) for item in con.execute("SELECT * FROM source_metrics WHERE answer_id=? ORDER BY source_id", (item_id,))]
+            metrics = [dict(item) for item in con.execute("SELECT * FROM source_metrics WHERE answer_id=? ORDER BY source_id", (item_id,))]
+            result["metrics"] = metrics
+            source_by_id = {source["id"]: source for source in sources}
+            metrics_by_source = {metric["source_id"]: metric for metric in metrics}
+            metric_keys = ("read_count", "like_count", "comment_count", "favorite_count", "share_count")
+            citations = []
+            platform_stats: dict[str, dict[str, Any]] = {}
+            creator_stats: dict[str, dict[str, Any]] = {}
+            for relation in relations:
+                source = source_by_id.get(relation.get("source_id"))
+                source_metrics = metrics_by_source.get(relation.get("source_id"), {})
+                citation = {
+                    **relation,
+                    "source": source,
+                    "metrics": {key: source_metrics.get(key) for key in metric_keys},
+                    "metrics_observed_at": captured_at,
+                }
+                citations.append(citation)
+                if not source:
+                    continue
+                canonical = source["canonical_platform"]
+                platform = platform_stats.setdefault(canonical, {
+                    "canonical_platform": canonical,
+                    "raw_platforms": set(),
+                    "relation_count": 0,
+                    "sources": set(),
+                })
+                platform["raw_platforms"].add(source["raw_platform"])
+                platform["relation_count"] += 1
+                platform["sources"].add(source["id"])
+                author = str(source.get("author") or "").strip()
+                if author:
+                    creator_id = self._creator_id(canonical, author, source.get("author_profile_link"))[0]
+                    creator = creator_stats.setdefault(creator_id, {
+                        "creator_id": creator_id,
+                        "name": author,
+                        "profile_url": source.get("author_profile_link"),
+                        "canonical_platform": canonical,
+                        "raw_platforms": set(),
+                        "relation_count": 0,
+                        "sources": set(),
+                    })
+                    creator["raw_platforms"].add(source["raw_platform"])
+                    creator["relation_count"] += 1
+                    creator["sources"].add(source["id"])
+            relation_count = len(relations)
+            platform_items = []
+            for platform in platform_stats.values():
+                platform_items.append({
+                    "canonical_platform": platform["canonical_platform"],
+                    "raw_platforms": sorted(platform["raw_platforms"]),
+                    "relation_count": platform["relation_count"],
+                    "source_count": len(platform["sources"]),
+                    "share_of_relations": platform["relation_count"] / relation_count if relation_count else 0,
+                })
+            platform_items.sort(key=lambda item: (-item["relation_count"], item["canonical_platform"]))
+            creator_items = []
+            for creator in creator_stats.values():
+                creator_items.append({
+                    "creator_id": creator["creator_id"],
+                    "name": creator["name"],
+                    "profile_url": creator["profile_url"],
+                    "canonical_platform": creator["canonical_platform"],
+                    "raw_platforms": sorted(creator["raw_platforms"]),
+                    "relation_count": creator["relation_count"],
+                    "source_count": len(creator["sources"]),
+                })
+            creator_items.sort(key=lambda item: (-item["relation_count"], item["name"], item["creator_id"]))
+            result["citations"] = citations
+            result["citation_type_counts"] = dict(sorted(Counter(item["type"] for item in relations).items()))
+            result["platform_summary"] = {
+                "denominator": "relation_count",
+                "relation_count": relation_count,
+                "items": platform_items,
+            }
+            result["creator_summary"] = {
+                "creator_count": len(creator_items),
+                "items": creator_items,
+            }
+            result["metrics_observed_at"] = captured_at
             result["markdown"] = self.adapter.markdown(result.get("markdown_path"))
             return scrub(result)
+
+    def source_overview(
+        self,
+        *,
+        platform: str | None = None,
+        q: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValidationAppError("limit 必须是 1–1000 的整数。")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValidationAppError("offset 必须是非负整数。")
+        mapper = self._platform_mapper()
+        platform_canonical = mapper(platform)[0] if str(platform or "").strip() else None
+        with self.adapter._connect() as con:
+            source_rows = [dict(row) for row in con.execute(
+                "SELECT id,url,title,platform,author,author_profile_link,published_at FROM sources ORDER BY id"
+            )]
+            relation_rows = con.execute(
+                """
+                SELECT r.source_id,r.position,a.question,a.started_at,a.finished_at
+                FROM source_relations r
+                JOIN answers a ON a.id=r.answer_id
+                ORDER BY r.id
+                """
+            ).fetchall()
+            question_count = con.execute(
+                "SELECT COUNT(DISTINCT question) FROM answers WHERE trim(COALESCE(question,''))<>''"
+            ).fetchone()[0]
+
+        platform_stats: dict[str, dict[str, Any]] = {}
+        creator_stats: dict[str, dict[str, Any]] = {}
+        source_meta: dict[str, str] = {}
+        source_to_creator: dict[str, str] = {}
+        for source in source_rows:
+            canonical, _ = mapper(source["platform"])
+            source_meta[source["id"]] = canonical
+            platform_item = platform_stats.setdefault(canonical, {
+                "canonical_platform": canonical,
+                "raw_platforms": set(),
+                "sources": set(),
+                "citation_count": 0,
+                "questions": set(),
+                "creators": set(),
+            })
+            platform_item["raw_platforms"].add(source["platform"])
+            platform_item["sources"].add(source["id"])
+            author = str(source.get("author") or "").strip()
+            if not author:
+                continue
+            creator_id = self._creator_id(canonical, author, source.get("author_profile_link"))[0]
+            source_to_creator[source["id"]] = creator_id
+            platform_item["creators"].add(creator_id)
+            creator = creator_stats.setdefault(creator_id, {
+                "creator_id": creator_id,
+                "canonical_platform": canonical,
+                "name": author,
+                "profile_url": source.get("author_profile_link"),
+                "raw_platforms": set(),
+                "sources": set(),
+                "citation_count": 0,
+                "questions": set(),
+                "ranks": [],
+                "cited_at": [],
+            })
+            creator["raw_platforms"].add(source["platform"])
+            creator["sources"].add(source["id"])
+
+        for relation in relation_rows:
+            source_id = relation["source_id"]
+            canonical = source_meta.get(source_id)
+            if not canonical:
+                continue
+            platform_item = platform_stats[canonical]
+            platform_item["citation_count"] += 1
+            if str(relation["question"] or "").strip():
+                platform_item["questions"].add(relation["question"])
+            creator_id = source_to_creator.get(source_id)
+            if creator_id:
+                creator = creator_stats[creator_id]
+                creator["citation_count"] += 1
+                if str(relation["question"] or "").strip():
+                    creator["questions"].add(relation["question"])
+                if relation["position"] is not None:
+                    creator["ranks"].append(relation["position"])
+                captured_at = _utc(relation["finished_at"] or relation["started_at"])
+                if captured_at:
+                    creator["cited_at"].append(captured_at)
+
+        citation_total = len(relation_rows)
+        platforms = [{
+            "canonical_platform": item["canonical_platform"],
+            "raw_platforms": sorted(item["raw_platforms"]),
+            "source_count": len(item["sources"]),
+            "citation_count": item["citation_count"],
+            "question_count": len(item["questions"]),
+            "creator_count": len(item["creators"]),
+            "share_of_citations": item["citation_count"] / citation_total if citation_total else 0,
+        } for item in platform_stats.values()]
+        platforms.sort(key=lambda item: (-item["citation_count"], item["canonical_platform"]))
+        if platform_canonical:
+            platforms = [item for item in platforms if item["canonical_platform"] == platform_canonical]
+
+        creators = []
+        for item in creator_stats.values():
+            cited_at = sorted(item["cited_at"])
+            creators.append({
+                "creator_id": item["creator_id"],
+                "canonical_platform": item["canonical_platform"],
+                "name": item["name"],
+                "profile_url": item["profile_url"],
+                "raw_platforms": sorted(item["raw_platforms"]),
+                "source_count": len(item["sources"]),
+                "citation_count": item["citation_count"],
+                "question_count": len(item["questions"]),
+                "best_rank": min(item["ranks"]) if item["ranks"] else None,
+                "first_cited_at": cited_at[0] if cited_at else None,
+                "last_cited_at": cited_at[-1] if cited_at else None,
+            })
+        if platform_canonical:
+            creators = [item for item in creators if item["canonical_platform"] == platform_canonical]
+        query = str(q or "").strip().casefold()
+        if query:
+            directly_matched_platforms = {
+                item["canonical_platform"]
+                for item in platforms
+                if query in item["canonical_platform"].casefold()
+                or any(query in raw.casefold() for raw in item["raw_platforms"])
+            }
+            directly_matched_creators = {
+                item["creator_id"]
+                for item in creators
+                if query in item["canonical_platform"].casefold()
+                or any(query in raw.casefold() for raw in item["raw_platforms"])
+                or query in item["name"].casefold()
+                or query in str(item["profile_url"] or "").casefold()
+            }
+            creator_platforms = {
+                item["canonical_platform"]
+                for item in creators if item["creator_id"] in directly_matched_creators
+            }
+            visible_platforms = directly_matched_platforms | creator_platforms
+            platforms = [
+                item for item in platforms
+                if item["canonical_platform"] in visible_platforms
+            ]
+            creators = [
+                item for item in creators
+                if item["creator_id"] in directly_matched_creators
+                or item["canonical_platform"] in directly_matched_platforms
+            ]
+        creators.sort(key=lambda item: (-item["citation_count"], item["name"], item["creator_id"]))
+        total = len(creators)
+        page = creators[offset:offset + limit]
+        return scrub({
+            "totals": {
+                "identifier_count": len(source_rows),
+                "source_count": len(source_rows),
+                "source_row_count": len(source_rows),
+                "url_count": len({item["url"] for item in source_rows}),
+                "distinct_url_count": len({item["url"] for item in source_rows}),
+                "citation_count": citation_total,
+                "question_count": question_count,
+                "creator_count": len(creator_stats),
+                "author_count": len(creator_stats),
+            },
+            "platforms": platforms,
+            "creators": page,
+            "total": total,
+            "count": len(page),
+            "limit": limit,
+            "offset": offset,
+            "filters": {"platform": platform, "platform_canonical": platform_canonical, "q": q},
+            "search_fields": [
+                "canonical_platform", "raw_platforms", "creator_name", "creator_profile_url",
+            ],
+            "source": "geopromax_sqlite",
+        })
 
     def _prepare(self, *, limit: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         limit = _validate_limit(limit)
@@ -314,6 +834,7 @@ class GeoService:
             "rejected": rejects + answer_rejects,
             "warnings": [],
             "writes": False,
+            "refresh": self._refresh_state(),
             "redfox": self._redfox_summary(),
         }
         data["_markdown_cache"] = markdown_cache
@@ -621,7 +1142,13 @@ class GeoService:
 
     def refresh_preview(self, answer_id: int) -> dict[str, Any]:
         detail = self.detail("answer", answer_id)
-        return scrub({"dry_run": True, "refreshable": False, "configured": False, "available": False, "requires_confirm": True, "batch_refresh": False, "paid": True, "answer": {"id": answer_id, "question": detail.get("question")}, "message": "RedFox 正式刷新未接入；本入口不调用付费服务。"})
+        return scrub({
+            "dry_run": True,
+            "refreshable": False,
+            **self._refresh_state(),
+            "batch_refresh": False,
+            "answer": {"id": answer_id, "question": detail.get("question")},
+        })
 
     def refresh_confirm(self, answer_id: int, confirm: bool) -> dict[str, Any]:
         if not confirm:

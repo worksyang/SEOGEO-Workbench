@@ -200,3 +200,85 @@ export interface XhsApiEnvelope<T> {
   ok?: boolean
   data?: T
 }
+
+export type GeoSourceStatus = 'healthy' | 'ready' | 'online' | 'degraded' | 'partial' | 'offline' | 'unavailable' | 'unknown' | string
+
+export interface GeoSnapshot {
+  id: string
+  status: string
+  captured_at: string | null
+  markdown_available: boolean
+  relation_count: number
+  source_count: number
+  platform_count: number
+  creator_count: number
+  relation_type_counts: Record<string, number>
+  [key: string]: unknown
+}
+
+export interface GeoQuestion {
+  question_id: string
+  question: string
+  answer_count: number
+  first_captured_at: string | null
+  latest_captured_at: string | null
+  latest_answer_id: string | null
+  status_counts: Record<string, number>
+  answers: GeoSnapshot[]
+  [key: string]: unknown
+}
+
+export interface GeoBootstrapData {
+  source_status?: GeoSourceStatus | {status?: GeoSourceStatus; message?: string; [key: string]: unknown} | null
+  counts?: Record<string, number>
+  hub?: Record<string, unknown> | null
+  redfox?: Record<string, unknown> | null
+  refresh?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+export interface GeoQuestionDetail {
+  summary?: Record<string, unknown> | null
+  snapshots?: GeoSnapshot[]
+  citation_matrix?: {
+    columns?: Array<{
+      answer_id?: string
+      captured_at?: string | null
+      status?: string | null
+      [key: string]: unknown
+    }>
+    rows?: Array<{label?: string; name?: string; ranks: Array<number | null>; [key: string]: unknown}>
+  } | null
+  totals?: Record<string, number> | null
+  [key: string]: unknown
+}
+
+export interface GeoAnswer {
+  id: string
+  question_id?: string | null
+  snapshot_id?: string | null
+  status?: string | null
+  captured_at?: string | null
+  markdown?: string | {exists?: boolean; content?: string | null; path?: string | null} | null
+  tools_nested?: unknown
+  citations?: unknown
+  citation_type_counts?: Record<string, number> | null
+  platform_summary?: unknown
+  creator_summary?: unknown
+  metrics_observed_at?: string | null
+  [key: string]: unknown
+}
+
+export interface GeoSourceOverview {
+  totals?: Record<string, number>
+  platforms?: unknown[]
+  creators?: unknown[]
+  [key: string]: unknown
+}
+
+export interface GeoRefreshResult {
+  available?: boolean
+  blocked_reason?: string | null
+  message?: string | null
+  [key: string]: unknown
+}

@@ -12,6 +12,7 @@ import pytest
 
 from content_hub.adapters.geo import GeoAdapter, RedfoxAdapter, parse_markdown, scrub, stable_source_id
 from content_hub.app import create_app
+from content_hub.config import Settings
 from content_hub.db.connection import connect
 from content_hub.db.migrations import migrate
 from content_hub.errors import AppError
@@ -80,8 +81,89 @@ def test_geo_limit_is_an_answer_associated_subset(settings, tmp_path):
 def test_geo_questions_aggregate_real_repeated_answers(settings, tmp_path):
     result = GeoService(configured(settings, tmp_path)).questions(limit=10000)
     assert result["total"] == 194
+    assert result["excluded_answer_count"] == 1
     assert sum(item["answer_count"] for item in result["items"]) == 1163
     assert max(item["answer_count"] for item in result["items"]) >= 2
+    for item in result["items"]:
+        captured = [snapshot["captured_at"] for snapshot in item["snapshots"]]
+        assert all(captured)
+        assert captured == sorted(captured)
+
+
+def test_geo_question_summary_contract_and_bulk_query(settings, tmp_path, monkeypatch):
+    service = GeoService(configured(settings, tmp_path))
+    connects = 0
+    original = service.adapter._connect
+
+    def counted():
+        nonlocal connects
+        connects += 1
+        return original()
+
+    monkeypatch.setattr(service.adapter, "_connect", counted)
+    result = service.questions(limit=10000)
+    assert connects == 1
+    item = next(row for row in result["items"] if row["question"] == "225提领靠谱吗？")
+    assert item["question_id"] == f"geo_question_{hashlib.sha256(item['question'].encode()).hexdigest()[:24]}"
+    assert item["answer_count"] == 6
+    assert item["latest_answer_id"] == 971
+    assert item["status_counts"] == {"answered": 3, "failed": 2, "input_not_ready": 1}
+    assert item["first_captured_at"] <= item["latest_captured_at"]
+    assert item["answers"] == item["snapshots"]
+    assert all(
+        {
+            "markdown_available", "relation_count", "source_count", "platform_count",
+            "creator_count", "relation_type_counts",
+        } <= set(snapshot)
+        for snapshot in item["snapshots"]
+    )
+
+
+def test_geo_question_detail_uses_real_relation_positions(settings, tmp_path):
+    service = GeoService(configured(settings, tmp_path))
+    question = "225提领靠谱吗？"
+    question_id = f"geo_question_{hashlib.sha256(question.encode()).hexdigest()[:24]}"
+    result = service.question_detail(question_id)
+    columns = result["citation_matrix"]["columns"]
+    rows = result["citation_matrix"]["rows"]
+    assert [column["answer_id"] for column in columns] == [1, 195, 389, 583, 777, 971]
+    assert result["totals"] == {
+        "snapshot_count": 6,
+        "source_count": 34,
+        "platform_count": 8,
+        "creator_count": 8,
+        "relation_count": 51,
+    }
+    missing_markdown = next(item for item in result["snapshots"] if item["id"] == 389)
+    assert missing_markdown["markdown_available"] is False
+    with service.adapter._connect() as con:
+        expected = {
+            (row["source_id"], row["answer_id"]): row["rank"]
+            for row in con.execute(
+                """
+                SELECT r.source_id,r.answer_id,MIN(r.position) AS rank
+                FROM source_relations r JOIN answers a ON a.id=r.answer_id
+                WHERE a.question=? AND r.source_id IS NOT NULL
+                GROUP BY r.source_id,r.answer_id
+                """,
+                (question,),
+            )
+        }
+    for source in rows:
+        assert len(source["ranks"]) == len(columns)
+        assert source["ranks"] == [
+            expected.get((source["source_id"], column["answer_id"]))
+            for column in columns
+        ]
+        assert source["hit_snapshots"] == sum(rank is not None for rank in source["ranks"])
+        assert source["best_rank"] == min(rank for rank in source["ranks"] if rank is not None)
+        assert source["relation_types"]
+        assert {"raw_platform", "canonical_platform", "platform_mapped", "author", "author_profile_link"} <= set(source)
+    answer_without_markdown = service.detail("answer", 389)
+    assert answer_without_markdown["markdown"]["exists"] is False
+    assert answer_without_markdown["markdown"]["error"] == "missing_path"
+    with pytest.raises(AppError):
+        service.question_detail("geo_question_not_found")
 
 
 def test_geo_answer_detail_preserves_batch_tools_suggestions_relations_and_metrics(settings, tmp_path):
@@ -94,10 +176,91 @@ def test_geo_answer_detail_preserves_batch_tools_suggestions_relations_and_metri
     assert detail["tools"][0]["position"] == 1
     assert detail["keywords"][0]["position"] == 1
     assert detail["suggested_questions"][0]["position"] == 1
+    assert detail["markdown"]["exists"] is True
+    assert detail["markdown"]["content"].strip()
     relation = next(item for item in service.detail("answer", 991)["relations"] if item["type"] == "image_reference")
     assert "image_url" in relation and "tool_id" in relation and "anchor_index" in relation and "error" in relation
     assert {"search_result", "text_reference", "image_reference"} <= {item["type"] for item in service.detail("answer", 991)["relations"]}
     assert {"read_count", "like_count", "comment_count", "favorite_count", "share_count"} <= set(detail["metrics"][0])
+    missing_markdown = service.detail("answer", 389)["markdown"]
+    assert missing_markdown["exists"] is False
+    assert missing_markdown["error"] == "missing_path"
+
+
+def test_geo_answer_detail_nested_tools_citations_and_real_types(settings, tmp_path):
+    service = GeoService(configured(settings, tmp_path))
+    detail = service.detail("answer", 1)
+    assert [tool["position"] for tool in detail["tools_nested"]] == sorted(tool["position"] for tool in detail["tools_nested"])
+    for tool in detail["tools_nested"]:
+        assert [item["position"] for item in tool["search_keywords"]] == sorted(item["position"] for item in tool["search_keywords"])
+    assert detail["metrics_observed_at"] == detail["captured_at"]
+    assert detail["platform_summary"]["denominator"] == "relation_count"
+    assert detail["platform_summary"]["relation_count"] == len(detail["relations"])
+    citation = next(item for item in detail["citations"] if item["source"])
+    assert {"raw_platform", "canonical_platform", "platform_mapped", "author", "author_profile_link", "url", "markdown", "file_hash", "content_hash"} <= set(citation["source"])
+    assert set(citation["metrics"]) == {"read_count", "like_count", "comment_count", "favorite_count", "share_count"}
+    assert citation["metrics_observed_at"] == detail["captured_at"]
+    sampled = [service.detail("answer", item_id) for item_id in (1, 991, 913)]
+    assert {"search_result", "text_reference", "image_reference", "related_video"} == {
+        citation["type"] for answer in sampled for citation in answer["citations"]
+    }
+    image = next(citation for citation in sampled[1]["citations"] if citation["type"] == "image_reference")
+    assert {"image_url", "error", "tool_id", "anchor_index"} <= set(image)
+
+
+def test_geo_source_overview_real_totals_filters_and_creators(settings, tmp_path):
+    service = GeoService(configured(settings, tmp_path))
+    result = service.source_overview(limit=5)
+    assert {
+        "identifier_count": 7811,
+        "source_count": 7811,
+        "source_row_count": 7811,
+        "url_count": 7078,
+        "distinct_url_count": 7078,
+        "citation_count": 20028,
+        "question_count": 194,
+        "creator_count": 674,
+        "author_count": 674,
+    }.items() <= result["totals"].items()
+    assert result["total"] == 674
+    assert result["count"] == 5
+    assert sum(item["citation_count"] for item in result["platforms"]) == 20028
+    assert pytest.approx(sum(item["share_of_citations"] for item in result["platforms"])) == 1
+    assert all(item["name"] and item["creator_id"].startswith("creator_") for item in result["creators"])
+    platform = result["platforms"][0]["canonical_platform"]
+    filtered = service.source_overview(platform=platform, limit=1000)
+    assert filtered["platforms"] and all(item["canonical_platform"] == platform for item in filtered["platforms"])
+    assert all(item["canonical_platform"] == platform for item in filtered["creators"])
+    alias_filtered = service.source_overview(platform="手机网易网", limit=1000)
+    assert [item["canonical_platform"] for item in alias_filtered["platforms"]] == ["网易"]
+    assert alias_filtered["filters"]["platform"] == "手机网易网"
+    assert alias_filtered["filters"]["platform_canonical"] == "网易"
+    creator = result["creators"][0]
+    searched = service.source_overview(q=creator["name"], limit=1000)
+    assert any(item["creator_id"] == creator["creator_id"] for item in searched["creators"])
+    assert any(item["canonical_platform"] == creator["canonical_platform"] for item in searched["platforms"])
+    alias_search = service.source_overview(q="手机网易网", limit=1000)
+    assert any(
+        item["canonical_platform"] == "网易" and "手机网易网" in item["raw_platforms"]
+        for item in alias_search["platforms"]
+    )
+    author_search = service.source_overview(q="紫荆保险规划", limit=1000)
+    author = next(item for item in author_search["creators"] if item["name"] == "紫荆保险规划")
+    assert any(item["canonical_platform"] == "抖音" for item in author_search["platforms"])
+    profile_search = service.source_overview(q=author["profile_url"], limit=1000)
+    assert any(item["creator_id"] == author["creator_id"] for item in profile_search["creators"])
+    assert author_search["search_fields"] == [
+        "canonical_platform", "raw_platforms", "creator_name", "creator_profile_url",
+    ]
+    empty = service.source_overview(q="不存在的GEO平台或作者_019f602c", limit=10, offset=0)
+    assert empty["platforms"] == []
+    assert empty["creators"] == []
+    assert empty["total"] == empty["count"] == 0
+    assert empty["totals"] == result["totals"]
+    assert empty["filters"]["q"] == "不存在的GEO平台或作者_019f602c"
+    for kwargs in ({"limit": 0}, {"limit": 1001}, {"limit": True}, {"offset": -1}, {"offset": True}):
+        with pytest.raises(AppError):
+            service.source_overview(**kwargs)
 
 
 def test_geo_source_author_domain_and_five_metrics(settings, tmp_path):
@@ -272,10 +435,33 @@ def test_geo_http_routes_and_parameter_errors(settings, tmp_path):
                 for item in question_items
                 for index in range(len(item["answers"]) - 1)
             )
+            question_detail = await client.get(f"/api/v1/geo/questions/{question_items[0]['question_id']}")
+            assert question_detail.status_code == 200
+            assert "citation_matrix" in question_detail.json()["data"]
+            assert (await client.get("/api/v1/geo/questions/geo_question_missing")).status_code == 404
             answer = await client.get("/api/v1/geo/answers/1")
             assert answer.status_code == 200 and answer.json()["data"]["app"] == "豆包"
+            assert "citations" in answer.json()["data"]
+            assert (await client.get("/api/v1/geo/answers/999999")).status_code == 404
+            assert (await client.get("/api/v1/geo/answers/not-a-number")).status_code == 422
+            assert (await client.post("/api/v1/geo/answers/999999/refresh/preview")).status_code == 404
+            assert (await client.post("/api/v1/geo/answers/1/refresh/confirm", json={"confirm": False})).status_code == 409
+            assert (await client.post("/api/v1/geo/answers/1/refresh/confirm", json={"confirm": True})).status_code == 409
             sources = await client.get("/api/v1/geo/sources?limit=1")
             assert "raw_platform" in sources.json()["data"]["items"][0]
+            overview = await client.get("/api/v1/geo/source-overview?limit=2")
+            assert overview.status_code == 200 and overview.json()["data"]["totals"]["citation_count"] == 20028
+            alias_overview = await client.get("/api/v1/geo/source-overview", params={"q": "手机网易网", "limit": 1000})
+            assert any(item["canonical_platform"] == "网易" for item in alias_overview.json()["data"]["platforms"])
+            alias_filter = await client.get("/api/v1/geo/source-overview", params={"platform": "手机网易网", "limit": 1000})
+            assert [item["canonical_platform"] for item in alias_filter.json()["data"]["platforms"]] == ["网易"]
+            assert alias_filter.json()["data"]["filters"]["platform_canonical"] == "网易"
+            empty_overview = await client.get("/api/v1/geo/source-overview", params={"q": "不存在的GEO平台或作者_019f602c"})
+            assert empty_overview.json()["data"]["platforms"] == []
+            assert empty_overview.json()["data"]["creators"] == []
+            assert (await client.get("/api/v1/geo/source-overview?limit=0")).status_code == 422
+            assert (await client.get("/api/v1/geo/source-overview?limit=1001")).status_code == 422
+            assert (await client.get("/api/v1/geo/source-overview?offset=-1")).status_code == 422
             assert (await client.post("/api/v1/geo/dry-run", json={"limit": 1})).status_code == 200
             assert (await client.post("/api/v1/geo/dry-run", json={"limit": True})).status_code == 422
             assert (await client.post("/api/v1/geo/import", json={"limit": "1", "confirm": False})).status_code == 422
@@ -321,6 +507,73 @@ def test_geo_missing_bad_markdown_unknown_platform_and_redfox_guard(settings, tm
         service.refresh_confirm(1, True)
     with pytest.raises(Exception, match="禁止"):
         RedfoxAdapter(configured(settings, tmp_path)).batch_refresh()
+
+
+def test_geo_refresh_contract_uses_boolean_configuration_only(settings, tmp_path, monkeypatch):
+    no_key = GeoService(replace(configured(settings, tmp_path), geo_redfox_api_key_configured=False))
+    expected = {
+        "configured": False,
+        "available": False,
+        "blocked_reason": "missing_api_key",
+        "paid": True,
+        "requires_confirm": True,
+    }
+    assert expected.items() <= no_key.bootstrap()["refresh"].items()
+    assert expected.items() <= no_key.preview(limit=1)["refresh"].items()
+    assert no_key.refresh_preview(1)["blocked_reason"] == "missing_api_key"
+    with pytest.raises(AppError):
+        no_key.refresh_confirm(1, False)
+    with pytest.raises(AppError):
+        no_key.refresh_confirm(1, True)
+    configured_key = GeoService(replace(configured(settings, tmp_path), geo_redfox_api_key_configured=True))
+    refresh = configured_key.bootstrap()["refresh"]
+    assert refresh["configured"] is True
+    assert refresh["blocked_reason"] == "not_integrated"
+    assert configured_key.preview(limit=1)["refresh"]["blocked_reason"] == "not_integrated"
+    assert configured_key.refresh_preview(1)["blocked_reason"] == "not_integrated"
+    env_example = (settings.workbench_root / ".env.example").read_text(encoding="utf-8")
+    assert "# HUB_GEO_REDFOX_API_KEY" in env_example
+    assert "HUB_GEO_REDFOX_API_KEY=" not in env_example
+    assert not hasattr(settings, "geo_redfox_api_key")
+    monkeypatch.delenv("HUB_GEO_REDFOX_API_KEY", raising=False)
+    assert Settings.load().geo_redfox_api_key_configured is False
+    monkeypatch.setenv("HUB_GEO_REDFOX_API_KEY", "configured")
+    loaded = Settings.load()
+    assert loaded.geo_redfox_api_key_configured is True
+    assert not hasattr(loaded, "geo_redfox_api_key")
+
+
+def test_geo_api_key_never_leaks_in_http_responses(settings, tmp_path, monkeypatch):
+    secret = "placeholder-redfox-test-value"
+    monkeypatch.setenv("HUB_GEO_REDFOX_API_KEY", secret)
+    loaded = Settings.load()
+    assert loaded.geo_redfox_api_key_configured is True
+    configured_settings = replace(
+        configured(settings, tmp_path),
+        geo_redfox_api_key_configured=loaded.geo_redfox_api_key_configured,
+    )
+    app = create_app(configured_settings)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            responses = [
+                await client.get("/api/v1/geo/bootstrap"),
+                await client.get("/api/v1/geo/status"),
+                await client.get("/api/v1/geo/redfox/read-only"),
+                await client.post("/api/v1/geo/dry-run", json={"limit": 1}),
+                await client.post("/api/v1/geo/answers/1/refresh/preview"),
+                await client.post("/api/v1/geo/answers/1/refresh/confirm", json={"confirm": False}),
+                await client.post("/api/v1/geo/answers/1/refresh/confirm", json={"confirm": True}),
+            ]
+            assert responses[-3].status_code == 200
+            assert [response.status_code for response in responses[-2:]] == [409, 409]
+            for response in responses:
+                assert secret not in response.text
+                assert "geo-redfox-secret-019f602c-do-not-return" not in response.text
+            assert responses[0].json()["data"]["refresh"]["configured"] is True
+            assert responses[0].json()["data"]["refresh"]["blocked_reason"] == "not_integrated"
+
+    asyncio.run(run())
 
 
 def test_geo_markdown_manifest_and_redfox_paths_are_root_contained(settings, tmp_path):
