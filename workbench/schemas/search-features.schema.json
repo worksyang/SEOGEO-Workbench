@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-features.schema.json",
+  "title": "搜索快照特征",
+  "type": "object",
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "related_terms": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "rising_terms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["term"],
+        "properties": {
+          "term": {"type": "string", "minLength": 1},
+          "rank": {"type": ["integer", "null"], "minimum": 1},
+          "delta": {"type": ["number", "null"]}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

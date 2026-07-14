@@ -11,10 +11,18 @@ venv/
 
 # Node
 node_modules/
+*.tsbuildinfo
 
 # Logs
 *.log
 /tmp/
+
+# 新工作台运行态与正文资产
+/data/
+/asset_store/
+/workbench/frontend/dist/
+/workbench/.pytest_cache/
+/workbench/.ruff_cache/
 
 # Secrets
 .env

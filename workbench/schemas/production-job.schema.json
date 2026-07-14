@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "production-job.schema.json",
+  "title": "生产任务载荷",
+  "type": "object",
+  "properties": {
+    "instructions": {"type": "string"},
+    "dry_run": {"type": "boolean"},
+    "target_account_keys": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": true
+}

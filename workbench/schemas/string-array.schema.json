@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "string-array.schema.json",
+  "title": "字符串数组",
+  "type": "array",
+  "items": {
+    "type": "string",
+    "minLength": 1
+  },
+  "uniqueItems": true
+}
