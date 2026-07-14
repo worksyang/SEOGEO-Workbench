@@ -3263,3 +3263,434 @@ a:focus-visible {
     flex-direction: column;
   }
 }
+
+/* ============================================================
+ * 9. 模块外壳 · 与 demo 完全一致
+ * 适用于所有 8 个真实业务页面，与 GeoPage/WechatPage/XhsPage/MpPage 共用
+ * ============================================================ */
+.module-frame {
+    padding: 12px 14px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.module-top {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 9px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.module-top .module-logo {
+    font-size: 14px;
+    font-weight: 600;
+    color: #2b2b2b;
+}
+.module-top .sep {
+    width: 1px;
+    height: 16px;
+    background: var(--line);
+}
+.module-top .module-meta {
+    font-size: 12px;
+    color: #5a5a5a;
+}
+.module-top .module-meta b {
+    color: #111;
+    font-weight: 600;
+}
+.module-top .module-switch {
+    margin-left: auto;
+    display: inline-flex;
+    gap: 4px;
+}
+.module-top .module-switch .pill {
+    border: 1px solid var(--line);
+    background: #fff;
+    color: #555;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.module-top .module-switch .pill.active {
+    background: var(--ink, #111);
+    color: #fff;
+    border-color: var(--ink, #111);
+}
+.module-top .module-right {
+    font-size: 11px;
+    color: #888;
+}
+
+.module-placeholder {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 26px;
+    color: #5a5a5a;
+    display: grid;
+    gap: 8px;
+}
+.module-placeholder h2 {
+    margin: 0;
+    font-size: 18px;
+    color: #1a1a1a;
+}
+
+.module-empty,
+.module-error {
+    background: #fff;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 18px;
+    color: #5a5a5a;
+    font-size: 13px;
+    text-align: center;
+}
+
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #f3f5f7;
+    color: #5a5a5a;
+    font-size: 11px;
+    border: 1px solid var(--line);
+}
+.tag.amber { background: #fff7e6; color: #b06d10; border-color: #fbe1b1; }
+.tag.green { background: #e7f9ee; color: #1d7a3c; border-color: #c8efd4; }
+.tag.blue  { background: #e9f1ff; color: #1e4fa8; border-color: #cfdcfb; }
+.tag.red   { background: #fdecec; color: #a32020; border-color: #f3c1c1; }
+.tag.gray  { background: #eef0f2; color: #555;    border-color: #dde0e2; }
+
+/* ============================================================
+ * 10. Wiki
+ * ============================================================ */
+.wiki-page .wiki-shell {
+    display: grid;
+    grid-template-columns: 56px 240px 1fr;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 60vh;
+}
+.wiki-page .wiki-rail {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--line);
+    background: #fafbfc;
+}
+.wiki-page .wiki-r {
+    padding: 10px 0;
+    text-align: center;
+    color: #5a5a5a;
+    border-bottom: 1px solid var(--line);
+    cursor: default;
+}
+.wiki-page .wiki-r.active {
+    background: #fff;
+    color: #111;
+    font-weight: 600;
+}
+.wiki-page .wiki-r b { display: block; font-size: 16px; }
+.wiki-page .wiki-r span { font-size: 11px; }
+
+.wiki-page .wiki-tree {
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    overflow: hidden;
+}
+.wiki-page .wiki-tree-head {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid var(--line);
+}
+.wiki-page .wiki-tree-head h2 { margin: 0; font-size: 14px; color: #222; }
+.wiki-page .wiki-tree-head p { margin: 4px 0 0; font-size: 11px; color: #888; }
+.wiki-page .wiki-search {
+    margin: 8px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+}
+.wiki-page .wiki-tree-body { overflow: auto; padding: 6px 0; }
+.wiki-page .wiki-tree-empty { padding: 14px; color: #888; font-size: 12px; }
+.wiki-page .wiki-list { list-style: none; margin: 0; padding: 0; }
+.wiki-page .wiki-tree-file {
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 6px 14px;
+    font-size: 12px;
+    color: #444;
+    cursor: pointer;
+    display: block;
+    line-height: 1.5;
+}
+.wiki-page .wiki-tree-file:hover { background: #f3f5f7; color: #111; }
+.wiki-page .wiki-tree-file.active { background: #e9f1ff; color: #1e4fa8; font-weight: 600; }
+.wiki-page .wiki-tree-file small { display: block; color: #888; font-size: 10px; }
+.wiki-page .wiki-tree-folder-label { font-size: 12px; font-weight: 600; color: #222; }
+.wiki-page .wiki-tree-folder { padding: 4px 0; color: #888; }
+
+.wiki-page .wiki-main { display: flex; flex-direction: column; min-width: 0; }
+.wiki-page .wiki-toolbar {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+.wiki-page .wiki-toolbar .wiki-path { font-size: 12px; color: #5a5a5a; }
+.wiki-page .wiki-toolbar .wiki-actions { display: inline-flex; gap: 6px; }
+.wiki-page .wiki-actions .mini-btn { border: 1px solid var(--line); background: #fff; color: #444; padding: 4px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+.wiki-page .wiki-actions .mini-btn.primary { background: var(--ink, #111); color: #fff; border-color: var(--ink, #111); }
+.wiki-page .wiki-actions .mini-btn.danger { background: #fdecec; color: #a32020; border-color: #f3c1c1; }
+
+.wiki-page .wiki-article { flex: 1; overflow: auto; padding: 18px 22px; }
+.wiki-page .wiki-article pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 13px/1.7 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    color: #2a2a2a;
+}
+.wiki-page .wiki-editor {
+    flex: 1;
+    border: 0;
+    outline: none;
+    resize: none;
+    padding: 18px 22px;
+    font: 13px/1.7 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+.wiki-page .wiki-status {
+    border-top: 1px solid var(--line);
+    padding: 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #5a5a5a;
+}
+
+/* ============================================================
+ * 11. WritingMoney
+ * ============================================================ */
+.writing-page .writing-jobs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+}
+.writing-page .job-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: grid;
+    gap: 6px;
+}
+.writing-page .job-card.status-running { border-color: #fbe1b1; background: #fff7e6; }
+.writing-page .job-card.status-succeeded { border-color: #c8efd4; }
+.writing-page .job-card.status-failed { border-color: #f3c1c1; background: #fdecec; }
+.writing-page .job-head { display: flex; justify-content: space-between; align-items: center; }
+.writing-page .job-meta { margin: 0; font-size: 11px; color: #888; }
+.writing-page .writing-form {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: grid;
+    gap: 12px;
+}
+.writing-page .writing-form h3 { margin: 0; font-size: 16px; }
+.writing-page .writing-form label { display: grid; gap: 4px; font-size: 12px; color: #5a5a5a; }
+.writing-page .writing-form input,
+.writing-page .writing-form textarea {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font: inherit;
+    color: #1a1a1a;
+}
+.writing-page .writing-form textarea { min-height: 90px; resize: vertical; }
+.writing-page .form-actions .mini-btn { background: var(--ink, #111); color: #fff; border: 0; padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+.writing-page .last-message { margin: 0; font-size: 12px; color: #5a5a5a; }
+
+/* ============================================================
+ * 12. Publishing
+ * ============================================================ */
+.publishing-page .publishing-form {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: grid;
+    gap: 12px;
+}
+.publishing-page .publishing-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.publishing-page .publishing-fields label { display: grid; gap: 4px; font-size: 12px; color: #5a5a5a; }
+.publishing-page .publishing-fields select,
+.publishing-page .publishing-fields input {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+}
+.publishing-page .publishing-body { display: grid; gap: 4px; font-size: 12px; color: #5a5a5a; }
+.publishing-page .publishing-body textarea {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font: 13px/1.6 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    min-height: 200px;
+}
+.publishing-page .publishing-actions .mini-btn {
+    background: var(--ink, #111);
+    color: #fff;
+    border: 0;
+    padding: 6px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.publishing-page .publishing-actions .mini-btn.danger { background: #a32020; }
+.publishing-page .publishing-preview {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 12px;
+    margin-top: 12px;
+}
+.publishing-page .publishing-html,
+.publishing-page .publishing-checks,
+.publishing-page .publishing-result {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+    min-height: 220px;
+}
+.publishing-page .publishing-html pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 8px 0 0;
+    font: 13px/1.7 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+.publishing-page .publishing-checks h3,
+.publishing-page .publishing-html h3,
+.publishing-page .publishing-result h3 {
+    margin: 0;
+    font-size: 14px;
+    color: #222;
+}
+.publishing-page .publishing-checks ul { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; color: #5a5a5a; }
+.publishing-page .publishing-checks ul li { padding: 2px 0; }
+.publishing-page .publishing-result pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 12px/1.55 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    color: #2b2b2b;
+}
+
+/* ============================================================
+ * 13. Systems
+ * ============================================================ */
+.systems-page .systems-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.systems-page .systems-summary article {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: grid;
+    gap: 4px;
+}
+.systems-page .systems-summary span { font-size: 11px; color: #888; }
+.systems-page .systems-summary b { font-size: 18px; color: #1a1a1a; }
+.systems-page .systems-summary small { font-size: 11px; color: #5a5a5a; }
+
+/* ============================================================
+ * 14. Governance
+ * ============================================================ */
+.governance-page .governance-section {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+}
+.governance-page .governance-section h3 { margin: 0 0 12px; font-size: 14px; color: #222; }
+.governance-page .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.governance-page .data-table th,
+.governance-page .data-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.governance-page .data-table th { background: #f6f7f9; color: #5a5a5a; }
+.governance-page .data-table code { font: 12px/1.5 ui-monospace, monospace; color: #555; }
+.governance-page .state-board {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+}
+.governance-page .state-col {
+    min-width: 180px;
+    background: #fafbfc;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+}
+.governance-page .state-col-head {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 12px;
+    color: #444;
+}
+.governance-page .state-task {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+.governance-page .state-task b { display: block; color: #1a1a1a; }
+.governance-page .state-task p { margin: 4px 0 0; color: #888; font-size: 11px; }
+.governance-page .lineage-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.governance-page .lineage-list li {
+    display: grid;
+    grid-template-columns: 80px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    color: #2b2b2b;
+}
+.governance-page .lineage-list small { color: #888; font-size: 11px; }
+.governance-page .locks-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.governance-page .lock-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; font-size: 12px; color: #2b2b2b; }
+.governance-page .lock-list strong { display: block; }
+.governance-page .lock-list small { color: #888; font-size: 11px; }
+.governance-page .governance-reconcile ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 12px; color: #2b2b2b; }
+.governance-page .governance-reconcile ul li {
+    display: grid;
+    grid-template-columns: 160px 60px 1fr;
+    gap: 8px;
+    align-items: center;
+}

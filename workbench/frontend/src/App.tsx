@@ -4,9 +4,14 @@ import WechatPage from './features/wechat/WechatPage'
 import MpPage from './features/mp/MpPage'
 import XhsPage from './features/xhs/XhsPage'
 import GeoPage from './features/geo/GeoPage'
+import WikiPage from './features/wiki/WikiPage'
+import WritingPage from './features/writing/WritingPage'
+import PublishingPage from './features/publishing/PublishingPage'
+import SystemsPage from './features/systems/SystemsPage'
+import GovernancePage from './features/governance/GovernancePage'
 import './styles/app.css'
 
-type NavKey = 'overview' | 'wechat' | 'mp' | 'xhs' | 'geo' | 'wiki' | 'writing' | 'publish'
+type NavKey = 'overview' | 'wechat' | 'mp' | 'xhs' | 'geo' | 'wiki' | 'writing' | 'publish' | 'systems' | 'governance'
 type NavGroup = {label: string; items: ReadonlyArray<readonly [NavKey, string]>}
 
 const NAV_GROUPS: ReadonlyArray<NavGroup> = [
@@ -16,6 +21,7 @@ const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   {label: '内容资产', items: [['wiki', '母文章 Wiki']]},
   {label: '内容生产', items: [['writing', 'WritingMoney']]},
   {label: '内容发布', items: [['publish', '写作与发布']]},
+  {label: '运维', items: [['systems', '系统状态'], ['governance', '数据治理']]},
 ]
 const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
 
@@ -42,6 +48,8 @@ function NavIcon({name}: {name: NavKey}) {
     wiki: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z" /><path d="M4 5.5v16" /></>,
     writing: <><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10z" /><path d="m13.5 7 3.5 3.5" /></>,
     publish: <><path d="M12 16V3" /><path d="m7 8 5-5 5 5" /><path d="M5 13v7h14v-7" /></>,
+    systems: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>,
+    governance: <><path d="M3 12h18" /><path d="M3 6h18" /><path d="M3 18h12" /></>,
   }
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>
 }
@@ -88,7 +96,7 @@ export default function App() {
                 >
                   <span className="nav-icon"><NavIcon name={key} /></span>
                   <span>{label}</span>
-                  {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : key === 'geo' ? `nav-state-${geoSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : key === 'geo' ? geoNavStatus : '待接入'}</span>}
+                  {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : key === 'geo' ? `nav-state-${geoSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : key === 'geo' ? geoNavStatus : key === 'systems' ? status?.database.status === 'healthy' ? '健康' : '降级' : key === 'governance' ? (status?.database.integrity === 'ok' ? '健康' : '降级') : '待接入'}</span>}
                 </button>
               ))}
             </div>
@@ -208,6 +216,16 @@ export default function App() {
           <XhsPage onSourceStatus={setXhsSourceStatus} />
         ) : active === 'geo' ? (
           <GeoPage onSourceStatus={setGeoSourceStatus} />
+        ) : active === 'wiki' ? (
+          <WikiPage />
+        ) : active === 'writing' ? (
+          <WritingPage />
+        ) : active === 'publish' ? (
+          <PublishingPage />
+        ) : active === 'systems' ? (
+          <SystemsPage />
+        ) : active === 'governance' ? (
+          <GovernancePage />
         ) : (
           <section className="module-placeholder">
             <p className="eyebrow">真实接入进行中</p>
