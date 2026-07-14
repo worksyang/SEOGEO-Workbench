@@ -21,6 +21,14 @@ from content_hub.features.wechat.router import router as wechat_router
 from content_hub.features.mp.router import router as mp_router
 from content_hub.features.xhs.router import router as xhs_router
 from content_hub.features.geo.router import router as geo_router
+from content_hub.features.wiki.router import router as wiki_router
+from content_hub.features.writing.router import router as writing_router
+from content_hub.features.publishing.router import router as publishing_router
+from content_hub.features.contents.router import router as contents_router
+from content_hub.features.jobs.router import router as jobs_router
+from content_hub.features.signals.router import router as signals_router
+from content_hub.features.governance.router import router as governance_router
+
 from content_hub.logging import configure_logging
 
 logger = logging.getLogger("content_hub.http")
@@ -119,6 +127,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mp_router)
     app.include_router(xhs_router)
     app.include_router(geo_router)
+    app.include_router(wiki_router)
+    app.include_router(writing_router)
+    app.include_router(publishing_router)
+    app.include_router(contents_router)
+    app.include_router(jobs_router)
+    app.include_router(signals_router)
+    app.include_router(governance_router)
+
     _mount_frontend(app, resolved_settings.frontend_dist)
     return app
 

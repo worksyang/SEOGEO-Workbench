@@ -1,4 +1,9 @@
 from __future__ import annotations
+import os as _os_for_paths
+_WIKI_DEFAULT_ROOTS = (
+    "/Users/works14/Documents/output_md",
+    "/Users/works14/Documents/zkcode",
+)
 
 import os
 from dataclasses import dataclass, replace
@@ -53,6 +58,9 @@ class Settings:
     geo_platforms_path: Path
     geo_redfox_root: Path
     geo_redfox_api_key_configured: bool
+    asset_store_path: Path
+    wiki_allowed_roots: tuple[Path, ...]
+    publish_accounts: tuple[dict, ...] = ()
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -80,6 +88,8 @@ class Settings:
             "http://127.0.0.1:5174",
             "http://localhost:5174",
         )
+        _asset_store_path_local = Path(_os_for_paths.getenv("HUB_ASSET_STORE_PATH", project_root / "asset_store")).resolve()
+        _wiki_roots = tuple(Path(p).resolve() for p in _WIKI_DEFAULT_ROOTS if Path(p).exists()) + (_asset_store_path_local,)
         settings = cls(
             project_root=project_root,
             workbench_root=workbench_root,
@@ -145,6 +155,9 @@ class Settings:
                 "/Users/works14/Documents/zkcode/GEOProMax/data/redfox",
             )).expanduser().resolve(),
             geo_redfox_api_key_configured=bool(os.getenv("HUB_GEO_REDFOX_API_KEY", "").strip()),
+            asset_store_path=_asset_store_path_local,
+            wiki_allowed_roots=_wiki_roots,
+
         )
         settings.ensure_directories()
         return settings
