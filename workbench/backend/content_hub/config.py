@@ -44,6 +44,10 @@ class Settings:
     mp_categories: tuple[str, ...]
     mp_rejected_csv_path: Path
     mp_metadata_root: Path
+    xhs_source_url: str
+    xhs_normalized_root: Path
+    xhs_settings_db_path: Path
+    xhs_source_timeout_seconds: float
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -110,6 +114,16 @@ class Settings:
                 "HUB_MP_METADATA_ROOT",
                 "/Users/works14/Documents/zkcode/250626_mpGUI/output",
             )).expanduser().absolute(),
+            xhs_source_url=os.getenv("HUB_XHS_SOURCE_URL", "http://127.0.0.1:8766").rstrip("/"),
+            xhs_normalized_root=Path(os.getenv(
+                "HUB_XHS_NORMALIZED_ROOT",
+                "/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/normalized",
+            )).expanduser().resolve(),
+            xhs_settings_db_path=Path(os.getenv(
+                "HUB_XHS_SETTINGS_DB_PATH",
+                "/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/data/state/app.db",
+            )).expanduser().resolve(),
+            xhs_source_timeout_seconds=float(os.getenv("HUB_XHS_SOURCE_TIMEOUT_SECONDS", "5")),
         )
         settings.ensure_directories()
         return settings
