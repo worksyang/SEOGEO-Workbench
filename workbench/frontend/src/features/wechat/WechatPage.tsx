@@ -197,6 +197,7 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [sortMode, setSortMode] = useState<'recent' | 'name'>('recent')
   const [selectedId, setSelectedId] = useState('')
   const [keywordData, setKeywordData] = useState<AnyRecord | null>(null)
   const [keywordState, setKeywordState] = useState<LoadState>('loading')
@@ -240,13 +241,15 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
     return keywords.filter((item) => {
       const matchesQuery = !lowered || `${item.name} ${item.group}`.toLowerCase().includes(lowered)
       return matchesQuery && (group === 'all' || item.group === group) && (statusFilter === 'all' || item.status === statusFilter)
-    })
-  }, [group, keywords, query, statusFilter])
+    }).sort((left, right) => sortMode === 'name'
+      ? left.name.localeCompare(right.name, 'zh-CN')
+      : firstText(right.raw, ['latest_captured_at', 'updated_at', 'captured_at']).localeCompare(firstText(left.raw, ['latest_captured_at', 'updated_at', 'captured_at'])))
+  }, [group, keywords, query, sortMode, statusFilter])
 
   useEffect(() => {
     if (!selectedId && visibleKeywords[0]?.id) setSelectedId(visibleKeywords[0].id)
-    if (selectedId && !keywords.some((item) => item.id === selectedId)) setSelectedId(visibleKeywords[0]?.id ?? '')
-  }, [keywords, selectedId, visibleKeywords])
+    if (selectedId && !visibleKeywords.some((item) => item.id === selectedId)) setSelectedId(visibleKeywords[0]?.id ?? '')
+  }, [selectedId, visibleKeywords])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -404,64 +407,58 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
   ] as Array<[string, string]>).map(([label, key]): [string, string] => [label, factText(detail[key])]).filter(([, value]) => Boolean(value))
 
   return (
-    <div className="wechat-page">
-      <section className="wechat-source-banner">
-        <div>
-          <p className="eyebrow">WECHAT SEARCH · REAL SOURCE</p>
-          <h2>微信搜一搜</h2>
-          <p className="subtle-copy">关键词、时间切片和排名文章均来自微信搜一搜适配器，不以 Demo 数据填充。</p>
-        </div>
-        <div className="source-status-block">
-          <span className={`status-dot large ${sourceTone(bootstrap?.source_status)}`} />
-          <div><strong>{sourceLabel(bootstrap?.source_status)}</strong><small>更新于 {formatDate(bootstrap?.updated_at ?? summary.generated_at)}</small></div>
-        </div>
-      </section>
+    <div className="wechat-page demo-module-page">
+      <header className="module-top">
+        <strong className="module-logo">微信关键词监测</strong>
+        <span className="sep" />
+        <span className="module-meta">真实来源 · <b>{sourceLabel(bootstrap?.source_status)}</b></span>
+        <span className="module-right">更新于 {formatDate(bootstrap?.updated_at ?? summary.generated_at)}</span>
+        <button className="mini-btn" type="button" onClick={() => loadBootstrap()}>重新读取</button>
+      </header>
 
-      {state === 'error' || state === 'offline' ? (
-        <div className="module-notice error" role="alert"><strong>{state === 'offline' ? '旧服务离线' : '接口读取失败'}</strong><span>{error || '暂时没有可用回执。'}</span><button type="button" onClick={() => loadBootstrap()}>重试</button></div>
-      ) : null}
-      {state === 'empty' ? <div className="module-notice"><strong>暂无关键词数据</strong><span>服务已响应，但当前没有可展示的关键词或快照。</span></div> : null}
-
-      <section className="wechat-summary-grid" aria-label="微信搜一搜汇总">
-        {SUMMARY_LABELS.map(([keys, label]) => {
-          const value = keys.map((key) => summary[key]).find((item) => item !== undefined && item !== null)
-          return value === undefined ? null : <article className="metric-card" key={label}><span>{label}</span><strong>{numberText(value) || '—'}</strong><small>来自真实汇总</small></article>
-        })}
-        {summary.account_count !== undefined ? <article className="metric-card" key="account_count"><span>账号</span><strong>{numberText(summary.account_count) || '—'}</strong><small>来自真实汇总</small></article> : null}
-      </section>
-
-      <section className="wechat-layout">
-        <aside className="panel wechat-keywords-panel">
-          <div className="panel-heading"><div><p className="eyebrow">KEYWORDS</p><h3>关键词列表</h3></div><span className="count-pill">{visibleKeywords.length} 项</span></div>
-          <div className="wechat-filters">
-            <label className="sr-only" htmlFor="wechat-query">搜索关键词</label>
-            <input id="wechat-query" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索关键词 / 分组" />
-            <select value={group} onChange={(event) => setGroup(event.target.value)} aria-label="按分组筛选"><option value="all">全部分组</option>{groups.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option>{statuses.map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
+      <div className="monitor-layout">
+        <aside className="monitor-left">
+          <div className="monitor-tools">
+            <div className="monitor-tool-row">
+              <input className="monitor-search" aria-label="搜索微信关键词" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索关键词 / 分组" />
+              <span className="tag">{visibleKeywords.length}/{keywords.length}</span>
+            </div>
+            <div className="filter-line"><span className="filter-label">分组</span><div className="filter-chips"><button className={`chip ${group === 'all' ? 'active' : ''}`} type="button" onClick={() => setGroup('all')}>全部</button>{groups.map((item) => <button className={`chip ${group === item ? 'active' : ''}`} key={item} type="button" onClick={() => setGroup(item)}>{item}</button>)}</div></div>
+            <div className="filter-line"><span className="filter-label">状态</span><div className="filter-chips"><button className={`chip ${statusFilter === 'all' ? 'active' : ''}`} type="button" onClick={() => setStatusFilter('all')}>全部</button>{statuses.map((item) => <button className={`chip ${statusFilter === item ? 'active' : ''}`} key={item} type="button" onClick={() => setStatusFilter(item)}>{sourceLabel(item)}</button>)}</div></div>
+            <div className="filter-line"><span className="filter-label">排序</span><div className="filter-chips"><button className={`chip ${sortMode === 'recent' ? 'active' : ''}`} type="button" onClick={() => setSortMode('recent')}>最近</button><button className={`chip ${sortMode === 'name' ? 'active' : ''}`} type="button" onClick={() => setSortMode('name')}>名称</button></div></div>
           </div>
-          <div className="wechat-keyword-list">
-            {state === 'loading' ? <div className="empty-state"><strong>正在读取关键词…</strong></div> : visibleKeywords.length ? visibleKeywords.map((item, index) => <button type="button" key={item.id ?? `${item.name}-${index}`} disabled={!item.id} className={`wechat-keyword-row ${item.id === selectedId ? 'selected' : ''}`} onClick={() => { if (item.id) setSelectedId(item.id) }}><span><strong>{item.name}</strong><small>{item.id ? item.group : `${item.group} · 缺少稳定 ID，详情不可用`}</small></span><em className={`status-badge ${sourceTone(item.status)}`}>{sourceLabel(item.status)}</em></button>) : <div className="empty-state"><strong>没有匹配的关键词</strong><p>调整搜索词或筛选条件后重试。</p></div>}
+          <div className="monitor-list" aria-live="polite">
+            {state === 'loading' ? <div className="compact-empty">正在读取关键词…</div> : visibleKeywords.length ? visibleKeywords.map((item, index) => <button type="button" key={item.id ?? `${item.name}-${index}`} disabled={!item.id} className={`monitor-item ${item.id === selectedId ? 'active' : ''}`} onClick={() => { if (item.id) setSelectedId(item.id) }}><span className="rank">{index + 1}</span><span className="mi-main"><span className="mi-title-row"><strong className="mi-title">{item.name}</strong><span className={`tag ${sourceTone(item.status) === 'healthy' ? 'green' : sourceTone(item.status) === 'degraded' ? 'amber' : sourceTone(item.status) === 'offline' ? 'red' : ''}`}>{sourceLabel(item.status)}</span></span><span className="mi-tags"><span className="tag">{item.group}</span></span></span><span className="mi-side"><b>{numberText(detailValue(item.raw, ['snapshot_count', 'answer_count'])) || '—'}</b><span>快照</span></span></button>) : <div className="compact-empty">没有匹配的关键词。</div>}
           </div>
         </aside>
 
-        <div className="wechat-detail-column">
-          <section className="panel wechat-detail-panel">
-            <div className="panel-heading"><div><p className="eyebrow">SELECTED KEYWORD</p><h3>{selectedKeyword?.name ?? '未选择关键词'}</h3></div><button className="secondary-button" type="button" disabled={!selectedId} onClick={refresh}>{refreshState === 'running' || refreshState === 'queued' ? '再次提交刷新' : '刷新数据'}</button></div>
-            {refreshState !== 'idle' ? <div className={`refresh-receipt ${refreshState}`} role="status"><strong>{refreshState === 'running' ? 'running · 刷新进行中' : refreshState === 'queued' ? 'queued · 刷新已排队' : refreshState === 'rejected' ? 'rejected · 刷新被拒绝' : refreshState === 'success' ? '刷新已提交' : '刷新失败'}</strong><span>{refreshMessage}</span></div> : null}
-            {keywordState === 'loading' ? <div className="empty-state"><strong>正在读取关键词详情…</strong></div> : keywordState === 'offline' ? <div className="empty-state"><strong>详情服务离线</strong><p>列表保留当前已获取内容，详情等待旧服务恢复。</p></div> : keywordState === 'error' ? <div className="empty-state"><strong>详情接口错误</strong><p>{error || '没有收到有效的详情数据。'}</p></div> : keywordData ? <div className="wechat-detail-body">
-              <div className="slice-toolbar"><span>快照时间切片</span>{snapshotRows.length ? snapshotRows.map((item, index) => { const value = firstText(item, ['snapshot_id', 'id', 'captured_at', 'observed_at', 'date']) || String(index); return <button className={(selectedSlice || selectedSnapshotId) === value ? 'slice-button active' : 'slice-button'} type="button" key={value} onClick={() => setSelectedSlice(value)}>{formatDate(firstText(item, ['captured_at', 'observed_at', 'date', 'created_at']) || value)}</button> }) : <small>暂无快照时间切片</small>}</div>
-              {keywordFacts.length ? <div className="keyword-facts">{keywordFacts.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div> : null}
-              {observedMetrics.length ? <div className="observation-strip">{observedMetrics.map(([label, value]) => <div key={label}><span>{label}</span><strong>{numberText(value) || text(value)}</strong></div>)}</div> : null}
-              <div className="wechat-detail-grid">
-                <div><div className="section-title"><span>Top 排名文章</span><small>{articleRows.length ? `${articleRows.length} 篇` : '暂无'}</small></div>{articleRows.length ? <div className="article-list">{articleRows.map((article, index) => <button type="button" className="article-row" key={article.id ?? `${article.title}-${index}`} disabled={!article.id} onClick={() => openArticle(article)}><span className="rank">{article.rank || '—'}</span><span><strong>{article.title}</strong><small>{[article.account, article.url].filter(Boolean).join(' · ') || (article.id ? '来源信息不可用' : '缺少稳定 ID，详情不可用')}</small></span><span aria-hidden="true">{article.id ? '↗' : '—'}</span></button>)}</div> : <div className="compact-empty">当前快照没有排名文章。</div>}</div>
-                <div><div className="section-title"><span>下拉词 / 关联词</span><small>{visibleRelatedTerms.length ? `${visibleRelatedTerms.length} 项` : '暂无'}</small></div>{visibleRelatedTerms.length ? <div className="term-list">{visibleRelatedTerms.map(([kind, item], index) => <span key={`${kind}-${text(item)}-${index}`}><b>{kind}</b>{text(item) || firstText(record(item), ['term', 'keyword', 'name']) || '未命名词项'}</span>)}</div> : <div className="compact-empty">当前快照没有关联词观测。</div>}</div>
-              </div>
-            </div> : <div className="empty-state"><strong>没有可展示的详情</strong></div>}
-          </section>
-        </div>
-      </section>
+        <main className="monitor-right">
+          {(state === 'error' || state === 'offline') && <div className="module-notice error" role="alert"><strong>{state === 'offline' ? '旧服务离线' : '接口读取失败'}</strong><span>{error || '暂时没有可用回执。'}</span><button type="button" onClick={() => loadBootstrap()}>重试</button></div>}
+          {state === 'empty' && <div className="module-notice"><strong>暂无关键词数据</strong><span>服务已响应，但当前没有可展示的关键词或快照。</span></div>}
 
-      {articleData ? <section className="panel article-detail-panel"><div className="panel-heading"><div><p className="eyebrow">ARTICLE DETAIL</p><h3>{firstText({...articleData, ...record(articleData.article)}, ['title', 'name', 'headline']) || '文章详情'}</h3></div><button className="secondary-button" type="button" onClick={() => setArticleData(null)}>关闭</button></div>{articleData.error ? <div className="empty-state"><strong>正文不可用</strong><p>{text(articleData.error)}</p></div> : <div className="article-detail-content"><p>{firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path']) ? `Markdown：${firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path'])}` : '正文不可用，接口未返回 Markdown 路径。'}</p>{safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url'])) ? <a href={safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url']))} target="_blank" rel="noreferrer">打开原文 ↗</a> : null}</div>}</section> : null}
+          <section className="card keyword-hero">
+            <div className="kh-top"><div><strong className="kh-title">{selectedKeyword?.name ?? '选择一个关键词'}</strong><p className="kh-sub">{selectedKeyword ? `${selectedKeyword.group} · ${sourceLabel(selectedKeyword.status)}` : '从左侧关键词列表选择真实观测对象。'}</p></div><div className="kh-actions"><button className="mini-btn primary" type="button" disabled={!selectedId} onClick={refresh}>{refreshState === 'running' || refreshState === 'queued' ? '再次提交刷新' : '刷新数据'}</button></div></div>
+            <div className="stat-row"><div className="stat"><b>{snapshots.length || '—'}</b><span>历史快照</span></div><div className="stat"><b>{articleRows.length || '—'}</b><span>排名文章</span></div><div className="stat"><b>{visibleRelatedTerms.length || '—'}</b><span>关联词</span></div><div className="stat"><b>{selectedSnapshot ? formatDate(firstText(selectedSnapshot, ['captured_at', 'observed_at', 'date', 'created_at'])) : '—'}</b><span>当前切片</span></div></div>
+          </section>
+
+          <section className="card read-card">
+            <div className="read-head"><div className="read-main"><span className="subtle">阅读趋势</span><b>{observedMetrics.length ? numberText(observedMetrics[0][1]) || text(observedMetrics[0][1]) : '—'}</b><strong>{observedMetrics[0]?.[0] ?? '暂无阅读指标'}</strong><p>当前快照真实观测；接口未返回时间序列时不补造曲线。</p></div><div className="window"><span>观测窗口</span><b>{selectedSnapshot ? formatDate(firstText(selectedSnapshot, ['captured_at', 'observed_at', 'date', 'created_at'])) : '—'}</b></div></div>
+            <div className="metric-grid demo-observation-grid">{observedMetrics.length ? observedMetrics.map(([label, value]) => <div className="metric-box" key={label}><span>{label}</span><b>{numberText(value) || text(value) || '—'}</b></div>) : <div className="compact-empty">当前快照暂无阅读、点赞或朋友在看指标。</div>}</div>
+          </section>
+
+          <section className="card snapshot-card">
+            <div className="card-head"><strong className="card-title">采集快照与当前排名文章</strong><span className="subtle">{articleRows.length ? `${articleRows.length} 篇` : '暂无文章'}</span></div>
+            <div className="snapshots" role="tablist" aria-label="微信快照时间切片">{snapshotRows.length ? snapshotRows.map((item, index) => { const value = firstText(item, ['snapshot_id', 'id', 'captured_at', 'observed_at', 'date']) || String(index); return <button className={`snapshot ${(selectedSlice || selectedSnapshotId) === value ? 'active' : ''}`} type="button" role="tab" aria-selected={(selectedSlice || selectedSnapshotId) === value} key={value} onClick={() => setSelectedSlice(value)}><b>{formatDate(firstText(item, ['captured_at', 'observed_at', 'date', 'created_at']) || value)}</b><span>{firstText(item, ['status', 'state']) || '已采集'}</span></button> }) : <span className="subtle">暂无快照时间切片</span>}</div>
+            <div className="article-list">{articleRows.length ? articleRows.map((article, index) => <button type="button" className="article-row" key={article.id ?? `${article.title}-${index}`} disabled={!article.id} onClick={() => openArticle(article)}><span className="article-rank">{article.rank || '—'}</span><span className="article-main"><b>{article.title}</b><span>{[article.account, article.url].filter(Boolean).join(' · ') || '来源信息不可用'}</span></span><span className="article-score">{article.id ? <b>查看</b> : <span>无 ID</span>}</span></button>) : <div className="compact-empty">当前快照没有排名文章。</div>}</div>
+          </section>
+
+          {(refreshState !== 'idle' || keywordState === 'loading' || keywordState === 'error') && <div className={`module-notice ${keywordState === 'error' || refreshState === 'failure' || refreshState === 'rejected' ? 'error' : ''}`} role="status"><strong>{keywordState === 'loading' ? '正在读取关键词详情' : refreshState === 'idle' ? '详情读取状态' : '刷新回执'}</strong><span>{keywordState === 'error' ? error : refreshMessage || '等待真实接口回执。'}</span></div>}
+
+          {(keywordFacts.length || visibleRelatedTerms.length) ? <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">附加事实</strong><span className="subtle">不改变主观测顺序</span></div>{keywordFacts.length ? <div className="keyword-facts">{keywordFacts.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div> : null}{visibleRelatedTerms.length ? <div className="term-list">{visibleRelatedTerms.map(([kind, item], index) => <span key={`${kind}-${text(item)}-${index}`}><b>{kind}</b>{text(item) || firstText(record(item), ['term', 'keyword', 'name']) || '未命名词项'}</span>)}</div> : null}</section> : null}
+
+          {articleData ? <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">{firstText({...articleData, ...record(articleData.article)}, ['title', 'name', 'headline']) || '文章详情'}</strong><button className="mini-btn" type="button" onClick={() => setArticleData(null)}>关闭</button></div>{articleData.error ? <div className="compact-empty">{text(articleData.error)}</div> : <div className="article-detail-content"><p>{firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path']) ? `Markdown：${firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path'])}` : '正文不可用，接口未返回 Markdown 路径。'}</p>{safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url'])) ? <a href={safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url']))} target="_blank" rel="noreferrer">打开原文</a> : null}</div>}</section> : null}
+        </main>
+      </div>
     </div>
   )
 }

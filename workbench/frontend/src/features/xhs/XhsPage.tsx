@@ -153,6 +153,7 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
   const [topic, setTopic] = useState('all')
   const [bucket, setBucket] = useState('all')
   const [keywordStatus, setKeywordStatus] = useState('all')
+  const [keywordSort, setKeywordSort] = useState<'recent' | 'name'>('recent')
   const [selectedKeywordId, setSelectedKeywordId] = useState('')
   const [keywordReloadNonce, setKeywordReloadNonce] = useState(0)
   const [keywordDetail, setKeywordDetail] = useState<JsonRecord | null>(null)
@@ -235,13 +236,15 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
         && (topic === 'all' || text(item.topic) === topic)
         && (bucket === 'all' || text(item.keyword_bucket) === bucket)
         && (keywordStatus === 'all' || keywordStateLabel(item) === keywordStatus)
-    })
-  }, [bucket, keywordStatus, keywords, query, topic])
+    }).sort((left, right) => keywordSort === 'name'
+      ? text(left.keyword).localeCompare(text(right.keyword), 'zh-CN')
+      : text(right.latest_captured_at || right.updated_at || right.created_at).localeCompare(text(left.latest_captured_at || left.updated_at || left.created_at)))
+  }, [bucket, keywordSort, keywordStatus, keywords, query, topic])
 
   useEffect(() => {
     if (!selectedKeywordId && visibleKeywords[0]?.keyword_id) setSelectedKeywordId(visibleKeywords[0].keyword_id)
-    if (selectedKeywordId && !keywords.some((item) => item.keyword_id === selectedKeywordId)) setSelectedKeywordId(visibleKeywords[0]?.keyword_id ?? '')
-  }, [keywords, selectedKeywordId, visibleKeywords])
+    if (selectedKeywordId && !visibleKeywords.some((item) => item.keyword_id === selectedKeywordId)) setSelectedKeywordId(visibleKeywords[0]?.keyword_id ?? '')
+  }, [selectedKeywordId, visibleKeywords])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -436,77 +439,69 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
   const accountFacts = Object.fromEntries(
     Object.entries({...accountRecord, ...record(accountRecord.payload)}).filter(([key]) => key !== 'payload'),
   ) as JsonRecord
+  const hitMetricTotal = (key: string): number | null => {
+    const values = selectedHits.map((hit) => number(record(hit)[key])).filter((value): value is number => value !== null)
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null
+  }
+  const interactionMetrics = [
+    ['点赞', hitMetricTotal('liked_count')],
+    ['收藏', hitMetricTotal('collected_count')],
+    ['评论', hitMetricTotal('comment_count')],
+    ['分享', hitMetricTotal('shared_count')],
+  ] as const
 
   return (
-    <div className="xhs-page">
-      <section className="xhs-source-banner">
-        <div>
-          <p className="eyebrow">XIAOHONGSHU · LIVE + HUB</p>
-          <h2>小红书内容工作台</h2>
-          <p className="subtle-copy">关键词排名、笔记资产和账号画像均来自真实 `/api/v1/xhs` 回执。</p>
-        </div>
-        <div className="source-status-block">
-          <span className={`status-dot large ${statusTone(source)}`} />
-          <div><strong>{pageState === 'loading' ? '检查中' : statusLabel(source)}</strong><small>{source.source ?? '等待来源回执'}</small></div>
-        </div>
-      </section>
+    <div className="xhs-page demo-module-page">
+      <header className="module-top">
+        <strong className="module-logo">小红书关键词监测</strong>
+        <span className="sep" />
+        <span className="module-meta">真实来源 · <b>{pageState === 'loading' ? '检查中' : statusLabel(source)}</b></span>
+        <div className="module-switch"><button className="mini-btn" type="button" onClick={() => void runImport(true)} disabled={busy !== ''}>dry-run 导入</button><button className="mini-btn primary" type="button" onClick={() => void runImport(false)} disabled={busy !== ''}>正式导入</button></div>
+        <span className="module-right">{source.source ?? '等待来源回执'}</span>
+        <button className="mini-btn" type="button" onClick={() => void refreshData()} disabled={busy !== ''}>重新读取</button>
+      </header>
 
-      {error && <div className="module-notice error" role="alert"><strong>读取未完成</strong><span>{error}</span><button type="button" onClick={() => void refreshData()}>重试</button></div>}
-      {(actionError || actionMessage) && <div className={`module-notice ${actionError ? 'error' : ''}`} role={actionError ? 'alert' : 'status'} aria-live="polite"><strong>{actionError ? '操作未完成' : '已收到真实回执'}</strong><span>{actionError || actionMessage}</span></div>}
-
-      <section className="metric-grid xhs-count-grid" aria-label="小红书事实统计">
-        {([['keywords', '关键词'], ['accounts', '账号'], ['snapshots', '快照'], ['ranking_hits', '排名命中'], ['articles', '笔记资产'], ['snapshot_terms', '关联词']] as const).map(([key, label]) => (
-          <article className="metric-card" key={key}><span>{label}</span><strong>{pageState === 'loading' ? '—' : new Intl.NumberFormat('zh-CN').format(counts[key] ?? 0)}</strong><small>{statusTone(source) === 'degraded' ? 'Hub 正式库统计 · 历史回放' : 'Hub 正式库统计'}</small></article>
-        ))}
-      </section>
-
-      <div className="xhs-toolbar">
-        <button className="secondary-button" type="button" onClick={() => void runImport(true)} disabled={busy !== ''}>dry-run 导入</button>
-        <button className="primary-button" type="button" onClick={() => void runImport(false)} disabled={busy !== ''}>正式导入（需确认）</button>
-        <button className="secondary-button" type="button" onClick={() => void refreshData()} disabled={busy !== ''}>重新读取</button>
-      </div>
-
-      {importResult && <section className="xhs-import-receipt panel" aria-live="polite"><div><p className="eyebrow">INGESTION RECEIPT</p><h3>{text(importResult.dry_run) === 'true' || importResult.dry_run === true ? 'dry-run 回执' : '正式导入回执'}</h3></div><div className="xhs-receipt-grid"><span>batch <strong>{text(importResult.batch_id, '—')}</strong></span><span>manifest <strong>{text(record(importResult.audit).manifest_id, '—')}</strong></span><span>rejected <strong>{asArray(record(importResult.audit).rejected).length}</strong></span></div></section>}
-
-      <div className="xhs-workbench-grid">
-        <section className="panel xhs-keywords-panel">
-          <div className="panel-heading"><div><p className="eyebrow">KEYWORD WORKSPACE</p><h3>关键词</h3></div><span className="count-pill">{visibleKeywords.length}/{keywords.length}</span></div>
-          <div className="xhs-filters">
-            <label>搜索<input aria-label="搜索小红书关键词" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="关键词、主题或分组" /></label>
-            <label>主题<select aria-label="按主题筛选" value={topic} onChange={(event) => setTopic(event.target.value)}><option value="all">全部主题</option>{topics.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>分组<select aria-label="按分组筛选" value={bucket} onChange={(event) => setBucket(event.target.value)}><option value="all">全部分组</option>{buckets.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>状态<select aria-label="按状态筛选" value={keywordStatus} onChange={(event) => setKeywordStatus(event.target.value)}><option value="all">全部状态</option>{statuses.map((item) => <option key={item}>{item}</option>)}</select></label>
+      <div className="monitor-layout">
+        <aside className="monitor-left">
+          <div className="monitor-tools">
+            <div className="monitor-tool-row"><input className="monitor-search" aria-label="搜索小红书关键词" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索关键词 / 主题 / 分组" /><span className="tag">{visibleKeywords.length}/{keywords.length}</span></div>
+            <div className="filter-line"><span className="filter-label">主题</span><div className="filter-chips"><button className={`chip ${topic === 'all' ? 'active' : ''}`} type="button" onClick={() => setTopic('all')}>全部</button>{topics.map((item) => <button className={`chip ${topic === item ? 'active' : ''}`} key={item} type="button" onClick={() => setTopic(item)}>{item}</button>)}</div></div>
+            <div className="filter-line"><span className="filter-label">分组</span><div className="filter-chips"><button className={`chip ${bucket === 'all' ? 'active' : ''}`} type="button" onClick={() => setBucket('all')}>全部</button>{buckets.map((item) => <button className={`chip ${bucket === item ? 'active' : ''}`} key={item} type="button" onClick={() => setBucket(item)}>{item}</button>)}</div></div>
+            <div className="filter-line"><span className="filter-label">状态</span><div className="filter-chips"><button className={`chip ${keywordStatus === 'all' ? 'active' : ''}`} type="button" onClick={() => setKeywordStatus('all')}>全部</button>{statuses.map((item) => <button className={`chip ${keywordStatus === item ? 'active' : ''}`} key={item} type="button" onClick={() => setKeywordStatus(item)}>{item}</button>)}</div></div>
+            <div className="filter-line"><span className="filter-label">排序</span><div className="filter-chips"><button className={`chip ${keywordSort === 'recent' ? 'active' : ''}`} type="button" onClick={() => setKeywordSort('recent')}>最近</button><button className={`chip ${keywordSort === 'name' ? 'active' : ''}`} type="button" onClick={() => setKeywordSort('name')}>名称</button></div></div>
           </div>
-          <div className="xhs-keyword-list" role="list">
-            {visibleKeywords.length ? visibleKeywords.map((item) => { const state = keywordStateLabel(item); return <button className={`xhs-keyword-row ${item.keyword_id === selectedKeywordId ? 'selected' : ''}`} key={item.keyword_id} type="button" onClick={() => setSelectedKeywordId(text(item.keyword_id))}><span><strong>{text(item.keyword, '未命名关键词')}</strong><small>{text(item.topic) || '无真实主题'} · {text(item.keyword_bucket) || '无真实分组'}</small></span><span className={`status-badge ${state === 'active' ? 'healthy' : state === 'paused' ? 'degraded' : statusTone(item.status)}`}>{state}</span></button> }) : <div className="empty-state"><strong>{pageState === 'loading' ? '关键词加载中…' : '暂无关键词事实'}</strong><p>调整筛选条件或检查上游/Hub 状态。</p></div>}
+          <div className="monitor-list" role="list">
+            {visibleKeywords.length ? visibleKeywords.map((item, index) => { const itemState = keywordStateLabel(item); return <button className={`monitor-item ${item.keyword_id === selectedKeywordId ? 'active' : ''}`} key={item.keyword_id} type="button" onClick={() => setSelectedKeywordId(text(item.keyword_id))}><span className="rank">{index + 1}</span><span className="mi-main"><span className="mi-title-row"><strong className="mi-title">{text(item.keyword, '未命名关键词')}</strong><span className={`tag ${itemState === 'active' ? 'green' : itemState === 'paused' ? 'amber' : ''}`}>{itemState}</span></span><span className="mi-tags">{text(item.topic) && <span className="tag">{text(item.topic)}</span>}{text(item.keyword_bucket) && <span className="tag">{text(item.keyword_bucket)}</span>}</span></span><span className="mi-side"><b>{text(item.snapshot_count, '—')}</b><span>快照</span></span></button> }) : <div className="compact-empty">{pageState === 'loading' ? '关键词加载中…' : '暂无关键词事实'}</div>}
           </div>
-        </section>
+        </aside>
 
-        <section className="panel xhs-detail-panel">
-          <div className="panel-heading"><div><p className="eyebrow">HISTORY SLICES</p><h3>{text(selectedKeyword?.keyword, '选择一个关键词')}</h3></div><button className="primary-button" type="button" onClick={() => void refreshKeyword()} disabled={!selectedKeywordId || busy !== ''}>刷新关键词</button></div>
-          {keywordState === 'loading' && <div className="empty-state"><strong>正在读取历史详情…</strong></div>}
-          {keywordState === 'error' && <div className="empty-state"><strong>详情读取失败</strong><button className="secondary-button" type="button" onClick={() => setKeywordReloadNonce((value) => value + 1)}>重试</button></div>}
-          {keywordState === 'ready' && <div className="xhs-detail-content">
-            <div className="xhs-snapshot-tabs" role="tablist" aria-label="历史快照时间切片">{snapshots.length ? snapshots.map((item) => <button className={item.snapshot_id === selectedSnapshot?.snapshot_id ? 'active' : ''} key={item.snapshot_id} type="button" role="tab" aria-selected={item.snapshot_id === selectedSnapshot?.snapshot_id} onClick={() => setSelectedSnapshotId(text(item.snapshot_id))}>{dateText(item.captured_at)}</button>) : <span className="subtle-copy">live 轻量回执未提供历史快照；Hub 导入后可回放。</span>}</div>
-            {selectedSnapshot && <><div className="xhs-feature-grid"><div><span>建议词</span><strong>{asArray(selectedFeatures.suggestions).length}</strong><small>{asArray(selectedFeatures.suggestions).slice(0, 3).map(termText).filter(Boolean).join(' · ') || '无事实'}</small></div><div><span>关联词</span><strong>{asArray(selectedFeatures.related).length}</strong><small>{asArray(selectedFeatures.related).slice(0, 3).map(termText).filter(Boolean).join(' · ') || '无事实'}</small></div><div><span>命中</span><strong>{selectedHits.length}</strong><small>{dateText(selectedSnapshot.captured_at)}</small></div></div><div className="xhs-table-wrap"><table><thead><tr><th>排名</th><th>笔记</th><th>作者</th><th>类型</th><th>互动</th><th>URL</th></tr></thead><tbody>{selectedHits.map((hit) => <tr key={hit.hit_id}><td>{number(hit.rank) ?? '—'}</td><td className="ellipsis-cell" title={text(hit.title_raw)}>{text(hit.title_raw, '无标题')}</td><td>{text(hit.creator_name_raw, '—')}</td><td>{text(hit.work_type, '—')}</td><td>{[['赞', hit.liked_count], ['藏', hit.collected_count], ['评', hit.comment_count], ['转', hit.shared_count]].map(([label, value]) => `${label}${number(value) ?? '—'}`).join(' · ')}</td><td>{externalUrl(hit.url_raw) ? <a href={externalUrl(hit.url_raw)} target="_blank" rel="noreferrer">打开</a> : '—'}</td></tr>)}</tbody></table></div></>}
-          </div>}
-        </section>
-      </div>
+        <main className="monitor-right">
+          <section className="card keyword-hero">
+            <div className="kh-top"><div><strong className="kh-title">{text(selectedKeyword?.keyword, '选择一个关键词')}</strong><p className="kh-sub">{selectedKeyword ? `${text(selectedKeyword.topic, '无真实主题')} · ${text(selectedKeyword.keyword_bucket, '无真实分组')}` : '从左侧列表选择真实关键词观测对象。'}</p></div><div className="kh-actions"><button className="mini-btn primary" type="button" onClick={() => void refreshKeyword()} disabled={!selectedKeywordId || busy !== ''}>刷新关键词</button></div></div>
+            <div className="stat-row"><div className="stat"><b>{snapshots.length || '—'}</b><span>历史快照</span></div><div className="stat"><b>{selectedHits.length || '—'}</b><span>排名命中</span></div><div className="stat"><b>{asArray(selectedFeatures.suggestions).length || '—'}</b><span>建议词</span></div><div className="stat"><b>{asArray(selectedFeatures.related).length || '—'}</b><span>关联词</span></div></div>
+          </section>
 
-      <div className="xhs-lower-grid">
-        <section className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">NOTE ASSETS</p><h3>笔记资产</h3></div><span className="count-pill">{visibleArticles.length}/{articleRows.length}</span></div>
-          <div className="xhs-filters"><label>搜索笔记<input aria-label="搜索小红书笔记" value={articleQuery} onChange={(event) => setArticleQuery(event.target.value)} placeholder="标题、作者或事实 payload" /></label><label>排序<select aria-label="笔记排序" value={articleSort} onChange={(event) => setArticleSort(event.target.value as SortMode)}><option value="published">发布时间</option><option value="title">标题</option></select></label></div>
-          {articleState === 'loading' && <div className="empty-state"><strong>笔记加载中…</strong></div>}
-          {articleState === 'error' && <div className="empty-state"><strong>笔记读取失败</strong><button className="secondary-button" type="button" onClick={() => void loadArticles()}>重试</button></div>}
-          {articleState !== 'loading' && articleState !== 'error' && <div className="xhs-table-wrap"><table><thead><tr><th>标题</th><th>作者</th><th>发布时间</th><th>链接</th></tr></thead><tbody>{visibleArticles.map((article) => <tr key={text(article.content_id || article.article_id)}><td className="ellipsis-cell" title={text(article.title)}><button className="link-button" type="button" onClick={() => void openArticle(text(article.content_id || article.article_id))}>{text(article.title, '无标题')}</button></td><td>{text(article.author_name, '—')}</td><td>{dateText(article.published_at)}</td><td>{externalUrl(article.canonical_url) ? <a href={externalUrl(article.canonical_url)} target="_blank" rel="noreferrer">打开</a> : '—'}</td></tr>)}</tbody></table>{!visibleArticles.length && <div className="empty-state"><strong>暂无笔记事实</strong></div>}</div>}
-        </section>
+          <section className="card read-card xhs-heat-card">
+            <div className="read-head"><div className="read-main"><span className="subtle">互动热度</span><b>{interactionMetrics.reduce((sum, [, value]) => sum + (value ?? 0), 0) || '—'}</b><strong>当前快照互动总量</strong><p>点赞、收藏、评论与分享仅汇总当前排名列表中的真实值。</p></div><div className="window"><span>当前切片</span><b>{selectedSnapshot ? dateText(selectedSnapshot.captured_at) : '—'}</b></div></div>
+            <div className="metric-grid">{interactionMetrics.map(([label, value]) => <div className="metric-box" key={label}><span>{label}</span><b>{value ?? '—'}</b></div>)}</div>
+          </section>
 
-        <section className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">ACCOUNT LENS</p><h3>账号透视</h3></div><span className="count-pill">{accounts.length}</span></div>
-          <div className="xhs-account-controls"><input className="xhs-account-search" aria-label="搜索小红书账号" placeholder="搜索账号、account_id 或画像" value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} /><select aria-label="账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as 'score' | 'name')}><option value="score">综合分</option><option value="name">名称</option></select></div>
-          <div className="xhs-account-list">{visibleAccounts.slice(0, 80).map((account, index) => { const id = text(account.creator_id || account.account_id || account.external_id, `account-${index}`); const externalId = text(account.account_id || account.external_id); return <button className="xhs-account-row" type="button" key={id} onClick={() => { if (externalId) void openAccount(externalId) }} disabled={!externalId || busy === `account-${externalId}`}><span><strong>{text(account.name || account.canonical_name, '未命名账号')}</strong><small>{externalId}{number(account.score) !== null ? ` · 综合分 ${number(account.score)}` : ''}</small></span><span className="status-badge healthy">{externalId ? '查看' : '无 ID'}</span></button> })}{!visibleAccounts.length && <div className="empty-state"><strong>暂无符合条件的账号</strong><p>当前筛选没有真实账号事实。</p></div>}</div>
-        </section>
+          <section className="card snapshot-card">
+            <div className="card-head"><strong className="card-title">采集快照与笔记排名</strong><span className="subtle">{selectedHits.length ? `${selectedHits.length} 条` : '暂无命中'}</span></div>
+            <div className="snapshots" role="tablist" aria-label="小红书历史快照">{snapshots.length ? snapshots.map((item) => <button className={`snapshot ${item.snapshot_id === selectedSnapshot?.snapshot_id ? 'active' : ''}`} key={item.snapshot_id} type="button" role="tab" aria-selected={item.snapshot_id === selectedSnapshot?.snapshot_id} onClick={() => setSelectedSnapshotId(text(item.snapshot_id))}><b>{dateText(item.captured_at)}</b><span>{asArray(item.hits).length} 条命中</span></button>) : <span className="subtle">live 回执未提供历史快照；Hub 导入后可回放。</span>}</div>
+            <div className="article-list">{selectedHits.length ? selectedHits.map((hit, index) => { const contentId = text(hit.content_id); const url = externalUrl(hit.url_raw); return <div className="article-row" key={hit.hit_id ?? `${contentId}-${index}`}><span className="article-rank">{number(hit.rank) ?? '—'}</span><span className="article-main"><b>{contentId ? <button className="link-button" type="button" onClick={() => void openArticle(contentId)}>{text(hit.title_raw, '无标题')}</button> : text(hit.title_raw, '无标题')}</b><span>{text(hit.creator_name_raw, '作者未知')} · {text(hit.work_type, '类型未知')} · 赞 {number(hit.liked_count) ?? '—'} · 藏 {number(hit.collected_count) ?? '—'} · 评 {number(hit.comment_count) ?? '—'} · 分享 {number(hit.shared_count) ?? '—'}</span></span><span className="article-score">{url ? <a href={url} target="_blank" rel="noreferrer">打开</a> : <span>—</span>}</span></div> }) : <div className="compact-empty">当前快照没有笔记排名。</div>}</div>
+          </section>
+
+          {error && <div className="module-notice error" role="alert"><strong>读取未完成</strong><span>{error}</span><button type="button" onClick={() => void refreshData()}>重试</button></div>}
+          {(actionError || actionMessage) && <div className={`module-notice ${actionError ? 'error' : ''}`} role={actionError ? 'alert' : 'status'}><strong>{actionError ? '操作未完成' : '已收到真实回执'}</strong><span>{actionError || actionMessage}</span></div>}
+          {keywordState === 'loading' && <div className="module-notice"><strong>正在读取历史详情</strong><span>等待真实接口返回。</span></div>}
+          {keywordState === 'error' && <div className="module-notice error"><strong>详情读取失败</strong><button type="button" onClick={() => setKeywordReloadNonce((value) => value + 1)}>重试</button></div>}
+          {importResult && <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">{text(importResult.dry_run) === 'true' || importResult.dry_run === true ? 'dry-run 回执' : '正式导入回执'}</strong><span className="subtle">batch {text(importResult.batch_id, '—')}</span></div><div className="xhs-receipt-grid"><span>manifest <strong>{text(record(importResult.audit).manifest_id, '—')}</strong></span><span>rejected <strong>{asArray(record(importResult.audit).rejected).length}</strong></span></div></section>}
+
+          <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">笔记资产</strong><span className="subtle">{visibleArticles.length}/{articleRows.length}</span></div><div className="xhs-filters compact-controls"><label>搜索笔记<input value={articleQuery} onChange={(event) => setArticleQuery(event.target.value)} placeholder="标题、作者或事实 payload" /></label><label>排序<select value={articleSort} onChange={(event) => setArticleSort(event.target.value as SortMode)}><option value="published">发布时间</option><option value="title">标题</option></select></label></div>{articleState === 'loading' ? <div className="compact-empty">笔记加载中…</div> : <div className="xhs-table-wrap"><table><thead><tr><th>标题</th><th>作者</th><th>发布时间</th><th>链接</th></tr></thead><tbody>{visibleArticles.map((article) => <tr key={text(article.content_id || article.article_id)}><td className="ellipsis-cell"><button className="link-button" type="button" onClick={() => void openArticle(text(article.content_id || article.article_id))}>{text(article.title, '无标题')}</button></td><td>{text(article.author_name, '—')}</td><td>{dateText(article.published_at)}</td><td>{externalUrl(article.canonical_url) ? <a href={externalUrl(article.canonical_url)} target="_blank" rel="noreferrer">打开</a> : '—'}</td></tr>)}</tbody></table>{!visibleArticles.length && <div className="compact-empty">暂无笔记事实</div>}</div>}</section>
+
+          <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">账号透视</strong><span className="subtle">{accounts.length}</span></div><div className="xhs-account-controls"><input className="xhs-account-search" placeholder="搜索账号、account_id 或画像" value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} /><select value={accountSort} onChange={(event) => setAccountSort(event.target.value as 'score' | 'name')}><option value="score">综合分</option><option value="name">名称</option></select></div><div className="xhs-account-list">{visibleAccounts.slice(0, 80).map((account, index) => { const id = text(account.creator_id || account.account_id || account.external_id, `account-${index}`); const externalId = text(account.account_id || account.external_id); return <button className="xhs-account-row" type="button" key={id} onClick={() => { if (externalId) void openAccount(externalId) }} disabled={!externalId || busy === `account-${externalId}`}><span><strong>{text(account.name || account.canonical_name, '未命名账号')}</strong><small>{externalId}{number(account.score) !== null ? ` · 综合分 ${number(account.score)}` : ''}</small></span><span className="tag">{externalId ? '查看' : '无 ID'}</span></button> })}{!visibleAccounts.length && <div className="compact-empty">暂无符合条件的账号</div>}</div></section>
+        </main>
       </div>
 
       {drawer && <div className="xhs-drawer-backdrop" role="presentation" onClick={() => setDrawer(null)}><aside className="xhs-drawer" role="dialog" aria-modal="true" aria-label={drawer === 'article' ? '笔记详情' : '账号详情'} onClick={(event) => event.stopPropagation()}><button className="xhs-drawer-close" type="button" aria-label="关闭详情抽屉" onClick={() => setDrawer(null)}>×</button>{drawer === 'article' ? <><p className="eyebrow">NOTE DETAIL</p><h3>{text(articleDetailRecord.title, '笔记详情')}</h3><p className="subtle-copy">{text(articleDetailRecord.author_name, '作者未知')} · {dateText(articleDetailRecord.published_at)}</p>{externalUrl(articleDetailRecord.canonical_url) && <a href={externalUrl(articleDetailRecord.canonical_url)} target="_blank" rel="noreferrer">打开 canonical URL</a>}<h4>命中排名</h4><p>{asArray(articleDetailRecord.hits).map((hit) => `#${text(record(hit).rank, '—')}`).join(' · ') || '无事实'}</p><h4>指标时间序列</h4><div className="xhs-observation-list">{observations.map((item) => <div key={item.observation_id}><span>{metricLabel(metricKey(item.metric_key))}</span><strong>{item.numeric_value ?? '—'}</strong><small>{dateText(item.observed_at)}</small></div>)}</div><h4>事实 payload</h4><div className="xhs-payload-list">{jsonPayload(articlePayload).map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></> : <><p className="eyebrow">ACCOUNT DETAIL</p><h3>{text(accountRecord.name || accountRecord.canonical_name, '账号详情')}</h3><p className="subtle-copy">来源：{statusLabel(record(accountDetail?.source_status))}</p><div className="xhs-feature-grid"><div><span>账号 ID</span><strong>{text(accountRecord.account_id || accountRecord.external_id, '—')}</strong></div><div><span>粉丝</span><strong>{text(accountRecord.fans, '—')}</strong></div><div><span>作品</span><strong>{text(accountRecord.total_works, '—')}</strong></div><div><span>综合分</span><strong>{text(accountRecord.score, '—')}</strong></div><div><span>时效分</span><strong>{text(accountRecord.timeliness_score, '—')}</strong></div><div><span>今日分</span><strong>{text(accountRecord.today_score, '—')}</strong></div></div><p className="subtle-copy">{text(accountRecord.description, '无真实简介')} · 最近：{dateText(accountRecord.last_seen_at || accountRecord.updated_at || accountRecord.recent_at)}</p><h4>事实 payload</h4><div className="xhs-payload-list">{jsonPayload(accountFacts).map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></>}</aside></div>}
