@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..domain.ids import generate_ulid_like
+from ..features.publishing.source_reader import LegacyPublishConfig
+from ..ingestion.source_manifests import write_manifest
 from ..validation.timestamps import utc_now_iso
 from .audit import AuditService
 from .safety import public_asset_ref, scrub_public_payload
@@ -64,6 +66,7 @@ class PublishingService:
         accounts: Iterable[PublishAccount] = (),
         bridge_kind: str = "disabled",
         bridge_status: str = "unconfigured",
+        legacy_config: LegacyPublishConfig | None = None,
     ):
         self._conn = connection
         self._publish_root = Path(publish_root).resolve()
@@ -72,6 +75,23 @@ class PublishingService:
         self._accounts: dict[str, PublishAccount] = {acct.account_id: acct for acct in accounts}
         self._bridge_kind = bridge_kind
         self._bridge_status = bridge_status
+        self._legacy_config = legacy_config
+        if legacy_config:
+            for legacy in legacy_config.accounts:
+                self._accounts.setdefault(
+                    legacy.account_id,
+                    PublishAccount(
+                        account_id=legacy.account_id,
+                        display_name=legacy.display_name,
+                        profile_dir="",
+                        cookie_file="",
+                        token_file="",
+                        enabled=False,
+                        publishable=False,
+                        bridge_kind=bridge_kind,
+                        bridge_status=bridge_status,
+                    ),
+                )
         self._audit = AuditService(connection)
 
     def list_accounts(self) -> list[dict[str, Any]]:
@@ -89,6 +109,38 @@ class PublishingService:
     def sync_runtime_accounts(self) -> None:
         """把本机安全配置投影为不含凭据的发布运行账号表。"""
         now = utc_now_iso()
+        if self._legacy_config:
+            write_manifest(
+                self._conn,
+                manifest_id=self._legacy_config.manifest_id,
+                system_key="publishing",
+                source_kind="legacy_readonly",
+                root_fingerprint=self._legacy_config.source_hash,
+                entries=[{
+                    "relative_path": "config/accounts.json",
+                    "content_hash": self._legacy_config.source_hash,
+                    "size_bytes": self._legacy_config.source_size_bytes,
+                    "observed_at": self._legacy_config.captured_at,
+                    "payload": {"credentials": "never_copied"},
+                }],
+                captured_at=self._legacy_config.captured_at,
+                payload={"source_ref": "legacy_publish_accounts", "read_only": True},
+            )
+            for legacy in self._legacy_config.accounts:
+                self._accounts.setdefault(
+                    legacy.account_id,
+                    PublishAccount(
+                        account_id=legacy.account_id,
+                        display_name=legacy.display_name,
+                        profile_dir="",
+                        cookie_file="",
+                        token_file="",
+                        enabled=False,
+                        publishable=False,
+                        bridge_kind=self._bridge_kind,
+                        bridge_status=self._bridge_status,
+                    ),
+                )
         for account in self._accounts.values():
             login_status = "ready" if account.enabled and account.publishable else "disabled"
             self._conn.execute(
@@ -104,7 +156,11 @@ class PublishingService:
                 (
                     account.account_id,
                     account.display_name,
-                    f"publish_accounts:{account.account_id}",
+                    (
+                        self._legacy_config.source_ref
+                        if self._legacy_config and account.account_id.startswith("legacy-")
+                        else f"publish_accounts:{account.account_id}"
+                    ),
                     login_status,
                     int(account.enabled),
                     int(account.publishable),
@@ -118,6 +174,27 @@ class PublishingService:
                         ensure_ascii=False,
                     ),
                 ),
+            )
+        if self._legacy_config:
+            idem = f"accounts-sync:{self._legacy_config.manifest_id}"
+            control = self._record_command_receipt(
+                command_type="publishing.accounts_sync",
+                idempotency_key=idem,
+                actor_id="system",
+                status="succeeded",
+                output={
+                    "account_count": len(self._legacy_config.accounts),
+                    "manifest_id": self._legacy_config.manifest_id,
+                },
+            )
+            self._audit.record(
+                action="publishing.accounts_sync",
+                subject_type="source_manifest",
+                subject_id=self._legacy_config.manifest_id,
+                actor_id="system",
+                actor_type="system",
+                outcome="succeeded",
+                details={"account_count": len(self._legacy_config.accounts), **control},
             )
 
     def status(self, account_id: str) -> dict[str, Any]:
@@ -192,13 +269,177 @@ class PublishingService:
             outcome="succeeded",
             details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status, "reason_code": "publish.draft_only"},
         )
+        command = self._record_command_receipt(
+            command_type="publishing.draft",
+            idempotency_key=f"draft:{account_id}:{content_id}:{digest}",
+            actor_id=operator,
+            status="succeeded",
+            output={"attempt_id": attempt_id, "status": "draft_only"},
+        )
         return {
             "attempt_id": attempt_id,
             "draft_ref": draft_ref,
             "content_id": content_id,
             "status": "draft_only",
             "draft_only": True,
+            **command,
         }
+
+    def enqueue(
+        self,
+        *,
+        account_id: str,
+        content_id: str,
+        body: str,
+        operator: str = "user",
+        queue_name: str = "publishing-safe-queue",
+    ) -> dict[str, Any]:
+        """只创建 Hub 队列项，不触发任何 legacy/真实发布动作。"""
+        self._ensure_known_account(account_id)
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+        target_dir = self._publish_root / account_id / "drafts"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{content_id}_{digest}.md"
+        target.write_text(body, encoding="utf-8")
+        asset_ref = self._publish_ref(target)
+        idem = f"queue:{account_id}:{content_id}:{digest}"
+        existing = self._conn.execute(
+            "SELECT publish_queue_item_id, publish_queue_id, status FROM publish_queue_items WHERE idempotency_key=?",
+            (idem,),
+        ).fetchone()
+        if existing:
+            return {
+                "queue_id": existing["publish_queue_id"],
+                "queue_item_id": existing["publish_queue_item_id"],
+                "status": existing["status"],
+                "idempotency_key": idem,
+            }
+        now = utc_now_iso()
+        queue_id = generate_ulid_like("pqu")
+        item_id = generate_ulid_like("pqi")
+        self._conn.execute(
+            """INSERT INTO publish_queues(
+                publish_queue_id,queue_name,mode,status,interval_seconds,requires_confirmation,
+                schedule_json,created_by,created_at,updated_at
+            ) VALUES(?,?, 'scheduled', 'ready', 0, 1, '{}', ?, ?, ?)""",
+            (queue_id, queue_name, operator[:120] or "user", now, now),
+        )
+        self._conn.execute(
+            """INSERT INTO publish_queue_items(
+                publish_queue_item_id,publish_queue_id,account_id,ordinal,status,
+                idempotency_key,payload_json
+            ) VALUES(?,?,?,0,'queued',?,?)""",
+            (item_id, queue_id, account_id, idem, json.dumps({
+                "content_id": content_id, "asset_ref": asset_ref, "body_hash": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            }, ensure_ascii=False, sort_keys=True)),
+        )
+        self._conn.execute(
+            """INSERT INTO publish_events(
+                publish_event_id,publish_queue_item_id,event_type,status,details_json,occurred_at
+            ) VALUES(?,?, 'publishing.enqueue', 'queued', ?, ?)""",
+            (generate_ulid_like("pev"), item_id, json.dumps({"asset_ref": asset_ref}, ensure_ascii=False), now),
+        )
+        result = {"queue_id": queue_id, "queue_item_id": item_id, "status": "queued", "idempotency_key": idem}
+        result.update(self._record_command_receipt(
+            command_type="publishing.enqueue", idempotency_key=idem, actor_id=operator,
+            status="succeeded", output=result,
+        ))
+        self._audit.record(action="publishing.enqueue", subject_type="publish_queue_item",
+                           subject_id=item_id, actor_id=operator, outcome="succeeded",
+                           details={"queue_id": queue_id, "asset_ref": asset_ref})
+        return result
+
+    def set_queue_item_state(self, *, queue_item_id: str, state: str, operator: str = "user") -> dict[str, Any]:
+        if state not in {"cancelled", "queued"}:
+            raise ValueError("队列项只支持取消或恢复。")
+        row = self._conn.execute(
+            "SELECT publish_queue_id, status, idempotency_key FROM publish_queue_items WHERE publish_queue_item_id=?",
+            (queue_item_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("未知队列项。")
+        old = row["status"]
+        if state == "cancelled" and old not in {"queued", "waiting", "failed", "blocked"}:
+            raise ValueError(f"当前状态 {old} 不允许取消。")
+        if state == "queued" and old != "cancelled":
+            raise ValueError(f"当前状态 {old} 不允许恢复。")
+        now = utc_now_iso()
+        self._conn.execute(
+            "UPDATE publish_queue_items SET status=? WHERE publish_queue_item_id=?",
+            (state, queue_item_id),
+        )
+        queue_status = "cancelled" if state == "cancelled" else "ready"
+        self._conn.execute(
+            "UPDATE publish_queues SET status=?, updated_at=? WHERE publish_queue_id=?",
+            (queue_status, now, row["publish_queue_id"]),
+        )
+        self._conn.execute(
+            """INSERT INTO publish_events(
+                publish_event_id,publish_queue_item_id,event_type,status,details_json,occurred_at
+            ) VALUES(?,?, ?, ?, ?, ?)""",
+            (generate_ulid_like("pev"), queue_item_id, f"publishing.{state}", state,
+             json.dumps({"previous_status": old}, ensure_ascii=False), now),
+        )
+        idem = f"{state}:{queue_item_id}:{row['idempotency_key']}"
+        result = {"queue_item_id": queue_item_id, "status": state, "previous_status": old}
+        result.update(self._record_command_receipt(
+            command_type=f"publishing.{state}", idempotency_key=idem, actor_id=operator,
+            status="succeeded", output=result,
+        ))
+        self._audit.record(action=f"publishing.{state}", subject_type="publish_queue_item",
+                           subject_id=queue_item_id, actor_id=operator, outcome="succeeded",
+                           details={"previous_status": old})
+        return result
+
+    def list_queue(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT i.publish_queue_item_id, i.publish_queue_id, i.account_id, i.status,
+                      i.idempotency_key, i.payload_json, q.queue_name, q.status AS queue_status
+               FROM publish_queue_items i JOIN publish_queues q ON q.publish_queue_id=i.publish_queue_id
+               ORDER BY q.created_at DESC, i.ordinal LIMIT ?""", (max(1, min(limit, 500)),)
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = scrub_public_payload(json.loads(item.pop("payload_json") or "{}"),
+                                                    asset_root=self._publish_root.parent)
+            out.append(item)
+        return out
+
+    def _record_command_receipt(self, *, command_type: str, idempotency_key: str,
+                                actor_id: str, status: str, output: dict[str, Any]) -> dict[str, str]:
+        now = utc_now_iso()
+        command_id = generate_ulid_like("cmd")
+        receipt_id = generate_ulid_like("dwr")
+        self._conn.execute(
+            """INSERT OR IGNORE INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?, 'publishing', ?, ?, ?, ?, '{}', ?, '{}', ?, ?)""",
+            (command_id, command_type, idempotency_key, actor_id[:120] or "user", status,
+             json.dumps(output, ensure_ascii=False, sort_keys=True), now, now),
+        )
+        existing = self._conn.execute(
+            "SELECT command_id FROM command_runs WHERE module_key='publishing' AND idempotency_key=?",
+            (idempotency_key,),
+        ).fetchone()
+        resolved = existing["command_id"]
+        self._conn.execute(
+            """INSERT INTO dual_write_receipts(
+                receipt_id,module_key,command_id,idempotency_key,legacy_status,hub_status,
+                reconcile_status,details_json,created_at
+            ) VALUES(?, 'publishing', ?, ?, 'not_called', ?, 'blocked', ?, ?)
+            ON CONFLICT(module_key,idempotency_key) DO UPDATE SET
+                command_id=excluded.command_id, hub_status=excluded.hub_status,
+                details_json=excluded.details_json""",
+            (receipt_id, resolved, idempotency_key, status,
+             json.dumps({"legacy": "not_called", "hub": status}, ensure_ascii=False, sort_keys=True), now),
+        )
+        receipt = self._conn.execute(
+            "SELECT receipt_id FROM dual_write_receipts WHERE module_key='publishing' AND idempotency_key=?",
+            (idempotency_key,),
+        ).fetchone()
+        return {"command_id": resolved, "dual_write_receipt_id": receipt["receipt_id"]}
 
     def dry_run(self, *, account_id: str, content_id: str, body: str) -> dict[str, Any]:
         self._ensure_known_account(account_id)
@@ -227,7 +468,7 @@ class PublishingService:
             outcome="succeeded",
             details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status, "reason_code": "publish.preview_only"},
         )
-        return {
+        result = {
             "attempt_id": attempt_id,
             "preview_html": preview.html,
             "preview_ref": preview_ref,
@@ -236,6 +477,14 @@ class PublishingService:
             "status": "dry_run_only",
             "preview_only": True,
         }
+        result.update(self._record_command_receipt(
+            command_type="publishing.dry_run",
+            idempotency_key=f"dry-run:{account_id}:{content_id}:{hashlib.sha256(preview.html.encode('utf-8')).hexdigest()[:16]}",
+            actor_id="system",
+            status="succeeded",
+            output={"attempt_id": attempt_id, "status": "dry_run_only"},
+        ))
+        return result
 
     def publish(
         self,
@@ -258,6 +507,13 @@ class PublishingService:
                 details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status,
                          "reason_code": result["reason_code"]},
             )
+            result.update(self._record_command_receipt(
+                command_type="publishing.publish",
+                idempotency_key=f"publish:{account_id}:{content_id}",
+                actor_id=operator,
+                status="blocked",
+                output=result,
+            ))
             return result
         attempt_id = self._record_attempt(
             account_id=account_id,
@@ -277,6 +533,13 @@ class PublishingService:
             details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status,
                      "reason_code": result["reason_code"]},
         )
+        result.update(self._record_command_receipt(
+            command_type="publishing.publish",
+            idempotency_key=f"publish:{account_id}:{content_id}",
+            actor_id=operator,
+            status="blocked",
+            output=result,
+        ))
         return result
 
     def _ensure_known_account(self, account_id: str) -> None:

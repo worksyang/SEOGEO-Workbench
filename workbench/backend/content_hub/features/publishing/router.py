@@ -11,6 +11,7 @@ from content_hub.db.connection import connect
 from content_hub.db.writer_lock import writer_lock
 from content_hub.services.publishing import PublishAccount, PublishingService
 from content_hub.services.safety import scrub_public_payload
+from content_hub.features.publishing.source_reader import read_legacy_accounts
 
 router = APIRouter(prefix="/api/v1/publishing", tags=["publishing"])
 
@@ -69,6 +70,7 @@ def _load_sensitive_words(request: Request) -> list[str]:
 
 def _service(request: Request, connection) -> PublishingService:
     settings = request.app.state.settings
+    legacy_config = read_legacy_accounts(getattr(settings, "publish_accounts_source", Path("")))
     return PublishingService(
         connection=connection,
         publish_root=Path(settings.asset_store_path) / "publish",
@@ -76,6 +78,7 @@ def _service(request: Request, connection) -> PublishingService:
         accounts=_accounts_from_settings(request),
         bridge_kind=getattr(settings, "publish_bridge_kind", "disabled"),
         bridge_status=getattr(settings, "publish_bridge_status", "unconfigured"),
+        legacy_config=legacy_config,
     )
 
 
@@ -130,7 +133,9 @@ def draft(request: Request, payload: dict) -> dict:
     try:
         with writer_lock(Path(settings.lock_path)):
             with connect(settings, readonly=False) as connection:
-                result = _service(request, connection).save_draft(
+                service = _service(request, connection)
+                service.sync_runtime_accounts()
+                result = service.save_draft(
                     account_id=account_id, content_id=content_id, body=body, operator=operator
                 )
                 connection.commit()
@@ -150,8 +155,75 @@ def dry_run(request: Request, payload: dict) -> dict:
     try:
         with writer_lock(Path(settings.lock_path)):
             with connect(settings, readonly=False) as connection:
-                result = _service(request, connection).dry_run(
+                service = _service(request, connection)
+                service.sync_runtime_accounts()
+                result = service.dry_run(
                     account_id=account_id, content_id=content_id, body=body
+                )
+                connection.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": result}
+
+
+@router.post("/queue")
+def enqueue(request: Request, payload: dict) -> dict:
+    settings = request.app.state.settings
+    account_id = payload.get("account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="缺少 account_id")
+    try:
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                service = _service(request, connection)
+                service.sync_runtime_accounts()
+                result = service.enqueue(
+                    account_id=account_id,
+                    content_id=payload.get("content_id") or "queue",
+                    body=payload.get("body") or "",
+                    operator=payload.get("operator") or "user",
+                    queue_name=payload.get("queue_name") or "publishing-safe-queue",
+                )
+                connection.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": result}
+
+
+@router.get("/queue")
+def queue(request: Request, limit: int = 100) -> dict:
+    settings = request.app.state.settings
+    with connect(settings, readonly=True) as connection:
+        return {"ok": True, "data": {"items": _service(request, connection).list_queue(limit=limit)}}
+
+
+@router.post("/queue/{queue_item_id}/cancel")
+def cancel_queue(request: Request, queue_item_id: str, payload: dict | None = None) -> dict:
+    settings = request.app.state.settings
+    try:
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                result = _service(request, connection).set_queue_item_state(
+                    queue_item_id=queue_item_id,
+                    state="cancelled",
+                    operator=(payload or {}).get("operator") or "user",
+                )
+                connection.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": result}
+
+
+@router.post("/queue/{queue_item_id}/resume")
+def resume_queue(request: Request, queue_item_id: str, payload: dict | None = None) -> dict:
+    settings = request.app.state.settings
+    try:
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                result = _service(request, connection).set_queue_item_state(
+                    queue_item_id=queue_item_id,
+                    state="queued",
+                    operator=(payload or {}).get("operator") or "user",
                 )
                 connection.commit()
     except ValueError as exc:
@@ -172,7 +244,9 @@ def publish(request: Request, payload: dict) -> dict:
     try:
         with writer_lock(Path(settings.lock_path)):
             with connect(settings, readonly=False) as connection:
-                result = _service(request, connection).publish(
+                service = _service(request, connection)
+                service.sync_runtime_accounts()
+                result = service.publish(
                     account_id=account_id,
                     content_id=content_id,
                     body=body,

@@ -107,6 +107,9 @@ class Settings:
     asset_store_path: Path
     wiki_allowed_roots: tuple[Path, ...]
     publish_accounts: tuple[dict, ...] = ()
+    publish_accounts_source: Path = Path(
+        "/Users/works14/Documents/zkcode/YZKcode/1126WritePublish/Publish/config/accounts.json"
+    )
     writing_provider_kind: str = "unconfigured"
     writing_provider_status: str = "unconfigured"
     publish_bridge_kind: str = "disabled"
@@ -212,6 +215,10 @@ class Settings:
             asset_store_path=_asset_store_path_local,
             wiki_allowed_roots=_wiki_roots,
             publish_accounts=_parse_publish_accounts(os.getenv("HUB_PUBLISH_ACCOUNTS")),
+            publish_accounts_source=Path(os.getenv(
+                "HUB_PUBLISH_ACCOUNTS_SOURCE",
+                "/Users/works14/Documents/zkcode/YZKcode/1126WritePublish/Publish/config/accounts.json",
+            )).expanduser().resolve(),
             # 首版本机默认启用明确标记的 Fake Provider，让母文章铸造/批量成稿
             # 可以完整跑通任务、产物、审计和回放链路；它不调用外部模型，也不冒充真实生成。
             # 如需验证真实 Provider 门禁，可显式设置 HUB_WRITING_PROVIDER_KIND=unconfigured。
