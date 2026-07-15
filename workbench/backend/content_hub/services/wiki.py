@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..domain.ids import generate_ulid_like
-from ..adapters.wiki import DEFAULT_MAX_FILES, WikiIngestionPipeline, make_batch
+from ..adapters.wiki import (
+    DEFAULT_MAX_FILES,
+    WikiIngestionPipeline,
+    content_id_for_source,
+    make_batch,
+    safe_markdown_path,
+    scan_directory,
+)
 from ..ingestion.checkpoints import CheckpointStore, checkpoint_key_for
 from .audit import AuditService
 from .jobs import JobsService
@@ -173,71 +180,110 @@ class WikiService:
                 subject_id=job_id,
                 actor_id=operator,
                 outcome="failed",
-                details={"source_root": "configured/wiki-source", "error": str(exc)},
+                details={
+                    "source_root": "configured/wiki-source",
+                    "error_type": type(exc).__name__,
+                },
             )
             self._conn.commit()
-            result.update(status="degraded", reason=f"导入失败：{exc}", job_id=job_id)
+            result.update(status="degraded", reason="导入失败，请查看任务与审计记录", job_id=job_id)
             return result
 
     def tree(self) -> list[dict[str, Any]]:
-        bucket_roots: list[tuple[Path, str]] = []
-        if (self._asset_root / "wiki").exists():
-            bucket_roots.append((self._asset_root / "wiki", "wiki"))
-        for root in self._source_roots:
-            candidate = root / "wiki"
-            if candidate.exists():
-                bucket_roots.append((candidate, "legacy_wiki"))
-        return [self._scan_dir(root, bucket, Path()) for root, bucket in bucket_roots]
+        entries = self._entries()
+        if not entries:
+            return []
+        root = {
+            "bucket": "legacy_wiki",
+            "name": "母文章库",
+            "path": "",
+            "source_ref": "",
+            "relative_path": "",
+            "files": [],
+            "sub_dirs": [],
+        }
+        nodes: dict[str, dict[str, Any]] = {"": root}
+        for entry in entries:
+            source_ref = entry["source_ref"]
+            parent = ""
+            for segment in Path(source_ref).parts[:-1]:
+                node_ref = f"{parent}/{segment}".strip("/")
+                if node_ref not in nodes:
+                    child = {
+                        "bucket": "legacy_wiki",
+                        "name": segment,
+                        "path": node_ref,
+                        "source_ref": node_ref,
+                        "relative_path": node_ref,
+                        "files": [],
+                        "sub_dirs": [],
+                    }
+                    nodes[node_ref] = child
+                    nodes[parent]["sub_dirs"].append(child)
+                parent = node_ref
+            nodes[parent]["files"].append(self._public_entry(entry))
+        self._sort_tree(root)
+        return [root]
 
-    def _scan_dir(self, root: Path, bucket: str, relative: Path) -> dict[str, Any]:
-        files: list[dict[str, Any]] = []
-        sub_dirs: list[dict[str, Any]] = []
-        for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-            if entry.name.startswith("."):
+    def _entries(self) -> list[dict[str, Any]]:
+        """以导入同一安全扫描规则构造 UI 条目；私有绝对 Path 不序列化。"""
+        root = self.import_root()
+        if root is None:
+            return []
+        scan = scan_directory(root, max_files=1_000_000)
+        entries: list[dict[str, Any]] = []
+        for path, title, category, content_hash, text in scan.files:
+            source_ref = path.relative_to(scan.root).as_posix()
+            content_id = content_id_for_source(self._conn, source_ref, content_hash)
+            try:
+                updated = (
+                    datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except OSError:
                 continue
-            if entry.is_dir():
-                sub_dirs.append(self._scan_dir(entry, bucket, relative / entry.name))
-            elif entry.suffix.lower() == ".md":
-                files.append(self._describe_file(entry, bucket, relative / entry.name))
-        return {
-            "bucket": bucket,
-            "name": root.name,
-            "path": str(root),
-            "relative_path": str(relative) if str(relative) != "." else "",
-            "files": files,
-            "sub_dirs": sub_dirs,
-        }
-
-    def _describe_file(self, path: Path, bucket: str, relative: Path) -> dict[str, Any]:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            text = ""
-        title, excerpt = _peek_title_and_excerpt(text, fallback=path.stem)
-        word_count = len(text)
-        has_image = bool(re.search(r"!\[[^\]]*\]\(", text)) or "<img" in text
-        try:
-            stat = path.stat()
-            updated = (
-                datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z")
+            content_type = (
+                "knowledge_article"
+                if source_ref == "wiki" or source_ref.startswith("wiki/")
+                else "mother_article"
             )
-        except OSError:
-            updated = utc_now_iso()
-        content_id = _content_id_from_path(path)
-        return {
-            "content_id": content_id,
-            "title": title,
-            "excerpt": excerpt,
-            "path": str(path),
-            "relative_path": str(relative),
-            "bucket": bucket,
-            "category": relative.parts[0] if relative.parts else "",
-            "word_count": word_count,
-            "has_image": has_image,
-            "updated_at": updated,
-        }
+            entry = {
+                "content_id": content_id,
+                "title": title,
+                "excerpt": _peek_title_and_excerpt(text, fallback=path.stem)[1],
+                "path": source_ref,
+                "source_ref": source_ref,
+                "relative_path": source_ref,
+                "bucket": "legacy_wiki",
+                "category": category,
+                "content_type": content_type,
+                "word_count": len(text),
+                "has_image": bool(re.search(r"!\[[^\]]*\]\(", text)) or "<img" in text,
+                "updated_at": updated,
+                "_path": path,
+                "_root": scan.root,
+            }
+            entries.append(entry)
+        return entries
+
+    @staticmethod
+    def _public_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in entry.items() if not key.startswith("_")}
+
+    def _sort_tree(self, node: dict[str, Any]) -> None:
+        node["files"].sort(key=lambda item: (str(item["title"]).lower(), item["source_ref"]))
+        node["sub_dirs"].sort(key=lambda item: str(item["name"]).lower())
+        for child in node["sub_dirs"]:
+            self._sort_tree(child)
+
+    def _entry_for_content(self, content_id: str) -> dict[str, Any] | None:
+        return next((entry for entry in self._entries() if entry["content_id"] == content_id), None)
+
+    @staticmethod
+    def _safe_entry_path(entry: dict[str, Any]) -> Path | None:
+        path, _reason = safe_markdown_path(entry["_path"], entry["_root"])
+        return path
 
     def search(self, query: str, *, limit: int = 50) -> list[dict[str, Any]]:
         all_entries = self.collect()
@@ -268,33 +314,45 @@ class WikiService:
         return output
 
     def read(self, content_id: str) -> dict[str, Any] | None:
-        for entry in self.collect():
-            if entry["content_id"] == content_id:
-                text = Path(entry["path"]).read_text(encoding="utf-8")
-                return {"content_id": content_id, "title": entry["title"], "body": text, "entry": entry}
-        return None
+        entry = self._entry_for_content(content_id)
+        if not entry:
+            return None
+        path = self._safe_entry_path(entry)
+        if not path:
+            return None
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return {
+            "content_id": content_id,
+            "title": entry["title"],
+            "body": text,
+            "entry": self._public_entry(entry),
+        }
 
     def save(self, content_id: str, *, body: str, operator: str = "user") -> dict[str, Any]:
-        entry = next((item for item in self.collect() if item["content_id"] == content_id), None)
+        entry = self._entry_for_content(content_id)
         if not entry:
             raise FileNotFoundError(f"未找到 content_id={content_id} 的母文章")
-        safe_path = resolve_within(
-            Path(entry["path"]),
-            self._source_roots + [self._asset_root],
-        )
+        safe_path = self._safe_entry_path(entry)
+        if not safe_path:
+            raise FileNotFoundError("母文章路径不安全或不可读取")
         text = body if body.endswith("\n") else body + "\n"
         if not text.startswith("---"):
             frontmatter = (
                 "---\n"
                 "schema_version: content-md/1.1\n"
                 f"content_id: {content_id}\n"
-                "content_type: mother_article\n"
+                f"content_type: {entry['content_type']}\n"
                 f"updated_at: {utc_now_iso()}\n"
                 "---\n\n"
             )
             text = frontmatter + text
         bytes_payload = text.encode("utf-8")
         snapshot_path = self._create_snapshot(safe_path, content_id)
+        if self._safe_entry_path(entry) != safe_path:
+            raise FileNotFoundError("母文章路径在保存前发生变化")
         self._atomic_write(safe_path, bytes_payload)
         new_hash = hashlib.sha256(bytes_payload).hexdigest()
         content_only = text.split("---", 2)[-1].strip()
@@ -303,12 +361,15 @@ class WikiService:
             "UPDATE contents SET file_hash=?, updated_at=?, content_hash=? WHERE content_id=?",
             (new_hash, utc_now_iso(), content_hash, content_id),
         )
-        self._record_audit(operator, "wiki.save", content_id, {"path": str(safe_path)})
+        self._record_audit(operator, "wiki.save", content_id, {"source_ref": entry["source_ref"]})
+        # Router 为每个请求新建连接；没有显式提交会导致正文已写入而索引和审计丢失。
+        self._conn.commit()
         return {
             "content_id": content_id,
-            "md_path": str(safe_path),
+            "source_ref": entry["source_ref"],
+            "relative_path": entry["relative_path"],
             "file_hash": new_hash,
-            "snapshot_path": str(snapshot_path),
+            "snapshot_ref": snapshot_path.relative_to(self._asset_root).as_posix(),
         }
 
     def list_buckets(self) -> list[str]:

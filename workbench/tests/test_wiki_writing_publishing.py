@@ -3,13 +3,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import json
 from dataclasses import asdict
 from pathlib import Path
 
+import httpx
 import pytest
 
+from content_hub.app import create_app
 from content_hub.db.connection import connect
 from content_hub.db.migrations import migrate
 from content_hub.config import Settings
@@ -201,6 +204,16 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     ).fetchone()[0]
     assert str(root) not in save_audit
     assert "其他/母文章.md" in save_audit
+    # 保存必须提交：工作台请求会使用独立连接，重开只读连接后仍要看到新索引。
+    reader = sqlite3.connect(_settings.database_path)
+    try:
+        persisted = reader.execute(
+            "SELECT content_hash FROM contents WHERE content_id=?",
+            (mother["content_id"],),
+        ).fetchone()
+        assert persisted and persisted[0] == row["content_hash"]
+    finally:
+        reader.close()
 
 
 def test_t168_wiki_scan_rejects_symlink_invalid_utf8_and_excluded_dirs(hub):
@@ -260,6 +273,43 @@ def test_t170_wiki_tree_read_skip_symlink_dirs_and_files(hub):
     assert "软链目录/逃逸.md" not in refs
     assert "其他/软链文件.md" not in refs
     assert svc.read("cnt_not_a_real_article") is None
+
+
+def test_t171_wiki_api_entries_and_reads_do_not_expose_absolute_paths(hub):
+    conn, settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "接口文章.md").write_text("# 接口文章\n\n正文", encoding="utf-8")
+    (root / "wiki").mkdir()
+    asset = tmp_path / "asset"
+    (asset / "wiki").mkdir(parents=True)
+    svc = WikiService(connection=conn, asset_root=asset, source_roots=[root], lock_path=tmp_path / "lock")
+    imported = svc.import_wiki(confirm=True, max_files=10, operator="test")
+    assert imported["status"] == "succeeded"
+    content_id = conn.execute("SELECT content_id FROM contents WHERE title='接口文章'").fetchone()[0]
+    from dataclasses import replace
+    app = create_app(replace(
+        settings,
+        asset_store_path=asset,
+        wiki_allowed_roots=(root, asset),
+        lock_path=tmp_path / "lock",
+    ))
+
+    async def request_json(path: str) -> dict:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get(path)
+            assert response.status_code == 200
+            return response.json()
+
+    tree = asyncio.run(request_json("/api/v1/wiki/tree"))
+    detail = asyncio.run(request_json(f"/api/v1/wiki/{content_id}"))
+    payload = json.dumps({"tree": tree, "detail": detail}, ensure_ascii=False)
+    assert str(root) not in payload
+    assert str(asset) not in payload
+    assert detail["data"]["entry"]["source_ref"] == "其他/接口文章.md"
 
 
 def test_t151_settings_default_wiki_roots_exclude_zkcode_source(hub):

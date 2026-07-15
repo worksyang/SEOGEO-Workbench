@@ -11,7 +11,7 @@ from pathlib import Path
 from ..domain.models import ContentRecord, DiscoveryRecord, IdentifierRecord
 from ..domain.taxonomy import normalize_entity_list, normalize_intent_list
 from ..domain.ids import content_id_from_text
-from ..ingestion.identity_resolver import IdentityResolver, ResolverContext
+from ..ingestion.identity_resolver import ResolverContext
 from ..ingestion.pipeline import IngestionPipeline, RawBatch
 from ..validation.timestamps import utc_now_iso
 from .base import AdapterStatus, AdapterTask
@@ -128,7 +128,8 @@ def _relative_ref(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _safe_candidate(path: Path, root: Path) -> tuple[Path | None, str | None]:
+def safe_markdown_path(path: Path, root: Path) -> tuple[Path | None, str | None]:
+    """返回根内非软链的常规 Markdown；失败原因可安全对外报告。"""
     try:
         normalized = path.absolute()
         normalized.relative_to(root)
@@ -182,13 +183,16 @@ def scan_directory(wiki_root: Path, *, max_files: int = DEFAULT_MAX_FILES) -> Wi
                 {"source_ref": source_ref, "reason": f"excluded_directory:{excluded_part}"}
             )
             continue
+        if candidate.name.startswith("."):
+            result.rejected.append({"source_ref": source_ref, "reason": "excluded_hidden_file"})
+            continue
         if (
             candidate.name.casefold() in NON_ARTICLE_NAMES
             or candidate.name.casefold().startswith(NON_ARTICLE_NAME_HINTS)
         ):
             result.rejected.append({"source_ref": source_ref, "reason": "non_article_prompt_or_tool_file"})
             continue
-        safe_path, reason = _safe_candidate(candidate, root)
+        safe_path, reason = safe_markdown_path(candidate, root)
         if not safe_path:
             result.rejected.append({"source_ref": source_ref, "reason": reason or "rejected"})
             continue
@@ -223,7 +227,8 @@ def _extract_category(path: Path, root: Path) -> str:
     return "/".join(parts) if parts else "wiki"
 
 
-def _existing_content_id(connection: sqlite3.Connection, source_ref: str, content_hash: str) -> str:
+def content_id_for_source(connection: sqlite3.Connection, source_ref: str, content_hash: str) -> str:
+    """优先复用已入库 identifier，其次以正文哈希识别移动文件。"""
     row = connection.execute(
         "SELECT content_id FROM content_identifiers WHERE namespace=? AND external_id=?",
         (IDENTIFIER_NAMESPACE, source_ref),
@@ -253,7 +258,7 @@ def make_batch(
     now = utc_now_iso()
     for path, title, category, content_hash, text in scan.files:
         source_ref = _relative_ref(path, scan.root)
-        content_id = _existing_content_id(connection, source_ref, content_hash)
+        content_id = content_id_for_source(connection, source_ref, content_hash)
         try:
             stat = path.stat()
         except OSError:

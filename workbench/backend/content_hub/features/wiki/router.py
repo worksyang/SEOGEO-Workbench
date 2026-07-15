@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from content_hub.db.connection import connect
+from content_hub.errors import AppError
 from content_hub.services.wiki import WikiService
 
 router = APIRouter(prefix="/api/v1/wiki", tags=["wiki"])
@@ -76,4 +77,6 @@ def save(request: Request, content_id: str, payload: dict) -> dict:
         result = _service(request, readonly=False).save(content_id, body=body, operator=operator)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OSError, ValueError, AppError):
+        raise HTTPException(status_code=400, detail="母文章路径不安全或不可读取")
     return {"ok": True, "data": result}
