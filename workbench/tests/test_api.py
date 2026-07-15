@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 
 from content_hub.app import create_app
+from content_hub.db.connection import connect
 
 
 def with_client(settings, assertion: Callable[[httpx.AsyncClient], Awaitable[None]]) -> None:
@@ -49,7 +50,11 @@ def test_system_status_reports_real_contract(settings) -> None:
         assert data["database"]["status"] == "healthy"
         # The API field is retained for compatibility, but its value is the
         # SQLite migration level, not the v3.3 architecture revision.
-        assert data["database"]["schema_version"] == 8
+        with connect(settings, readonly=True) as connection:
+            applied_version = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
+        assert data["database"]["schema_version"] == applied_version
         assert len(data["connections"]) == 7
         assert {item["status"] for item in data["connections"]} == {"unknown"}
         assert all(isinstance(item["capabilities"], list) for item in data["connections"])
