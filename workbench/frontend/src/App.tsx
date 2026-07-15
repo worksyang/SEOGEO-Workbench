@@ -13,6 +13,7 @@ import './styles/app.css'
 
 type NavKey = 'overview' | 'wechat' | 'mp' | 'xhs' | 'geo' | 'wiki' | 'writing' | 'publish' | 'systems' | 'governance'
 type NavGroup = {label: string; items: ReadonlyArray<readonly [NavKey, string]>}
+type AdapterNavKey = Extract<NavKey, 'wechat' | 'mp' | 'xhs' | 'geo' | 'wiki' | 'writing' | 'publish'>
 
 const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   {label: '主页', items: [['overview', '统一首页']]},
@@ -24,6 +25,15 @@ const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   {label: '运维', items: [['systems', '系统状态'], ['governance', '数据治理']]},
 ]
 const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
+const ADAPTER_SYSTEM_KEYS: Record<AdapterNavKey, string> = {
+  wechat: 'wechat-search',
+  mp: 'wechat-mp',
+  xhs: 'xhs-search',
+  geo: 'geo',
+  wiki: 'wiki',
+  writing: 'writing-money',
+  publish: 'publishing',
+}
 
 const COUNT_CARDS = [
   ['contents', '统一内容'],
@@ -43,7 +53,7 @@ function statusLabel(value: string | undefined, loading = false): string {
   if (!value) return '未检查'
   return ({
     healthy: '健康', ready: '健康', online: '健康',
-    degraded: '降级', partial: '降级', blocked: '受阻',
+    degraded: '降级', partial: '降级', blocked: '受阻', unconfigured: '未配置',
     offline: '离线', unavailable: '离线', error: '错误', unknown: '未知',
   }[value.toLowerCase()] ?? value)
 }
@@ -51,7 +61,7 @@ function statusLabel(value: string | undefined, loading = false): string {
 function statusTone(value: string | undefined): string {
   if (!value) return 'unknown'
   if (['healthy', 'ready', 'online'].includes(value.toLowerCase())) return 'healthy'
-  if (['degraded', 'partial', 'blocked'].includes(value.toLowerCase())) return 'degraded'
+  if (['degraded', 'partial', 'blocked', 'unconfigured'].includes(value.toLowerCase())) return 'degraded'
   if (['offline', 'unavailable', 'error'].includes(value.toLowerCase())) return 'offline'
   return 'unknown'
 }
@@ -79,11 +89,22 @@ export default function App() {
   const [xhsSourceStatus, setXhsSourceStatus] = useState('unknown')
   const [geoSourceStatus, setGeoSourceStatus] = useState('unknown')
   const {overview, status, loading, error, reload} = useWorkbenchData()
+  const connectionStatuses = Object.fromEntries(
+    (status?.connections ?? []).map((connection) => [connection.system_key, connection.status]),
+  )
+  const adapterStatus = (key: AdapterNavKey, sourceStatus?: string): string | undefined => (
+    sourceStatus && sourceStatus !== 'unknown'
+      ? sourceStatus
+      : connectionStatuses[ADAPTER_SYSTEM_KEYS[key]]
+  )
   const navStatuses: Partial<Record<NavKey, string>> = {
-    wechat: wechatSourceStatus,
-    mp: mpSourceStatus,
-    xhs: xhsSourceStatus,
-    geo: geoSourceStatus,
+    wechat: adapterStatus('wechat', wechatSourceStatus),
+    mp: adapterStatus('mp', mpSourceStatus),
+    xhs: adapterStatus('xhs', xhsSourceStatus),
+    geo: adapterStatus('geo', geoSourceStatus),
+    wiki: adapterStatus('wiki'),
+    writing: adapterStatus('writing'),
+    publish: adapterStatus('publish'),
     systems: status?.database.status,
     governance: status?.database.integrity === 'ok' ? 'healthy' : status?.database.integrity ? 'degraded' : undefined,
   }

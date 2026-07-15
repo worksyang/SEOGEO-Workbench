@@ -1,7 +1,7 @@
 export interface SystemConnection {
   system_key: string
   display_name: string
-  status: 'healthy' | 'degraded' | 'offline' | 'blocked' | 'unknown'
+  status: 'healthy' | 'degraded' | 'offline' | 'blocked' | 'unconfigured' | 'unknown'
   last_checked_at: string | null
 }
 
