@@ -830,11 +830,19 @@ class XhsService:
             )
             return {"http_status": 409, "source_status": {"status": "blocked", "source": "hub_policy", "mode": "hub"}, "blocked": True, **details, **receipt}
         if resolver.mode() == "compare":
-            result, migration = resolver.compare(
-                request_fingerprint=f"xhs:refresh:{keyword_id}:{key}",
-                legacy=lambda: self._refresh_legacy(keyword_id, True, idempotency_key=key),
-                hub=lambda: (_ for _ in ()).throw(NotImplementedError("小红书刷新 Hub Provider 尚未实现")),
-            )
+            try:
+                result, migration = resolver.compare(
+                    request_fingerprint=f"xhs:refresh:{keyword_id}:{key}",
+                    legacy=lambda: self._refresh_legacy(keyword_id, True, idempotency_key=key),
+                    hub=lambda: (_ for _ in ()).throw(NotImplementedError("小红书刷新 Hub Provider 尚未实现")),
+                )
+            except Exception as exc:
+                receipts.record(
+                    command_id=None, idempotency_key=key, legacy_status="failed",
+                    hub_status="not_implemented", reconcile_status="blocked",
+                    details={"keyword_id": keyword_id, "error": str(exc)},
+                )
+                raise
             result["migration"] = migration
             result["dual_write_receipt"] = receipts.record(
                 command_id=result.get("command_id"), idempotency_key=key,
@@ -842,7 +850,15 @@ class XhsService:
                 reconcile_status="blocked", details={"keyword_id": keyword_id, "migration": migration},
             )
             return result
-        result = self._refresh_legacy(keyword_id, True, idempotency_key=key)
+        try:
+            result = self._refresh_legacy(keyword_id, True, idempotency_key=key)
+        except Exception as exc:
+            receipts.record(
+                command_id=None, idempotency_key=key, legacy_status="failed",
+                hub_status="not_attempted", reconcile_status="blocked",
+                details={"keyword_id": keyword_id, "error": str(exc)},
+            )
+            raise
         result["dual_write_receipt"] = receipts.record(
             command_id=result.get("command_id"), idempotency_key=key,
             legacy_status="blocked", hub_status="not_attempted",
