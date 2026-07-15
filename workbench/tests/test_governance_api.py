@@ -50,6 +50,13 @@ def _post(factory, path, json=None):
     return asyncio.run(_run())
 
 
+def _put(factory, path, json=None):
+    async def _run():
+        async with await factory() as c:
+            return await c.put(path, json=json)
+    return asyncio.run(_run())
+
+
 def test_t166_health_endpoint_ok(client):
     r = _get(client, "/health")
     assert r.status_code == 200
@@ -93,6 +100,42 @@ def test_t171_contents_list_paginates(client):
 def test_t172_contents_detail_404_for_unknown(client):
     r = _get(client, "/api/v1/contents/cnt_definitely_does_not_exist")
     assert r.status_code == 404
+
+
+def test_migration_switches_require_confirmation_and_leave_audit(client):
+    blocked = _put(
+        client,
+        "/api/v1/governance/switches/wechat-search/keyword-detail",
+        json={"data_mode": "hub"},
+    )
+    assert blocked.status_code == 409
+    switched = _put(
+        client,
+        "/api/v1/governance/switches/wechat-search/keyword-detail",
+        json={
+            "data_mode": "compare",
+            "rollback_mode": "legacy",
+            "operator": "test",
+            "reason": "contract verification",
+        },
+    )
+    assert switched.status_code == 200
+    listed = _get(client, "/api/v1/governance/switches")
+    assert listed.status_code == 200
+    assert listed.json()["data"]["items"][0]["data_mode"] == "compare"
+    compared = _post(
+        client,
+        "/api/v1/governance/comparisons",
+        json={
+            "module_key": "wechat-search",
+            "contract_key": "keyword-detail",
+            "request_fingerprint": "req-1",
+            "legacy_hash": "same",
+            "hub_hash": "same",
+        },
+    )
+    assert compared.status_code == 200
+    assert compared.json()["data"]["status"] == "matched"
 
 
 def test_t173_wiki_tree_returns_list(client):

@@ -10,12 +10,18 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from content_hub.db.connection import connect
+from content_hub.db.writer_lock import writer_lock
+from content_hub.domain.ids import generate_ulid_like
 from content_hub.ingestion.reconcile import ReconcileEngine
 from content_hub.services.audit import AuditService
 from content_hub.services.backup import BackupService
 from content_hub.services.safety import scrub_public_payload
 
 router = APIRouter(prefix="/api/v1/governance", tags=["governance"])
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _backup_service(request: Request) -> BackupService:
@@ -158,6 +164,128 @@ def locks(request: Request) -> dict:
             item["details"] = scrub_public_payload(item["details"], asset_root=Path(request.app.state.settings.asset_store_path))
             audit.append(item)
     return {"ok": True, "data": {"connections": connections, "audit": audit}}
+
+
+@router.get("/switches")
+def migration_switches(request: Request) -> dict:
+    with connect(request.app.state.settings, readonly=True) as connection:
+        rows = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT switch_id,module_key,contract_key,data_mode,enabled,rollback_mode,
+                       updated_at,updated_by,reason
+                FROM migration_switches ORDER BY module_key,contract_key
+                """
+            ).fetchall()
+        ]
+    return {"ok": True, "data": {"items": rows, "total": len(rows)}}
+
+
+@router.put("/switches/{module_key}/{contract_key}")
+def set_migration_switch(
+    request: Request,
+    module_key: str,
+    contract_key: str,
+    payload: dict,
+) -> dict:
+    mode = str(payload.get("data_mode") or "").strip()
+    rollback_mode = str(payload.get("rollback_mode") or "legacy").strip()
+    if mode not in {"legacy", "compare", "hub"} or rollback_mode not in {"legacy", "compare", "hub"}:
+        raise HTTPException(status_code=400, detail="data_mode/rollback_mode 仅允许 legacy、compare 或 hub")
+    if mode == "hub" and payload.get("confirm") is not True:
+        raise HTTPException(status_code=409, detail="切换到 hub 模式必须明确 confirm=true")
+    if not module_key or not contract_key:
+        raise HTTPException(status_code=400, detail="module_key 与 contract_key 不能为空")
+    settings = request.app.state.settings
+    now = _utc_now()
+    actor = str(payload.get("operator") or "user")[:120]
+    reason = str(payload.get("reason") or "")[:1000]
+    with writer_lock(settings.lock_path):
+        with connect(settings, readonly=False) as connection:
+            previous = connection.execute(
+                "SELECT data_mode FROM migration_switches WHERE module_key=? AND contract_key=?",
+                (module_key, contract_key),
+            ).fetchone()
+            switch_id = (
+                connection.execute(
+                    "SELECT switch_id FROM migration_switches WHERE module_key=? AND contract_key=?",
+                    (module_key, contract_key),
+                ).fetchone()
+            )
+            switch_id = switch_id["switch_id"] if switch_id else generate_ulid_like("sw")
+            connection.execute(
+                """
+                INSERT INTO migration_switches(
+                    switch_id,module_key,contract_key,data_mode,enabled,rollback_mode,
+                    updated_at,updated_by,reason
+                ) VALUES(?,?,?,?,1,?,?,?,?)
+                ON CONFLICT(module_key,contract_key) DO UPDATE SET
+                    data_mode=excluded.data_mode,enabled=excluded.enabled,
+                    rollback_mode=excluded.rollback_mode,updated_at=excluded.updated_at,
+                    updated_by=excluded.updated_by,reason=excluded.reason
+                """,
+                (switch_id, module_key, contract_key, mode, rollback_mode, now, actor, reason),
+            )
+            AuditService(connection).record(
+                action="migration_switch.update",
+                subject_type="migration_switch",
+                subject_id=switch_id,
+                actor_id=actor,
+                outcome="succeeded",
+                details={
+                    "module_key": module_key,
+                    "contract_key": contract_key,
+                    "previous_mode": previous["data_mode"] if previous else None,
+                    "data_mode": mode,
+                    "rollback_mode": rollback_mode,
+                    "reason": reason,
+                },
+            )
+            connection.commit()
+    return {
+        "ok": True,
+        "data": {
+            "switch_id": switch_id,
+            "module_key": module_key,
+            "contract_key": contract_key,
+            "data_mode": mode,
+            "rollback_mode": rollback_mode,
+            "updated_at": now,
+        },
+    }
+
+
+@router.post("/comparisons")
+def record_contract_comparison(request: Request, payload: dict) -> dict:
+    module_key = str(payload.get("module_key") or "").strip()
+    contract_key = str(payload.get("contract_key") or "").strip()
+    request_fingerprint = str(payload.get("request_fingerprint") or "").strip()
+    legacy_hash = payload.get("legacy_hash")
+    hub_hash = payload.get("hub_hash")
+    if not module_key or not contract_key or not request_fingerprint:
+        raise HTTPException(status_code=400, detail="module_key、contract_key、request_fingerprint 不能为空")
+    status = "matched" if legacy_hash and legacy_hash == hub_hash else "different"
+    comparison_id = generate_ulid_like("cmp")
+    now = _utc_now()
+    with writer_lock(request.app.state.settings.lock_path):
+        with connect(request.app.state.settings, readonly=False) as connection:
+            connection.execute(
+                """
+                INSERT INTO contract_comparisons(
+                    comparison_id,module_key,contract_key,request_fingerprint,
+                    legacy_hash,hub_hash,status,diff_json,compared_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    comparison_id, module_key, contract_key, request_fingerprint,
+                    legacy_hash, hub_hash, status,
+                    json.dumps(payload.get("diff") if isinstance(payload.get("diff"), dict) else {}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            connection.commit()
+    return {"ok": True, "data": {"comparison_id": comparison_id, "status": status, "compared_at": now}}
 
 
 @router.get("/reconcile")
