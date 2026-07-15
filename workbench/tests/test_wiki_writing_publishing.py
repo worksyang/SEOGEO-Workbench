@@ -241,6 +241,26 @@ def test_t168_wiki_scan_rejects_symlink_invalid_utf8_and_excluded_dirs(hub):
     assert "excluded_directory:wiki-viewer" in reasons
 
 
+def test_t168b_wiki_import_audits_expected_rejections_without_false_failure(hub):
+    conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "ok.md").write_text("# OK", encoding="utf-8")
+    (root / "wiki-viewer").mkdir()
+    (root / "wiki-viewer" / "tool.md").write_text("# tool", encoding="utf-8")
+    (root / "wiki").mkdir()
+    asset = tmp_path / "asset"
+    (asset / "wiki").mkdir(parents=True)
+    svc = WikiService(connection=conn, asset_root=asset, source_roots=[root], lock_path=tmp_path / "lock")
+    result = svc.import_wiki(confirm=True, max_files=10, operator="test")
+    assert result["status"] == "degraded"
+    outcome, details_json = conn.execute(
+        "SELECT outcome, details_json FROM audit_log WHERE action='wiki.import' ORDER BY occurred_at DESC LIMIT 1"
+    ).fetchone()
+    assert outcome == "succeeded"
+    assert json.loads(details_json)["status"] == "degraded"
+
+
 def test_t169_wiki_scan_reports_truncation_and_real_root_shape(hub):
     _conn, _settings, tmp_path = hub
     root = tmp_path / "source"

@@ -158,10 +158,13 @@ class WikiService:
                 subject_type="ingestion_batch",
                 subject_id=pipeline_result.batch_id,
                 actor_id=operator,
-                outcome="succeeded" if result["status"] == "succeeded" else "failed",
+                # audit_log 只允许 succeeded/failed/blocked；过滤掉的历史文件属于
+                # 明确报告的拒绝项，不等同于本批写入失败。
+                outcome="failed" if pipeline_result.records_failed else "succeeded",
                 details={
                     "job_id": job_id,
                     "source_root": "configured/wiki-source",
+                    "status": result["status"],
                     "scanned": scan.scanned,
                     "accepted": scan.accepted,
                     "rejected": len(scan.rejected),
