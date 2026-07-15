@@ -23,6 +23,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (4, "canonicalize_geo_connection"),
         (5, "v33_runtime_layers"),
         (6, "writing_runtime_receipts"),
+        (7, "source_manifest_backfill"),
     ]
 
 
@@ -38,6 +39,7 @@ def _settings_for_migration_state(
             "0004_canonicalize_geo_connection.sql",
             "0005_v33_runtime_layers.sql",
             "0006_writing_runtime_receipts.sql",
+            "0007_source_manifest_backfill.sql",
         ])
     for name in names:
         shutil.copy2(source_dir / name, migration_dir / name)
@@ -100,7 +102,7 @@ def _run_canonicalization(
 
     full = _settings_for_migration_state(base, tmp_path, initial_only=False)
     assert full.database_path == initial.database_path
-    assert migrate(full) == [4, 5, 6]
+    assert migrate(full) == [4, 5, 6, 7]
     return full
 
 
@@ -203,4 +205,44 @@ def test_v33_runtime_control_planes_and_module_tables_exist(settings) -> None:
             row["name"]
             for row in connection.execute("PRAGMA table_info(production_jobs)").fetchall()
         }
-    assert {"wm_project_id", "wm_batch_id"} <= production_columns
+        assert {"wm_project_id", "wm_batch_id"} <= production_columns
+
+
+def test_source_manifest_backfill_is_idempotent_and_hides_absolute_paths(settings, tmp_path) -> None:
+    from content_hub.ingestion.source_manifest_backfill import backfill_existing_manifests
+
+    with connect(settings) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingestion_batches(
+                batch_id, adapter_key, source_scope, status, source_ref
+            ) VALUES ('batch_wechat_fixture', 'wechat-search', 'history', 'succeeded',
+                      '/Users/works14/legacy/wechat')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO search_snapshots(
+                snapshot_id, platform, keyword, captured_at, source_ref
+            ) VALUES ('snap_fixture', 'wechat-search', '测试关键词',
+                      '2026-07-15T00:00:00Z',
+                      'normalized/snapshots.json')
+            """
+        )
+        connection.commit()
+        first = backfill_existing_manifests(connection, settings)
+        second = backfill_existing_manifests(connection, settings)
+        connection.commit()
+        assert first["systems"]["wechat-search"]["manifest_id"] == second["systems"]["wechat-search"]["manifest_id"]
+        refs = connection.execute(
+            """
+            SELECT source_ref FROM ingestion_batches
+            UNION ALL SELECT source_ref FROM search_snapshots
+            """
+        ).fetchall()
+        assert all(str(row[0]).startswith("manifest://wechat-search/") for row in refs)
+        assert all("/Users/" not in str(row[0]) for row in refs)
+        assert connection.execute("SELECT COUNT(*) FROM source_manifests").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE audit_id='audit_migration_0007_source_manifest_backfill'"
+        ).fetchone()[0] == 1

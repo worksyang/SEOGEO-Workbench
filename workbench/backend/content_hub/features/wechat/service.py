@@ -13,7 +13,10 @@ from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.services.dual_write import DualWriteReceiptService
+from content_hub.services.migration import MigrationResolver, utc_now
 from content_hub.services.search_runtime import SearchRefreshRuntime
+from content_hub.ingestion.source_manifests import manifest_id_for, manifest_ref, write_manifest
 from content_hub.validation.urls import canonicalize_url
 
 SOURCE_TZ = ZoneInfo("Asia/Shanghai")
@@ -130,6 +133,16 @@ class WechatService:
                     con.execute("INSERT INTO audit_log(audit_id,occurred_at,actor_type,action,subject_type,subject_id,outcome,details_json) VALUES(?,?,?,?,?,?,?,?)", (_id("audit", f"{action}:{subject_id}:{occurred}"), occurred, "system", action, "wechat", subject_id, outcome, _json(details)))
 
     def bootstrap(self) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="bootstrap")
+        result, migration = resolver.read(
+            request_fingerprint="wechat:bootstrap",
+            legacy=self._bootstrap_legacy,
+            hub=self._bootstrap_hub,
+        )
+        result["migration"] = migration
+        return result
+
+    def _bootstrap_legacy(self) -> dict[str, Any]:
         try: result = self.adapter.bootstrap()
         except WechatSourceError as exc:
             self._safe_status("offline", str(exc))
@@ -138,6 +151,27 @@ class WechatService:
         payload = result.payload
         keywords = payload.get("keywords") or []
         return {"source_status": {"status": result.status, "source": result.source, "error": result.error}, "summary": {"keyword_count": len(keywords), "account_count": len(payload.get("accounts") or []), "generated_at": payload.get("generated_at"), "window_days": payload.get("window_days")}, "keywords": [self._keyword_summary(x) for x in keywords if isinstance(x, dict)], "updated_at": payload.get("generated_at")}
+
+    def _bootstrap_hub(self) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            keywords = [
+                self._keyword_summary(dict(row))
+                for row in con.execute(
+                    "SELECT * FROM keywords WHERE platform='wechat-search' ORDER BY keyword_id"
+                ).fetchall()
+            ]
+            accounts = [
+                dict(row)
+                for row in con.execute(
+                    "SELECT * FROM creators WHERE platform='wechat-search' ORDER BY creator_id"
+                ).fetchall()
+            ]
+        return {
+            "source_status": {"status": "healthy", "source": "hub_db"},
+            "summary": {"keyword_count": len(keywords), "account_count": len(accounts), "generated_at": None, "window_days": None},
+            "keywords": keywords,
+            "updated_at": None,
+        }
 
     def _safe_status(self, status: str, error: str | None = None) -> None:
         try: self._connection_status(status, error=error, success_at=None)
@@ -171,6 +205,26 @@ class WechatService:
         }
 
     def keyword(self, keyword_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="keyword-detail")
+        result, migration = resolver.read(
+            request_fingerprint=f"wechat:keyword:{keyword_id}",
+            legacy=lambda: self._keyword_legacy(keyword_id),
+            hub=lambda: self._keyword_hub(keyword_id),
+        )
+        result["migration"] = migration
+        return result
+
+    def _keyword_hub(self, keyword_id: str) -> dict[str, Any]:
+        records = self._hub_keyword_records(keyword_id)
+        if not records["keyword"]:
+            raise NotFoundError("微信关键词", keyword_id)
+        return self._keyword_response(
+            records["keyword"],
+            records=records,
+            source_status={"status": "healthy", "source": "hub_db"},
+        )
+
+    def _keyword_legacy(self, keyword_id: str) -> dict[str, Any]:
         try:
             remote = self.adapter.remote_keyword(keyword_id)
             self._connection_status("healthy", success_at=_utc_now())
@@ -347,6 +401,16 @@ class WechatService:
         return views
 
     def article(self, article_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="article-detail")
+        result, migration = resolver.read(
+            request_fingerprint=f"wechat:article:{article_id}",
+            legacy=lambda: self._article_legacy(article_id),
+            hub=lambda: self._article_hub(article_id),
+        )
+        result["migration"] = migration
+        return result
+
+    def _article_hub(self, article_id: str) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
             article = con.execute("SELECT * FROM contents WHERE content_id=?", (article_id,)).fetchone()
             if article:
@@ -358,6 +422,13 @@ class WechatService:
                     sid = str(hit["snapshot_id"])
                     snapshot_rows.setdefault(sid, {"snapshot_id": sid, "captured_at": hit["captured_at"], "keyword": hit["keyword"], "features": json.loads(hit.get("features_json") or "{}"), "hits": []})["hits"].append(hit)
                 return {"source_status": {"status": "healthy", "source": "hub_db"}, "article": {**dict(article), "source": payload}, "snapshots": list(snapshot_rows.values()), "hits": hits, "articles": [{**dict(article), "source": payload}], "features": {"canonical_url": article["canonical_url"], "published_at": article["published_at"]}, "observations": obs}
+        raise NotFoundError("微信文章", article_id)
+
+    def _article_legacy(self, article_id: str) -> dict[str, Any]:
+        try:
+            return self._article_hub(article_id)
+        except NotFoundError:
+            pass
         try: records = self.adapter.detail_records()
         except WechatSourceError as exc:
             self._safe_status("offline", str(exc))
@@ -376,6 +447,16 @@ class WechatService:
         return {"source_status": {"status": "degraded", "source": "legacy_normalized"}, "article": article, "snapshots": views, "hits": hits, "articles": [article], "features": {"content": content, "canonical_url": _safe_url(article.get("normalized_url") or article.get("raw_url"))}, "observations": obs}
 
     def article_content(self, article_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="article-content")
+        result, migration = resolver.read(
+            request_fingerprint=f"wechat:article-content:{article_id}",
+            legacy=lambda: self._article_content_legacy(article_id),
+            hub=lambda: (_ for _ in ()).throw(NotImplementedError("正文仍由原 Markdown 源提供")),
+        )
+        result["migration"] = migration
+        return result
+
+    def _article_content_legacy(self, article_id: str) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
             row = con.execute("SELECT title,md_path FROM contents WHERE content_id=?", (article_id,)).fetchone()
         if row is None:
@@ -391,6 +472,59 @@ class WechatService:
         return {"article_id": article_id, "title": row["title"], "path": row["md_path"], "content": content}
 
     def refresh(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
+        key = idempotency_key or f"wechat-refresh:{keyword_id}:{_utc_now()}"
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="refresh")
+        if not confirm:
+            DualWriteReceiptService(self.settings, module_key="wechat-search").record(
+                command_id=None,
+                idempotency_key=key,
+                legacy_status="not_attempted",
+                hub_status="not_attempted",
+                reconcile_status="blocked",
+                details={"keyword_id": keyword_id, "reason_code": "confirm_required"},
+            )
+            raise ValidationAppError("刷新必须明确传入 confirm=true。")
+        try:
+            if resolver.mode() == "hub":
+                details = {
+                    "keyword_id": keyword_id,
+                    "reason_code": "wechat.hub_refresh_not_implemented",
+                    "message": "微信刷新尚未接入 Hub Provider，未向旧系统或 Hub 伪造成功。",
+                }
+                receipt = DualWriteReceiptService(self.settings, module_key="wechat-search").record(
+                    command_id=None, idempotency_key=key, legacy_status="not_attempted",
+                    hub_status="not_implemented", reconcile_status="blocked", details=details,
+                )
+                return {"http_status": 409, "source_status": {"status": "blocked", "source": "hub_policy", "mode": "hub"}, "blocked": True, **details, **receipt}
+            if resolver.mode() == "compare":
+                result, migration = resolver.compare(
+                    request_fingerprint=f"wechat:refresh:{keyword_id}:{key}",
+                    legacy=lambda: self._refresh_legacy(keyword_id, True, idempotency_key=key),
+                    hub=lambda: (_ for _ in ()).throw(NotImplementedError("微信刷新 Hub Provider 尚未实现")),
+                )
+                result["migration"] = migration
+            else:
+                result = self._refresh_legacy(keyword_id, True, idempotency_key=key)
+            http_status = int(result.get("http_status", 200))
+            receipt = DualWriteReceiptService(self.settings, module_key="wechat-search").record(
+                command_id=result.get("command_id"),
+                idempotency_key=key,
+                legacy_status="blocked" if http_status == 409 else "succeeded" if http_status < 300 else "failed",
+                hub_status="not_attempted",
+                reconcile_status="blocked" if http_status == 409 else "pending",
+                details={"keyword_id": keyword_id, "migration": result.get("migration", {})},
+            )
+            result["dual_write_receipt"] = receipt
+            return result
+        except Exception as exc:
+            DualWriteReceiptService(self.settings, module_key="wechat-search").record(
+                command_id=None, idempotency_key=key, legacy_status="failed",
+                hub_status="not_attempted", reconcile_status="blocked",
+                details={"keyword_id": keyword_id, "error": str(exc)},
+            )
+            raise
+
+    def _refresh_legacy(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
         if confirm is not True: raise ValidationAppError("刷新必须明确传入 confirm=true。")
         try:
             item = self.adapter.remote_keyword(keyword_id)
@@ -465,6 +599,28 @@ class WechatService:
         return {"http_status": response.status, "source_status": {"status": "healthy", "source": "legacy_http"}, "refresh_job_id": command["refresh_job_id"], "command_id": command["command_id"], "result": response.payload}
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="wechat-search", contract_key="refresh-status")
+        if resolver.mode() == "hub":
+            runtime = SearchRefreshRuntime(
+                self.settings, system_key="wechat-search", platform="wechat-search"
+            ).status(job_id)
+            if not runtime:
+                raise ConflictError("微信刷新状态的 Hub 运行记录不存在，未回退到旧系统。")
+            return {"source_status": {"status": "healthy", "source": "hub_runtime"}, "result": runtime, "migration": {"mode": "hub"}}
+        if resolver.mode() == "compare":
+            result, migration = resolver.compare(
+                request_fingerprint=f"wechat:refresh-status:{job_id}",
+                legacy=lambda: self._refresh_status_legacy(job_id),
+                hub=lambda: SearchRefreshRuntime(self.settings, system_key="wechat-search", platform="wechat-search").status(job_id)
+                    or (_ for _ in ()).throw(NotImplementedError("Hub 刷新状态不存在")),
+            )
+            result["migration"] = migration
+            return result
+        result = self._refresh_status_legacy(job_id)
+        result["migration"] = {"mode": "legacy"}
+        return result
+
+    def _refresh_status_legacy(self, job_id: str) -> dict[str, Any]:
         runtime = SearchRefreshRuntime(
             self.settings, system_key="wechat-search", platform="wechat-search"
         ).status(job_id)
@@ -479,8 +635,11 @@ class WechatService:
             raise ConflictError(str(exc)) from exc
 
     def import_history(self, *, dry_run: bool, limit: int | None) -> dict[str, Any]:
+        migration = MigrationResolver(self.settings, module_key="wechat-search", contract_key="history-import").describe()
         try:
-            return self._import_history(dry_run=dry_run, limit=limit)
+            result = self._import_history(dry_run=dry_run, limit=limit)
+            result["migration"] = migration
+            return result
         finally:
             self.adapter.clear_cache_for_root(self.adapter.root)
 
@@ -615,7 +774,24 @@ class WechatService:
 
     def _write(self, con: sqlite3.Connection, records: dict[str, Any], batch_id: str, report: dict[str, Any], now: str) -> None:
         records_seen = sum(len(v) for v in records.values() if isinstance(v, list))
-        con.execute("INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at,payload_json=excluded.payload_json", (batch_id, "wechat-search", "history", "running", now, str(self.adapter.root), _json(report)))
+        entries = [
+            {"relative_path": item["path"], "content_hash": item.get("sha256"), "size_bytes": item.get("size")}
+            for item in report.get("manifest", {}).values()
+            if isinstance(item, dict) and item.get("path")
+        ]
+        manifest_id = manifest_id_for("wechat-search", {"source_kind": "normalized+markdown"}, entries)
+        write_manifest(
+            con,
+            manifest_id=manifest_id,
+            system_key="wechat-search",
+            source_kind="normalized+markdown",
+            root_fingerprint=hashlib.sha256(f"wechat-search:{self.adapter.root.name}".encode()).hexdigest(),
+            entries=entries,
+            captured_at=now,
+            payload={"source_root": "configured/wechat-search", "batch_id": batch_id},
+        )
+        report["manifest_id"] = manifest_id
+        con.execute("INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at,payload_json=excluded.payload_json", (batch_id, "wechat-search", "history", "running", now, manifest_ref("wechat-search", manifest_id), _json(report)))
         ids: dict[str, str] = {}
         accepted_rows: dict[str, set[str]] = {}
 
@@ -680,7 +856,9 @@ class WechatService:
             snapshot_map[sid] = actual_sid
             valid_snapshots.add(actual_sid)
             features = snapshot_features.get(sid, {"suggestions": [], "related": []})
-            con.execute("INSERT INTO search_snapshots(snapshot_id,platform,keyword,keyword_id,captured_at,trigger_type,result_count,features_json,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(snapshot_id) DO UPDATE SET keyword=excluded.keyword,keyword_id=excluded.keyword_id,captured_at=excluded.captured_at,result_count=excluded.result_count,features_json=excluded.features_json,payload_json=excluded.payload_json", (actual_sid,"wechat-search",keyword,kid,captured,row.get("trigger_type"),result_count,_json(features),row.get("source_file_path"),_json({**row,"source_timezone":row.get("timezone") or "Asia/Shanghai"})))
+            raw_source = str(row.get("source_file_path") or "").replace("\\", "/").lstrip("./")
+            snapshot_ref = manifest_ref("wechat-search", manifest_id, raw_source) if raw_source else manifest_ref("wechat-search", manifest_id)
+            con.execute("INSERT INTO search_snapshots(snapshot_id,platform,keyword,keyword_id,captured_at,trigger_type,result_count,features_json,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(snapshot_id) DO UPDATE SET keyword=excluded.keyword,keyword_id=excluded.keyword_id,captured_at=excluded.captured_at,result_count=excluded.result_count,features_json=excluded.features_json,source_ref=excluded.source_ref,payload_json=excluded.payload_json", (actual_sid,"wechat-search",keyword,kid,captured,row.get("trigger_type"),result_count,_json(features),snapshot_ref,_json({**row,"source_timezone":row.get("timezone") or "Asia/Shanghai"})))
             accept("snapshots", sid)
         for row in records["terms"]:
             if row.get("snapshot_id") in snapshot_map:
@@ -787,6 +965,9 @@ class WechatService:
                 source_precision = row.get("observed_at_precision") or self._time_precision(raw_observed_at)
                 source_origin = row.get("observed_at_source")
                 source_file_path = row.get("source_file_path") or row.get("source_ref")
+                report_source_file_path = str(source_file_path or "").replace("\\", "/").lstrip("./")
+                manifest_id = str(report.get("manifest_id") or "")
+                source_file_path = manifest_ref("wechat-search", manifest_id, report_source_file_path) if source_file_path else manifest_ref("wechat-search", manifest_id)
                 canonical_row_json = _json(row)
                 # 保留旧 observation_id 的可追溯后缀；metric_key 本身统一写入规范命名。
                 oid = f"{source_oid}:wechat.{key}" if source_oid else _id("observation", f"{cid}:{metric_key}:{observed}:{snapshot_id}:{canonical_row_json}")
@@ -825,8 +1006,8 @@ class WechatService:
                     "candidates": [{
                         "observation_id": x["observation_id"],
                         "numeric_value": x["numeric_value"],
-                        "source_file_path": x["source_file_path"],
-                        "source_ref": x["source_ref"],
+                        "source_file_path": str(x["source_file_path"]).split("/", 4)[-1],
+                        "source_ref": str(x["source_ref"]).split("/", 4)[-1],
                         "raw_observed_at": x["raw_observed_at"],
                         "observed_at_precision": x["observed_at_precision"],
                         "observed_at_source": x["observed_at_source"],
@@ -860,7 +1041,7 @@ class WechatService:
                     "source_observation_id": f"{kid}:{observed}:{source_field}",
                     "subject_id": kid, "metric_key": metric_key, "metric_label": label,
                     "observed_at": observed, "numeric_value": value, "snapshot_id": None,
-                    "source_ref": "normalized/keyword_read_deltas.json",
+                    "source_ref": manifest_ref("wechat-search", str(report.get("manifest_id") or ""), "normalized/keyword_read_deltas.json"),
                     "source_file_path": "normalized/keyword_read_deltas.json",
                     "row": {**common, source_field: row.get(source_field)},
                 })
@@ -876,7 +1057,7 @@ class WechatService:
                     "source_observation_id": f"{kid}:{date}:daily_read_delta",
                     "subject_id": kid, "metric_key": metric_key, "metric_label": label,
                     "observed_at": date, "numeric_value": value, "snapshot_id": None,
-                    "source_ref": "normalized/keyword_read_deltas.json",
+                    "source_ref": manifest_ref("wechat-search", str(report.get("manifest_id") or ""), "normalized/keyword_read_deltas.json"),
                     "source_file_path": "normalized/keyword_read_deltas.json",
                     "row": {**common, "daily_point": point},
                 })

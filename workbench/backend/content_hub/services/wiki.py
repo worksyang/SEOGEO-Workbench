@@ -29,6 +29,7 @@ from .audit import AuditService
 from .jobs import JobsService
 from ..validation.paths import resolve_within
 from ..validation.timestamps import utc_now_iso
+from ..ingestion.source_manifests import manifest_id_for, manifest_ref, write_manifest
 
 
 class WikiService:
@@ -242,6 +243,26 @@ class WikiService:
             return result
 
         jobs = JobsService(self._conn)
+        manifest_entries = [
+            {
+                "relative_path": path.relative_to(scan.root).as_posix(),
+                "content_hash": content_hash,
+                "size_bytes": len(text.encode("utf-8")),
+            }
+            for path, _title, _category, content_hash, text in scan.files
+        ]
+        manifest_id = manifest_id_for("wiki", {"source_kind": "markdown", "source_root": "configured/wiki-source"}, manifest_entries)
+        write_manifest(
+            self._conn,
+            manifest_id=manifest_id,
+            system_key="wiki",
+            source_kind="markdown",
+            root_fingerprint=hashlib.sha256(f"wiki:{root.name}".encode()).hexdigest(),
+            entries=manifest_entries,
+            captured_at=utc_now_iso(),
+            payload={"source_root": "configured/wiki-source", "max_files": max_files},
+        )
+        result["manifest_id"] = manifest_id
         job_id = jobs.create(
             job_type="wiki_import",
             payload={
@@ -268,6 +289,21 @@ class WikiService:
             return result
         try:
             pipeline_result = WikiIngestionPipeline(self._conn, self._lock_path).run(raw)
+            # 原始目录保持只读；Hub 记录只保存 manifest:// 引用。
+            for discovery in self._conn.execute(
+                """
+                SELECT rowid, source_ref
+                FROM content_discoveries
+                WHERE discovery_system='wiki'
+                  AND discovery_channel='directory_scan'
+                  AND source_ref IS NOT NULL
+                  AND source_ref NOT LIKE 'manifest://%'
+                """
+            ).fetchall():
+                self._conn.execute(
+                    "UPDATE content_discoveries SET source_ref=? WHERE rowid=?",
+                    (manifest_ref("wiki", manifest_id, str(discovery["source_ref"])), discovery["rowid"]),
+                )
             result["processed"] = scan.accepted - len(
                 [error for error in pipeline_result.errors if error.get("scope") == "content"]
             )

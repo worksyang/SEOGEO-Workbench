@@ -8,6 +8,7 @@ from pathlib import Path
 from content_hub.config import Settings
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
+from content_hub.ingestion.source_manifest_backfill import backfill_existing_manifests
 
 MIGRATION_PATTERN = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
 
@@ -82,5 +83,7 @@ def migrate(settings: Settings) -> list[int]:
                         "INSERT INTO schema_migrations(version, name, checksum) VALUES (?, ?, ?)",
                         (version, name, checksum),
                     )
+                if version == 7:
+                    backfill_existing_manifests(connection, settings)
                 applied_now.append(version)
     return applied_now

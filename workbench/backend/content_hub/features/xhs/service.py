@@ -12,7 +12,10 @@ from content_hub.adapters.xhs import XhsAdapter, XhsSourceError, scrub
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.services.dual_write import DualWriteReceiptService
+from content_hub.services.migration import MigrationResolver
 from content_hub.services.search_runtime import SearchRefreshRuntime
+from content_hub.ingestion.source_manifests import manifest_id_for, manifest_ref, write_manifest
 
 
 def _now() -> str:
@@ -166,12 +169,13 @@ class XhsService:
         return {key: len(value) for key, value in records.items() if isinstance(value, list) and not key.startswith("_")}
 
     def import_history(self, *, dry_run: bool) -> dict[str, Any]:
+        migration = MigrationResolver(self.settings, module_key="xhs-search", contract_key="history-import").describe()
         records, manifest = self._records(persist_error=not dry_run)
         manifest_id = self.adapter.manifest_id(manifest)
         batch_id = _id("batch", f"xhs:{manifest_id}:full")
         report: dict[str, Any] = {"manifest": manifest, "manifest_id": manifest_id, "rejected": [], "warnings": [], "metric_collisions": []}
         if dry_run:
-            return {"dry_run": True, "source": "legacy_normalized", "counts": self._counts(records), "batch_id": batch_id, "audit": report}
+            return {"dry_run": True, "source": "legacy_normalized", "counts": self._counts(records), "batch_id": batch_id, "audit": report, "migration": migration}
         now = _now()
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
@@ -179,12 +183,28 @@ class XhsService:
                     self._write(con, records, manifest, batch_id, report, now)
         self._connection("degraded" if report["rejected"] else "healthy", error=f"{len(report['rejected'])} rows rejected" if report["rejected"] else None)
         self._audit("xhs.import", "failed" if report["rejected"] else "succeeded", {"batch_id": batch_id, "counts": self._counts(records), "audit": report})
-        return {"dry_run": False, "source": "legacy_normalized", "counts": self._counts(records), "batch_id": batch_id, "audit": report}
+        return {"dry_run": False, "source": "legacy_normalized", "counts": self._counts(records), "batch_id": batch_id, "audit": report, "migration": migration}
 
     def _write(self, con: sqlite3.Connection, records: dict[str, Any], manifest: dict[str, Any], batch_id: str, report: dict[str, Any], now: str) -> None:
+        entries = [
+            {"relative_path": item.get("path"), "content_hash": item.get("sha256"), "size_bytes": item.get("size")}
+            for item in manifest.values() if isinstance(item, dict) and item.get("path")
+        ]
+        manifest_id = manifest_id_for("xiaohongshu", {"source_kind": "normalized"}, entries)
+        write_manifest(
+            con,
+            manifest_id=manifest_id,
+            system_key="xiaohongshu",
+            source_kind="normalized",
+            root_fingerprint=hashlib.sha256(f"xiaohongshu:{self.adapter.root.name}".encode()).hexdigest(),
+            entries=entries,
+            captured_at=now,
+            payload={"source_root": "configured/xiaohongshu-normalized", "batch_id": batch_id},
+        )
+        report["manifest_id"] = manifest_id
         con.execute(
-            "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at",
-            (batch_id, "xiaohongshu", "history", "running", now, str(self.adapter.root), _json(report)),
+            "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at,source_ref=excluded.source_ref",
+            (batch_id, "xiaohongshu", "history", "running", now, manifest_ref("xiaohongshu", manifest_id), _json(report)),
         )
         settings_records = records.get("_settings", [])
         settings_rows = {str(row.get("keyword_id")): row for row in settings_records}
@@ -256,7 +276,7 @@ class XhsService:
                 value = _number(row.get(field))
                 observed = _time(row.get("last_seen_at"))
                 if value is not None and observed:
-                    self._metric(con, "creator", creator_id, f"xhs.creator.{field}", f"小红书{field}", observed, value, None, row, report)
+                    self._metric(con, "creator", creator_id, f"xhs.creator.{field}", f"小红书{field}", observed, value, None, row, report, manifest_ref("xiaohongshu", report["manifest_id"], "accounts.json"))
         for row in records["articles"]:
             aid = str(row.get("article_id"))
             if not aid.startswith("xhs_tk_"):
@@ -409,14 +429,14 @@ class XhsService:
                 if not observed:
                     report["rejected"].append({"kind": "metric", "source_observation_id": row.get("observation_id"), "metric": field, "reason": "invalid_captured_at"})
                 elif value is not None:
-                    self._metric(con, "content", cid, f"xhs.note.{field.removesuffix('_count')}", label, observed, value, sid, row, report)
+                    self._metric(con, "content", cid, f"xhs.note.{field.removesuffix('_count')}", label, observed, value, sid, row, report, manifest_ref("xiaohongshu", report["manifest_id"], "note_metric_observations.json"))
         records_seen = sum(len(v) for key, v in records.items() if isinstance(v, list) and not key.startswith("_"))
         rejected = len(report["rejected"])
         con.execute("UPDATE ingestion_batches SET status=?,finished_at=?,records_seen=?,records_written=?,records_failed=?,error_json=?,payload_json=? WHERE batch_id=?", ("partial_failed" if rejected else "succeeded", now, records_seen, max(0, records_seen - rejected), rejected, _json(report["rejected"]), _json({**report, "count_semantics": "records_seen=source rows; records_written=accepted source facts; records_failed=rejected facts"}), batch_id))
         con.execute("INSERT INTO ingestion_checkpoints(adapter_key,checkpoint_key,cursor_value,source_hash,last_success_at,batch_id,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(adapter_key,checkpoint_key) DO UPDATE SET cursor_value=excluded.cursor_value,source_hash=excluded.source_hash,last_success_at=excluded.last_success_at,batch_id=excluded.batch_id,payload_json=excluded.payload_json", ("xiaohongshu", "normalized", now, self.adapter.manifest_id(manifest), now, batch_id, _json(report)))
 
     @staticmethod
-    def _metric(con: sqlite3.Connection, subject_type: str, subject_id: str, metric_key: str, label: str, observed: str, value: int | float, snapshot_id: str | None, source: dict[str, Any], report: dict[str, Any]) -> None:
+    def _metric(con: sqlite3.Connection, subject_type: str, subject_id: str, metric_key: str, label: str, observed: str, value: int | float, snapshot_id: str | None, source: dict[str, Any], report: dict[str, Any], evidence_ref: str) -> None:
         con.execute("INSERT OR IGNORE INTO metric_definitions(metric_key,platform,subject_type,display_name,value_type,unit,accumulation_mode,description) VALUES(?,?,?,?,?,?,?,?)", (metric_key, "xiaohongshu", subject_type, label, "number", "count", "gauge", "小红书 normalized 事实"))
         identity = (subject_type, subject_id, metric_key, observed, snapshot_id)
         source_observation_id = str(source.get("observation_id") or _id("xhs_obs", f"{identity}:{_json(source)}"))
@@ -435,9 +455,31 @@ class XhsService:
             return
         if existing:
             return
-        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?)", (oid, subject_type, subject_id, metric_key, observed, value, snapshot_id, _clean_url(source.get("source")) or source.get("recorded_at"), _json(_scrub_payload({**source, "source_observation_id": source.get("observation_id")}))))
+        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?)", (oid, subject_type, subject_id, metric_key, observed, value, snapshot_id, evidence_ref, _json(_scrub_payload({**source, "source_observation_id": source.get("observation_id")}))))
 
     def bootstrap(self, *, summary: bool = False) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="bootstrap-summary" if summary else "bootstrap")
+        result, migration = resolver.read(
+            request_fingerprint=f"xhs:bootstrap:{summary}",
+            legacy=lambda: self._bootstrap_legacy(summary=summary),
+            hub=lambda: self._bootstrap_hub(summary=summary),
+        )
+        result["migration"] = migration
+        return result
+
+    def _bootstrap_hub(self, *, summary: bool = False) -> dict[str, Any]:
+        payload = self._hub_bootstrap()
+        if payload is None:
+            raise NotImplementedError("Hub 尚无小红书事实")
+        if summary:
+            return {
+                "source_status": {"status": "healthy", "source": "hub_db"},
+                "counts": payload["counts"],
+                "available_fact_arrays": sorted(k for k, v in payload.items() if isinstance(v, list)),
+            }
+        return {"source_status": {"status": "healthy", "source": "hub_db"}, **payload}
+
+    def _bootstrap_legacy(self, *, summary: bool = False) -> dict[str, Any]:
         try:
             response = self.adapter.bootstrap()
             if not 200 <= response.status < 300:
@@ -560,6 +602,39 @@ class XhsService:
         return {key: int(value) for key, value in counts.items()}
 
     def keyword(self, keyword_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="keyword-detail")
+        result, migration = resolver.read(
+            request_fingerprint=f"xhs:keyword:{keyword_id}",
+            legacy=lambda: self._keyword_legacy(keyword_id),
+            hub=lambda: self._keyword_hub(keyword_id),
+        )
+        result["migration"] = migration
+        return result
+
+    def _keyword_hub(self, keyword_id: str) -> dict[str, Any]:
+        payload = self._hub_bootstrap()
+        if payload is None:
+            raise NotImplementedError("Hub 尚无小红书关键词事实")
+        for row in payload["keywords"]:
+            if row.get("keyword_id") == keyword_id or row.get("payload", {}).get("source_keyword_id") == keyword_id:
+                return self._keyword_from_hub_payload(row, payload)
+        raise NotFoundError("小红书关键词", keyword_id)
+
+    def _keyword_from_hub_payload(self, keyword: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        kid = keyword["keyword_id"]
+        snapshots = [row for row in payload["snapshots"] if row.get("keyword_id") == kid]
+        hits = [row for row in payload["ranking_hits"] if row.get("snapshot_id") in {x.get("snapshot_id") for x in snapshots}]
+        articles = [row for row in payload["articles"] if row.get("content_id") in {x.get("content_id") for x in hits}]
+        return {
+            "source_status": {"status": "healthy", "source": "hub_db"},
+            "keyword": keyword,
+            "snapshots": snapshots,
+            "hits": hits,
+            "articles": articles,
+            "features": (snapshots[-1].get("features") if snapshots else {}) or {"suggestions": [], "related": []},
+        }
+
+    def _keyword_legacy(self, keyword_id: str) -> dict[str, Any]:
         remote_id = keyword_id
         with connect(self.settings, readonly=True) as con:
             hub_row = con.execute("SELECT * FROM keywords WHERE keyword_id=? AND platform='xiaohongshu'", (keyword_id,)).fetchone()
@@ -622,6 +697,25 @@ class XhsService:
             }
 
     def account(self, account_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="account-detail")
+        result, migration = resolver.read(
+            request_fingerprint=f"xhs:account:{account_id}",
+            legacy=lambda: self._account_legacy(account_id),
+            hub=lambda: self._account_hub(account_id),
+        )
+        result["migration"] = migration
+        return result
+
+    def _account_hub(self, account_id: str) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            row = con.execute("SELECT * FROM creators WHERE platform='xiaohongshu' AND external_id=?", (account_id,)).fetchone()
+        if not row:
+            raise NotFoundError("小红书账号", account_id)
+        account = dict(row)
+        account["payload"] = json.loads(account.pop("payload_json") or "{}")
+        return {"source_status": {"status": "healthy", "source": "hub_db"}, "account": account}
+
+    def _account_legacy(self, account_id: str) -> dict[str, Any]:
         remote_error = None
         try:
             response = self.adapter.account(account_id)
@@ -653,6 +747,16 @@ class XhsService:
         return account
 
     def articles(self, limit: int = 100) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="article-list")
+        result, migration = resolver.read(
+            request_fingerprint=f"xhs:articles:{limit}",
+            legacy=lambda: self._articles_legacy(limit),
+            hub=lambda: self._articles_hub(limit),
+        )
+        result["migration"] = migration
+        return result
+
+    def _articles_hub(self, limit: int = 100) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
             rows = [dict(row) for row in con.execute(
                 """SELECT c.* FROM contents c
@@ -665,7 +769,20 @@ class XhsService:
             row["payload"] = json.loads(row.pop("payload_json") or "{}")
         return {"source_status": {"status": "healthy", "source": "hub_db"}, "articles": rows}
 
+    def _articles_legacy(self, limit: int = 100) -> dict[str, Any]:
+        return self._articles_hub(limit)
+
     def article(self, article_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="article-detail")
+        result, migration = resolver.read(
+            request_fingerprint=f"xhs:article:{article_id}",
+            legacy=lambda: self._article_legacy(article_id),
+            hub=lambda: self._article_hub(article_id),
+        )
+        result["migration"] = migration
+        return result
+
+    def _article_hub(self, article_id: str) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
             row = con.execute(
                 """SELECT c.* FROM contents c
@@ -687,7 +804,53 @@ class XhsService:
             item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return {"source_status": {"status": "healthy", "source": "hub_db"}, "article": article, "hits": hits, "observations": observations}
 
+    def _article_legacy(self, article_id: str) -> dict[str, Any]:
+        return self._article_hub(article_id)
+
     def refresh(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
+        key = idempotency_key or f"xhs-refresh:{keyword_id}:{_now()}"
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="refresh")
+        receipts = DualWriteReceiptService(self.settings, module_key="xhs-search")
+        if confirm is not True:
+            receipts.record(
+                command_id=None, idempotency_key=key, legacy_status="not_attempted",
+                hub_status="not_attempted", reconcile_status="blocked",
+                details={"keyword_id": keyword_id, "reason_code": "confirm_required"},
+            )
+            raise ValidationAppError("刷新必须明确传入 confirm=true。")
+        if resolver.mode() == "hub":
+            details = {
+                "keyword_id": keyword_id,
+                "reason_code": "xhs.hub_refresh_not_implemented",
+                "message": "小红书刷新尚未接入 Hub Provider，未向旧系统或 Hub 伪造成功。",
+            }
+            receipt = receipts.record(
+                command_id=None, idempotency_key=key, legacy_status="not_attempted",
+                hub_status="not_implemented", reconcile_status="blocked", details=details,
+            )
+            return {"http_status": 409, "source_status": {"status": "blocked", "source": "hub_policy", "mode": "hub"}, "blocked": True, **details, **receipt}
+        if resolver.mode() == "compare":
+            result, migration = resolver.compare(
+                request_fingerprint=f"xhs:refresh:{keyword_id}:{key}",
+                legacy=lambda: self._refresh_legacy(keyword_id, True, idempotency_key=key),
+                hub=lambda: (_ for _ in ()).throw(NotImplementedError("小红书刷新 Hub Provider 尚未实现")),
+            )
+            result["migration"] = migration
+            result["dual_write_receipt"] = receipts.record(
+                command_id=result.get("command_id"), idempotency_key=key,
+                legacy_status="blocked", hub_status="not_implemented",
+                reconcile_status="blocked", details={"keyword_id": keyword_id, "migration": migration},
+            )
+            return result
+        result = self._refresh_legacy(keyword_id, True, idempotency_key=key)
+        result["dual_write_receipt"] = receipts.record(
+            command_id=result.get("command_id"), idempotency_key=key,
+            legacy_status="blocked", hub_status="not_attempted",
+            reconcile_status="blocked", details={"keyword_id": keyword_id},
+        )
+        return result
+
+    def _refresh_legacy(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
         if confirm is not True:
             raise ValidationAppError("刷新必须明确传入 confirm=true。")
         runtime = SearchRefreshRuntime(
@@ -752,6 +915,28 @@ class XhsService:
         }
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
+        resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="refresh-status")
+        if resolver.mode() == "hub":
+            runtime = SearchRefreshRuntime(
+                self.settings, system_key="xhs-search", platform="xiaohongshu"
+            ).status(job_id)
+            if not runtime:
+                raise ConflictError("小红书刷新状态的 Hub 运行记录不存在，未回退到旧系统。")
+            return {"http_status": 200, "source_status": {"status": "healthy", "source": "hub_runtime"}, "result": runtime, "migration": {"mode": "hub"}}
+        if resolver.mode() == "compare":
+            result, migration = resolver.compare(
+                request_fingerprint=f"xhs:refresh-status:{job_id}",
+                legacy=lambda: self._refresh_status_legacy(job_id),
+                hub=lambda: SearchRefreshRuntime(self.settings, system_key="xhs-search", platform="xiaohongshu").status(job_id)
+                    or (_ for _ in ()).throw(NotImplementedError("Hub 刷新状态不存在")),
+            )
+            result["migration"] = migration
+            return result
+        result = self._refresh_status_legacy(job_id)
+        result["migration"] = {"mode": "legacy"}
+        return result
+
+    def _refresh_status_legacy(self, job_id: str) -> dict[str, Any]:
         runtime = SearchRefreshRuntime(
             self.settings, system_key="xhs-search", platform="xiaohongshu"
         ).status(job_id)
