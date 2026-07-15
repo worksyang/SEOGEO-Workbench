@@ -136,6 +136,50 @@ class MpService:
             return
         self._connection(status, error=error)
 
+    def _live_source_manifest(self, *, endpoint: str, payload: Any, status: str) -> str:
+        """保存脱敏的实时探测证据；不保存 Cookie、Token 或其他凭据。"""
+        now = _now()
+        evidence = {"endpoint": endpoint, "status": status, "payload": _compact(payload), "captured_at": now}
+        manifest_id = hashlib.sha256(_json(evidence).encode("utf-8")).hexdigest()
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute(
+                        """
+                        INSERT INTO source_manifests(
+                            manifest_id,system_key,source_kind,root_fingerprint,manifest_hash,
+                            entry_count,captured_at,payload_json
+                        ) VALUES(?,?,?,?,?,?,?,?)
+                        ON CONFLICT(manifest_id) DO NOTHING
+                        """,
+                        (
+                            manifest_id,
+                            "wechat-mp",
+                            "live-http-evidence",
+                            hashlib.sha256(self.adapter.base_url.encode("utf-8")).hexdigest(),
+                            manifest_id,
+                            1,
+                            now,
+                            _json({"source_ref": f"wechat-mp://live-http{endpoint}", "evidence": evidence}),
+                        ),
+                    )
+                    con.execute(
+                        """
+                        INSERT OR REPLACE INTO source_manifest_entries(
+                            manifest_id,relative_path,content_hash,size_bytes,observed_at,payload_json
+                        ) VALUES(?,?,?,?,?,?)
+                        """,
+                        (
+                            manifest_id,
+                            f"wechat-mp://live-http{endpoint}",
+                            hashlib.sha256(_json(payload).encode("utf-8")).hexdigest(),
+                            len(_json(payload).encode("utf-8")),
+                            now,
+                            _json({"endpoint": endpoint, "status": status}),
+                        ),
+                    )
+        return manifest_id
+
     @staticmethod
     def _remote_category_names(payload: Any) -> set[str]:
         rows = _rows(payload, "categories", "items")
@@ -419,6 +463,44 @@ class MpService:
         history_import["status"] = "partial_failed" if report["rejected"] else "succeeded"
         history_import["accepted"] = counts["accepted"]
         history_import["rejected"] = counts["rejected"]
+        runtime_store = MpCollectionRuntime(self.settings)
+        runtime_command = runtime_store.begin(
+            actor_id="workbench",
+            idempotency_key=f"history-import:{batch_id}",
+            settings_json={
+                "account_count": len(live_accounts),
+                "batch_id": batch_id,
+                "source": "markdown+metadata",
+                "manifest_id": manifest_id,
+            },
+        )
+        if runtime_command["created"]:
+            with connect(self.settings, readonly=True) as con:
+                runtime_articles = [
+                    dict(row)
+                    for row in con.execute(
+                        """
+                        SELECT DISTINCT c.content_id,c.title,c.canonical_url,c.creator_id
+                        FROM contents c
+                        JOIN content_discoveries d ON d.content_id=c.content_id
+                        WHERE d.discovery_system='wechat-mp'
+                          AND d.discovery_channel='account-feed'
+                          AND c.content_type='external_article'
+                        ORDER BY c.content_id
+                        """,
+                    ).fetchall()
+                ]
+            projected = runtime_store.project_articles(
+                runtime_command["collection_job_id"],
+                articles=runtime_articles,
+                source_ref=_source_ref("markdown"),
+            )
+            runtime_store.finish(
+                runtime_command["collection_job_id"],
+                status="partial_failed" if report["rejected"] else "succeeded",
+                result={"batch_id": batch_id, "manifest_id": manifest_id, "article_count": projected},
+                error={"rejected": report["rejected"]} if report["rejected"] else None,
+            )
         self._audit("wechat-mp.import", "failed" if report["rejected"] else "succeeded", details={"batch_id": batch_id, "counts": counts, "audit": report})
         return {
             "dry_run": False,
@@ -760,6 +842,18 @@ class MpService:
             auth = self.adapter.auth_check()
             runtime = self.adapter.runtime_overview()
         except MpSourceError as exc:
+            runtime_store = MpCollectionRuntime(self.settings)
+            command = runtime_store.begin(
+                actor_id="user",
+                idempotency_key=idempotency_key or f"blocked:{_now()}",
+                settings_json={"request": _compact(clean), "reason": exc.kind},
+            )
+            manifest_id = self._live_source_manifest(endpoint="/api/auth/wechat/check", payload=exc.payload, status="blocked")
+            runtime_store.finish(
+                command["collection_job_id"],
+                status="blocked",
+                error={"kind": exc.kind, "status": exc.status, "message": str(exc), "manifest_id": manifest_id},
+            )
             self._audit("wechat-mp.job_create", "blocked", details={"reason": exc.kind, "status": exc.status})
             self._connection("degraded" if exc.status else "offline", error=str(exc))
             raise ConflictError("旧公众号监控上游当前不可用，任务未创建；请先恢复 WeRSS 登录并重新检查。") from exc
@@ -767,7 +861,32 @@ class MpService:
         runtime_data = _payload_data(runtime.payload)
         runtime_status = runtime_data.get("wechat_status") if isinstance(runtime_data.get("wechat_status"), dict) else {}
         if auth_inconsistent or runtime_status.get("inconsistent") is True or logged_in is False or runtime_status.get("logged_in") is False:
-            self._audit("wechat-mp.job_create", "blocked", details={"reason": "login_inconsistent"})
+            runtime_store = MpCollectionRuntime(self.settings)
+            command = runtime_store.begin(
+                actor_id="user",
+                idempotency_key=idempotency_key or f"blocked:{_now()}",
+                settings_json={"request": _compact(clean), "reason": "login_inconsistent"},
+            )
+            manifest_id = self._live_source_manifest(
+                endpoint="/api/auth/wechat/check",
+                payload={"auth": auth.payload, "runtime": runtime.payload},
+                status="blocked",
+            )
+            runtime_store.finish(
+                command["collection_job_id"],
+                status="blocked",
+                error={
+                    "kind": "login_inconsistent",
+                    "message": "WeRSS 登录状态不可用或与运行时不一致",
+                    "manifest_id": manifest_id,
+                },
+            )
+            self._audit(
+                "wechat-mp.job_create",
+                "blocked",
+                subject_id=command["collection_job_id"],
+                details={"reason": "login_inconsistent", "manifest_id": manifest_id},
+            )
             self._connection("degraded", error="WeRSS 登录状态不可用或与运行时不一致")
             raise ConflictError("WeRSS 登录状态不可用或与运行时不一致，任务未创建；请在旧控制台完成登录后重试。")
         runtime_store = MpCollectionRuntime(self.settings)

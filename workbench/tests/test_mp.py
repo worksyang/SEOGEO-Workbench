@@ -554,6 +554,75 @@ def test_mp_job_command_is_persisted_before_upstream_collection(settings, monkey
     assert tuple(row) == ("queued", 1)
 
 
+def test_mp_import_projects_articles_into_runtime_job(settings, tmp_path, monkeypatch):
+    configured = _configured(settings, tmp_path)
+    monkeypatch.setattr(
+        MpAdapter,
+        "accounts",
+        lambda self: RemoteResponse({"accounts": [{"mp_id": "mp1", "mp_name": "测试号"}]}, 200),
+    )
+    result = MpService(configured).import_history(dry_run=False, limit=None)
+    assert result["history_import"]["status"] == "succeeded"
+    with connect(configured, readonly=True) as con:
+        job = con.execute(
+            "SELECT collection_job_id,status FROM mp_collection_jobs"
+        ).fetchone()
+        event = con.execute(
+            "SELECT event_type,status,details_json FROM mp_collection_events"
+        ).fetchone()
+    assert tuple(job)[1] == "succeeded"
+    assert tuple(event)[:2] == ("article_observed", "succeeded")
+    assert json.loads(event["details_json"])["content_id"]
+
+
+def test_mp_blocked_live_job_persists_manifest_runtime_error_and_audit(settings, monkeypatch):
+    monkeypatch.setattr(
+        MpAdapter,
+        "auth_check",
+        lambda self: RemoteResponse(
+            {
+                "logged_in": False,
+                "message": "搜索公众号失败,请重新扫码授权！",
+                "raw_login_status": True,
+                "inconsistent": True,
+            },
+            200,
+        ),
+    )
+    monkeypatch.setattr(
+        MpAdapter,
+        "runtime_overview",
+        lambda self: RemoteResponse(
+            {"wechat_status": {"logged_in": False, "inconsistent": True, "display_status": "未登录"}},
+            200,
+        ),
+    )
+    with pytest.raises(Exception, match="登录状态"):
+        MpService(settings).create_job(
+            {"type": "sync", "accounts": ["mp-a"]},
+            True,
+            idempotency_key="blocked-live-job-1",
+        )
+    with connect(settings, readonly=True) as con:
+        job = con.execute(
+            "SELECT collection_job_id,status FROM mp_collection_jobs"
+        ).fetchone()
+        event = con.execute(
+            "SELECT status,details_json FROM mp_collection_events"
+        ).fetchone()
+        manifest = con.execute(
+            "SELECT source_kind,payload_json FROM source_manifests WHERE source_kind='live-http-evidence'"
+        ).fetchone()
+        audit = con.execute(
+            "SELECT outcome,details_json FROM audit_log WHERE action='wechat-mp.job_create'"
+        ).fetchone()
+    assert tuple(job)[1] == "blocked"
+    assert event["status"] == "blocked"
+    assert manifest["source_kind"] == "live-http-evidence"
+    assert audit["outcome"] == "blocked"
+    assert "raw_login_status" in manifest["payload_json"]
+
+
 def test_mp_invalid_metadata_url_is_rejected_and_not_written(settings, tmp_path):
     configured = _configured(settings, tmp_path)
     (configured.mp_metadata_root / "bad.csv").write_text(

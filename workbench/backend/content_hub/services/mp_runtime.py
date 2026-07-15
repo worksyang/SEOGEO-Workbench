@@ -93,7 +93,14 @@ class MpCollectionRuntime:
                           finished_at=CASE WHEN ? THEN ? ELSE finished_at END,updated_at=?
                         WHERE collection_job_id=?
                         """,
-                        (status, json.dumps({"upstream": result or {}}, ensure_ascii=False), int(terminal), now, now, collection_job_id),
+                        (
+                            status,
+                            json.dumps({"upstream": result or {}, "error": error or {}}, ensure_ascii=False),
+                            int(terminal),
+                            now,
+                            now,
+                            collection_job_id,
+                        ),
                     )
                     con.execute(
                         """
@@ -110,6 +117,35 @@ class MpCollectionRuntime:
                         """,
                         (generate_ulid_like("mpe"), collection_job_id, "upstream_result", status, json.dumps({"result": result or {}, "error": error or {}}, ensure_ascii=False), now),
                     )
+
+    def project_articles(
+        self,
+        collection_job_id: str,
+        *,
+        articles: list[dict[str, Any]],
+        source_ref: str,
+    ) -> int:
+        """将已落 Hub 的文章投影为运行事件，保持 collection job 与文章可追溯。"""
+        written = 0
+        for article in articles:
+            content_id = str(article.get("content_id") or "").strip()
+            if not content_id:
+                continue
+            self.record_event(
+                collection_job_id,
+                event_type="article_observed",
+                status="succeeded",
+                mp_id=str(article.get("mp_id") or "") or None,
+                message=str(article.get("title") or "")[:200] or None,
+                details={
+                    "content_id": content_id,
+                    "title": article.get("title"),
+                    "canonical_url": article.get("canonical_url"),
+                    "source_ref": source_ref,
+                },
+            )
+            written += 1
+        return written
 
     def record_event(
         self,
