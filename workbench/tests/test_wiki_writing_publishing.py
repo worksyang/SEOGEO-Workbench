@@ -169,6 +169,12 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     assert conn.execute("SELECT COUNT(*) FROM content_identifiers").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM content_discoveries WHERE discovery_system='wiki'").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM ingestion_checkpoints WHERE adapter_key='wiki'").fetchone()[0] == 1
+    connection = conn.execute(
+        "SELECT status, base_url, details_json FROM system_connections WHERE system_key='wiki'"
+    ).fetchone()
+    assert connection["status"] == "healthy"
+    assert connection["base_url"] is None
+    assert json.loads(connection["details_json"])["accepted"] == 2
     audit = conn.execute("SELECT details_json FROM audit_log WHERE action='wiki.import' ORDER BY occurred_at DESC LIMIT 1").fetchone()[0]
     assert str(root) not in audit
     assert "configured/wiki-source" in audit
@@ -259,6 +265,11 @@ def test_t168b_wiki_import_audits_expected_rejections_without_false_failure(hub)
     ).fetchone()
     assert outcome == "succeeded"
     assert json.loads(details_json)["status"] == "degraded"
+    connection = conn.execute(
+        "SELECT status, details_json FROM system_connections WHERE system_key='wiki'"
+    ).fetchone()
+    assert connection["status"] == "degraded"
+    assert json.loads(connection["details_json"])["rejected"] == 1
 
 
 def test_t169_wiki_scan_reports_truncation_and_real_root_shape(hub):

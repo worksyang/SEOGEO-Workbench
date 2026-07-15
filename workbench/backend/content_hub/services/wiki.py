@@ -52,6 +52,50 @@ class WikiService:
         ]
         return sorted(candidates, key=lambda item: str(item))[0] if candidates else None
 
+    def _record_import_connection(
+        self,
+        *,
+        status: str,
+        scanned: int,
+        accepted: int,
+        rejected: int,
+        truncated: bool,
+        error_type: str = "",
+    ) -> None:
+        """把实际导入状态写回系统注册表，不保留旧服务 URL 或本机绝对路径。"""
+        details = {
+            "source_kind": "configured_markdown",
+            "scanned": scanned,
+            "accepted": accepted,
+            "rejected": rejected,
+            "truncated": truncated,
+        }
+        if error_type:
+            details["error_type"] = error_type
+        self._conn.execute(
+            """
+            INSERT INTO system_connections(
+                system_key, display_name, base_url, status, last_checked_at,
+                capabilities_json, details_json
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?)
+            ON CONFLICT(system_key) DO UPDATE SET
+                display_name=excluded.display_name,
+                base_url=NULL,
+                status=excluded.status,
+                last_checked_at=excluded.last_checked_at,
+                capabilities_json=excluded.capabilities_json,
+                details_json=excluded.details_json
+            """,
+            (
+                "wiki",
+                "Wiki / 母文章库",
+                status,
+                utc_now_iso(),
+                json.dumps(["read", "search", "edit", "history_import"], ensure_ascii=False),
+                json.dumps(details, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
     def import_wiki(
         self,
         *,
@@ -63,6 +107,16 @@ class WikiService:
             raise ValueError("max_files 必须大于 0")
         root = self.import_root()
         if root is None:
+            if confirm:
+                self._record_import_connection(
+                    status="blocked",
+                    scanned=0,
+                    accepted=0,
+                    rejected=0,
+                    truncated=False,
+                    error_type="allowed_root_missing",
+                )
+                self._conn.commit()
             return {
                 "status": "blocked",
                 "reason": "没有可用的已配置 Wiki 允许根",
@@ -99,6 +153,16 @@ class WikiService:
         if not scan.accepted:
             result["status"] = "blocked"
             result["reason"] = "没有可导入的 UTF-8 普通 Markdown"
+            if confirm:
+                self._record_import_connection(
+                    status="blocked",
+                    scanned=scan.scanned,
+                    accepted=0,
+                    rejected=len(scan.rejected),
+                    truncated=scan.truncated,
+                    error_type="no_accepted_markdown",
+                )
+                self._conn.commit()
             return result
         if not confirm:
             result["status"] = "dry_run"
@@ -123,6 +187,14 @@ class WikiService:
         self._conn.commit()
         if not jobs.claim(job_id, operator):
             result.update(status="blocked", reason="Wiki 导入任务无法获取执行锁", job_id=job_id)
+            self._record_import_connection(
+                status="blocked",
+                scanned=scan.scanned,
+                accepted=scan.accepted,
+                rejected=len(scan.rejected),
+                truncated=scan.truncated,
+                error_type="job_claim_failed",
+            )
             self._conn.commit()
             return result
         try:
@@ -153,6 +225,14 @@ class WikiService:
                 )
                 jobs.complete(job_id, status="succeeded")
                 result["status"] = "degraded" if scan.rejected else "succeeded"
+            self._record_import_connection(
+                status="degraded" if pipeline_result.records_failed or scan.rejected else "healthy",
+                scanned=scan.scanned,
+                accepted=scan.accepted,
+                rejected=len(scan.rejected),
+                truncated=scan.truncated,
+                error_type="pipeline_failed" if pipeline_result.records_failed else "",
+            )
             AuditService(self._conn).record(
                 action="wiki.import",
                 subject_type="ingestion_batch",
@@ -177,6 +257,14 @@ class WikiService:
             return result
         except Exception as exc:
             jobs.complete(job_id, status="failed")
+            self._record_import_connection(
+                status="degraded",
+                scanned=scan.scanned,
+                accepted=scan.accepted,
+                rejected=len(scan.rejected),
+                truncated=scan.truncated,
+                error_type=type(exc).__name__,
+            )
             AuditService(self._conn).record(
                 action="wiki.import",
                 subject_type="job",
