@@ -41,7 +41,16 @@ def article(article_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/keywords/{keyword_id}/refresh", response_model=None)
 def refresh(keyword_id: str, request: Request, body: dict[str, Any] | None = None) -> Any:
-    result = _service(request).refresh(keyword_id, (body or {}).get("confirm") is True)
+    payload = body or {}
+    result = _service(request).refresh(
+        keyword_id,
+        payload.get("confirm") is True,
+        idempotency_key=str(
+            payload.get("idempotency_key")
+            or request.headers.get("X-Idempotency-Key")
+            or ""
+        ),
+    )
     status = int(result.pop("http_status", 200))
     payload = {"ok": status < 400, "data": result}
     return JSONResponse(status_code=status, content=payload) if status != 200 else payload

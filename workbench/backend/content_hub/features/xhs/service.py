@@ -12,6 +12,7 @@ from content_hub.adapters.xhs import XhsAdapter, XhsSourceError, scrub
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.services.search_runtime import SearchRefreshRuntime
 
 
 def _now() -> str:
@@ -686,9 +687,27 @@ class XhsService:
             item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return {"source_status": {"status": "healthy", "source": "hub_db"}, "article": article, "hits": hits, "observations": observations}
 
-    def refresh(self, keyword_id: str, confirm: bool) -> dict[str, Any]:
+    def refresh(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
         if confirm is not True:
             raise ValidationAppError("刷新必须明确传入 confirm=true。")
+        runtime = SearchRefreshRuntime(
+            self.settings, system_key="xhs-search", platform="xiaohongshu"
+        )
+        runtime_key = idempotency_key or f"legacy-xhs-readonly:{keyword_id}:{_now()}"
+        command = runtime.begin(
+            keyword_id=keyword_id,
+            actor_id="user",
+            idempotency_key=runtime_key,
+        )
+        if not command["created"]:
+            return {
+                "http_status": 200,
+                "source_status": {"status": "degraded", "source": "hub_runtime"},
+                "refresh_job_id": command["refresh_job_id"],
+                "command_id": command["command_id"],
+                "status": command["status"],
+                "replayed": True,
+            }
         keyword_text = None
         with connect(self.settings, readonly=True) as con:
             row = con.execute("SELECT keyword,payload_json FROM keywords WHERE keyword_id=? AND platform='xiaohongshu'", (keyword_id,)).fetchone()
@@ -707,6 +726,12 @@ class XhsService:
             "reason_code": "xhs.legacy_refresh_blocked",
             "message": "小红书旧系统刷新属于外部写操作，当前版本只读旧事实源；未向旧系统发起请求。",
         }
+        runtime.finish(
+            command["refresh_job_id"],
+            status="blocked",
+            external_result=details,
+            error={"reason_code": details["reason_code"], "message": details["message"]},
+        )
         self._connection("degraded", error=details["reason_code"])
         self._audit("xhs.refresh", "blocked", details, subject_id=keyword_id)
         return {
@@ -718,6 +743,8 @@ class XhsService:
             },
             "blocked": True,
             "upstream_called": False,
+            "refresh_job_id": command["refresh_job_id"],
+            "command_id": command["command_id"],
             "keyword_id": keyword_id,
             "keyword": keyword_text,
             "reason_code": details["reason_code"],
@@ -725,6 +752,15 @@ class XhsService:
         }
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
+        runtime = SearchRefreshRuntime(
+            self.settings, system_key="xhs-search", platform="xiaohongshu"
+        ).status(job_id)
+        if runtime:
+            return {
+                "http_status": 200,
+                "source_status": {"status": "degraded", "source": "hub_runtime"},
+                "result": runtime,
+            }
         try:
             response = self.adapter.refresh_status(job_id)
             self._connection("healthy")

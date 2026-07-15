@@ -281,6 +281,8 @@ def test_xhs_refresh_is_blocked_without_calling_legacy_write(settings, tmp_path,
     assert blocked["blocked"] is True
     assert blocked["upstream_called"] is False
     assert blocked["source_status"]["source"] == "hub_policy"
+    assert blocked["refresh_job_id"].startswith("srj_")
+    assert blocked["command_id"].startswith("cmd_")
     assert called is False
     with connect(service.settings, readonly=True) as con:
         audit = con.execute(
@@ -288,6 +290,11 @@ def test_xhs_refresh_is_blocked_without_calling_legacy_write(settings, tmp_path,
         ).fetchone()
         assert audit["outcome"] == "blocked"
         assert json.loads(audit["details_json"])["upstream_called"] is False
+        runtime = con.execute(
+            "SELECT status, failed_count FROM search_refresh_jobs WHERE refresh_job_id=?",
+            (blocked["refresh_job_id"],),
+        ).fetchone()
+        assert tuple(runtime) == ("blocked", 1)
         connection = con.execute(
             "SELECT capabilities_json FROM system_connections WHERE system_key='xhs-search'"
         ).fetchone()

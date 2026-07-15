@@ -13,6 +13,7 @@ from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.services.search_runtime import SearchRefreshRuntime
 from content_hub.validation.urls import canonicalize_url
 
 SOURCE_TZ = ZoneInfo("Asia/Shanghai")
@@ -389,7 +390,7 @@ class WechatService:
             raise ConflictError(str(exc)) from exc
         return {"article_id": article_id, "title": row["title"], "path": row["md_path"], "content": content}
 
-    def refresh(self, keyword_id: str, confirm: bool) -> dict[str, Any]:
+    def refresh(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
         if confirm is not True: raise ValidationAppError("刷新必须明确传入 confirm=true。")
         try:
             item = self.adapter.remote_keyword(keyword_id)
@@ -408,18 +409,67 @@ class WechatService:
         except Exception as exc:
             self._safe_status("offline", str(exc)); self._audit("wechat.refresh", "blocked", details={"error": str(exc)}, subject_id=keyword_id); raise
         keyword = str(item.get("keyword") or item.get("keyword_text") or "").strip()
+        if not keyword:
+            raise NotFoundError("微信关键词", keyword_id)
+        # 兼容旧前端没有 idempotency_key 的历史调用；新页面必须传入该字段，
+        # 兼容键只用于避免老页面请求绕过受控运行层。
+        runtime_key = idempotency_key or f"legacy-wechat:{keyword_id}:{_utc_now()}"
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute(
+                        """
+                        INSERT OR IGNORE INTO keywords(
+                            keyword_id,platform,keyword,status,first_seen_at,updated_at,payload_json
+                        ) VALUES(?,?,?,'active',?,?,?)
+                        """,
+                        (keyword_id, "wechat-search", keyword, _utc_now(), _utc_now(), _json({"source": "refresh_reference"})),
+                    )
+        runtime = SearchRefreshRuntime(
+            self.settings, system_key="wechat-search", platform="wechat-search"
+        )
+        command = runtime.begin(
+            keyword_id=keyword_id,
+            actor_id="user",
+            idempotency_key=runtime_key,
+        )
+        if not command["created"]:
+            return {
+                "http_status": 200,
+                "source_status": {"status": "healthy", "source": "hub_runtime"},
+                "refresh_job_id": command["refresh_job_id"],
+                "command_id": command["command_id"],
+                "status": command["status"],
+                "replayed": True,
+            }
         try:
             response = self.adapter.remote_refresh(keyword_id, keyword)
         except WechatSourceError as exc:
             outcome = "rejected" if exc.status == 409 else "failed"
+            runtime.finish(
+                command["refresh_job_id"],
+                status="blocked" if outcome == "rejected" else "failed",
+                external_result=exc.payload,
+                error={"status": exc.status, "kind": exc.kind, "message": str(exc)},
+            )
             self._safe_status("degraded" if exc.status else "offline", str(exc)); self._audit("wechat.refresh", "blocked" if outcome == "rejected" else "failed", details={"semantic_status": outcome, "status": exc.status, "kind": exc.kind, "payload": exc.payload}, subject_id=keyword_id)
-            if exc.status == 409: return {"http_status": 409, "source_status": {"status": "degraded", "source": "legacy_http"}, "result": exc.payload}
+            if exc.status == 409: return {"http_status": 409, "source_status": {"status": "degraded", "source": "legacy_http"}, "refresh_job_id": command["refresh_job_id"], "command_id": command["command_id"], "result": exc.payload}
             raise ConflictError(str(exc)) from exc
         outcome = "queued" if response.status == 202 or response.payload.get("status") == "queued" else "running" if response.payload.get("status") == "running" else "succeeded"
+        runtime.finish(
+            command["refresh_job_id"],
+            status=outcome,
+            external_result=response.payload,
+        )
         self._connection_status("healthy", success_at=_utc_now()); self._audit("wechat.refresh", "succeeded", details={"semantic_status": outcome, "status": response.status, "result": response.payload}, subject_id=keyword_id)
-        return {"http_status": response.status, "source_status": {"status": "healthy", "source": "legacy_http"}, "result": response.payload}
+        return {"http_status": response.status, "source_status": {"status": "healthy", "source": "legacy_http"}, "refresh_job_id": command["refresh_job_id"], "command_id": command["command_id"], "result": response.payload}
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
+        runtime = SearchRefreshRuntime(
+            self.settings, system_key="wechat-search", platform="wechat-search"
+        ).status(job_id)
+        if runtime:
+            return {"source_status": {"status": "healthy", "source": "hub_runtime"}, "result": runtime}
         try:
             result = self.adapter.remote_refresh_status(job_id)
             self._connection_status("healthy", success_at=_utc_now())
