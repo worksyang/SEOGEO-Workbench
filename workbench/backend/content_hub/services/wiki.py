@@ -130,13 +130,30 @@ class WikiService:
         content_hash = hashlib.sha256(source_bytes.strip()).hexdigest()
         existing = self._conn.execute(
             """
-            SELECT version_id FROM wiki_file_versions
+            SELECT version_id, version_status FROM wiki_file_versions
             WHERE content_id=? AND source_ref=? AND file_hash=? AND content_hash=?
             ORDER BY created_at DESC, rowid DESC LIMIT 1
             """,
             (content_id, source_ref, file_hash, content_hash),
         ).fetchone()
         if existing:
+            latest_for_source = self._conn.execute(
+                """
+                SELECT version_id FROM wiki_file_versions
+                WHERE content_id=? AND source_ref=?
+                ORDER BY created_at DESC, rowid DESC LIMIT 1
+                """,
+                (content_id, source_ref),
+            ).fetchone()
+            if (
+                existing["version_status"] == "superseded"
+                and latest_for_source
+                and latest_for_source["version_id"] == existing["version_id"]
+            ):
+                self._conn.execute(
+                    "UPDATE wiki_file_versions SET version_status='baseline' WHERE version_id=?",
+                    (existing["version_id"],),
+                )
             return str(existing["version_id"])
 
         workspace_path = self._ensure_workspace_baseline(source_ref, source_path)
