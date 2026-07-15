@@ -217,12 +217,18 @@ class WritingService:
         urls: Iterable[str] = (),
         recommended_mothers: Iterable[str] = (),
         operator: str = "user",
+        idempotency_key: str = "",
     ) -> WritingJob:
+        existing = self._idempotent_job(idempotency_key)
+        if existing:
+            return existing
+        url_list = list(urls)
+        recommended_list = list(recommended_mothers)
         payload = {
             "topic": topic,
             "purpose": purpose,
-            "urls": list(urls),
-            "recommended_mothers": list(recommended_mothers),
+            "urls": url_list,
+            "recommended_mothers": recommended_list,
             "mode": "mother_forge",
             "stage": "decision",
             "materials": [],
@@ -255,6 +261,14 @@ class WritingService:
             outcome="succeeded",
             details=self._safe_provider_details(mode="mother_forge"),
         )
+        self._record_command(
+            idempotency_key=idempotency_key,
+            command_type="create_mother_forge",
+            actor=operator,
+            status="succeeded",
+            input_data={"topic": topic, "purpose": purpose, "urls": url_list, "recommended_mothers": recommended_list},
+            output_data={"job_id": job_id},
+        )
         return WritingJob(job_id=job_id, job_type="mother_forge", topic=topic, status="queued", payload=payload)
 
     def create_batch(
@@ -267,7 +281,11 @@ class WritingService:
         target_article_count: int,
         matched_articles: Iterable[str] = (),
         operator: str = "user",
+        idempotency_key: str = "",
     ) -> WritingJob:
+        existing = self._idempotent_job(idempotency_key)
+        if existing:
+            return existing
         keyword_list = list(keywords)
         matched_list = list(matched_articles)
         payload = {
@@ -331,6 +349,14 @@ class WritingService:
             outcome="succeeded",
             details=self._safe_provider_details(mode="batch_production"),
         )
+        self._record_command(
+            idempotency_key=idempotency_key,
+            command_type="create_batch",
+            actor=operator,
+            status="succeeded",
+            input_data={"topic": topic, "source": source, "requirements": requirements, "keywords": keyword_list, "target_article_count": target_article_count},
+            output_data={"job_id": job_id},
+        )
         return WritingJob(
             job_id=job_id,
             job_type="batch_production",
@@ -339,12 +365,24 @@ class WritingService:
             payload=payload,
         )
 
-    def run(self, job_id: str, *, operator: str = "user") -> dict[str, Any]:
+    def run(self, job_id: str, *, operator: str = "user", idempotency_key: str = "") -> dict[str, Any]:
         job = self._fetch(job_id)
         if not job:
             raise FileNotFoundError(f"未找到生产任务：{job_id}")
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
         if not self._jobs.claim(job_id, operator):
-            return {"status": "skipped", "reason": "任务已被认领或不在 queued 状态"}
+            result = {"status": "skipped", "reason": "任务已被认领或不在 queued 状态", "job_id": job_id}
+            self._record_command(
+                idempotency_key=idempotency_key,
+                command_type="run",
+                actor=operator,
+                status="succeeded",
+                input_data={"job_id": job_id},
+                output_data=result,
+            )
+            return result
         if self._provider is None:
             details = self._safe_provider_details(
                 mode=job.job_type,
@@ -373,13 +411,22 @@ class WritingService:
                 outcome="blocked",
                 details=details,
             )
-            return {
+            result = {
                 "status": "blocked",
                 "job_id": job_id,
                 "blocked": True,
                 "demo": False,
                 **details,
             }
+            self._record_command(
+                idempotency_key=idempotency_key,
+                command_type="run",
+                actor=operator,
+                status="blocked",
+                input_data={"job_id": job_id},
+                output_data=result,
+            )
+            return result
         try:
             if job.job_type == "mother_forge":
                 written = self._run_mother_forge(job)
@@ -425,7 +472,16 @@ class WritingService:
                 outcome="blocked",
                 details=details,
             )
-            return {"status": "demo_only", "job_id": job_id, "blocked": False, **details, **written}
+            result = {"status": "demo_only", "job_id": job_id, "blocked": False, **details, **written}
+            self._record_command(
+                idempotency_key=idempotency_key,
+                command_type="run",
+                actor=operator,
+                status="blocked",
+                input_data={"job_id": job_id},
+                output_data=result,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001
             self._jobs.complete(job_id, status="failed")
             self._sync_runtime_status(job_id, "failed")
@@ -454,7 +510,16 @@ class WritingService:
                 outcome="failed",
                 details=details,
             )
-            return {"status": "failed", "job_id": job_id, **details}
+            result = {"status": "failed", "job_id": job_id, **details}
+            self._record_command(
+                idempotency_key=idempotency_key,
+                command_type="run",
+                actor=operator,
+                status="failed",
+                input_data={"job_id": job_id},
+                output_data=result,
+            )
+            return result
 
     def _run_mother_forge(self, job: WritingJob) -> dict[str, Any]:
         body = self._provider.generate(
@@ -642,6 +707,7 @@ class WritingService:
         action: str,
         value: dict[str, Any],
         operator: str = "user",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """持久化旧 WritingMoney 页面上的局部写操作。
 
@@ -651,6 +717,9 @@ class WritingService:
         job = self._fetch(job_id)
         if not job:
             raise FileNotFoundError(f"未找到生产任务：{job_id}")
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
         payload = dict(job.payload)
         if action == "purpose":
             purpose = str(value.get("purpose") or "").strip()
@@ -836,7 +905,16 @@ class WritingService:
             outcome="succeeded",
             details={"job_type": job.job_type, "payload_keys": sorted(payload.keys())},
         )
-        return self.detail(job_id) or {}
+        result = self.detail(job_id) or {}
+        self._record_command(
+            idempotency_key=idempotency_key,
+            command_type=f"mutate_{action}",
+            actor=operator,
+            status="succeeded",
+            input_data={"job_id": job_id, "action": action, "value": value},
+            output_data=result,
+        )
+        return result
 
     def _update_payload(
         self,
@@ -857,6 +935,343 @@ class WritingService:
             event_type=event_type,
             actor=operator,
         )
+
+    def _record_command(
+        self,
+        *,
+        idempotency_key: str,
+        command_type: str,
+        actor: str,
+        status: str,
+        input_data: dict[str, Any],
+        output_data: dict[str, Any],
+    ) -> None:
+        """记录用户命令；没有 key 的历史调用仍可运行，但不会伪造幂等键。"""
+        key = (idempotency_key or "").strip()[:200]
+        if not key:
+            return
+        now = utc_now_iso()
+        command_id = _runtime_deterministic_id("cmd", "writing-user", key)
+        self._conn.execute(
+            """
+            INSERT INTO command_runs(
+                command_id, module_key, command_type, idempotency_key, actor_id,
+                status, input_json, output_json, created_at, updated_at
+            ) VALUES (?, 'writing', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(module_key, idempotency_key) DO UPDATE SET
+                status=excluded.status, output_json=excluded.output_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                command_id,
+                command_type,
+                key,
+                actor,
+                status,
+                json.dumps(input_data, ensure_ascii=False, sort_keys=True),
+                json.dumps(output_data, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+
+    def _idempotent_output(self, idempotency_key: str) -> dict[str, Any] | None:
+        key = (idempotency_key or "").strip()[:200]
+        if not key:
+            return None
+        row = self._conn.execute(
+            "SELECT output_json FROM command_runs WHERE module_key='writing' AND idempotency_key=?",
+            (key,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            value = json.loads(row["output_json"] or "{}")
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) and value else None
+
+    def _idempotent_job(self, idempotency_key: str) -> WritingJob | None:
+        output = self._idempotent_output(idempotency_key)
+        job_id = str(output.get("job_id") or "") if output else ""
+        return self._fetch(job_id) if job_id else None
+
+    def list_projects(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT wm_project_id, title, purpose, stage, status, workspace_ref,
+                   created_by, created_at, updated_at, legacy_job_id
+            FROM wm_projects ORDER BY updated_at DESC LIMIT ?
+            """,
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def project(self, project_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM wm_projects WHERE wm_project_id=?", (project_id,)
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["materials"] = self._runtime_materials(project_id)
+        result["events"] = [
+            dict(event)
+            for event in self._conn.execute(
+                "SELECT * FROM wm_project_events WHERE wm_project_id=? ORDER BY occurred_at",
+                (project_id,),
+            ).fetchall()
+        ]
+        return result
+
+    def update_project(
+        self, project_id: str, *, patch: dict[str, Any], operator: str, idempotency_key: str = ""
+    ) -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        row = self._conn.execute("SELECT * FROM wm_projects WHERE wm_project_id=?", (project_id,)).fetchone()
+        if not row:
+            raise KeyError(project_id)
+        title = str(patch.get("title", row["title"])).strip()[:300]
+        purpose = str(patch.get("purpose", row["purpose"])).strip()[:4000]
+        stage = str(patch.get("stage", row["stage"]))
+        if not title:
+            raise ValueError("项目标题不能为空")
+        if stage not in {"decision", "materials", "template", "plan", "package", "draft", "completed", "archived"}:
+            raise ValueError("项目阶段不合法")
+        now = utc_now_iso()
+        self._conn.execute(
+            "UPDATE wm_projects SET title=?, purpose=?, stage=?, updated_at=? WHERE wm_project_id=?",
+            (title, purpose, stage, now, project_id),
+        )
+        self._runtime_event(project_id, "project.updated", operator, {"fields": sorted(patch)})
+        result = self.project(project_id) or {}
+        self._audit.record(action="writing.project.update", subject_type="wm_project", subject_id=project_id, actor_id=operator, details={"fields": sorted(patch)})
+        self._record_command(idempotency_key=idempotency_key, command_type="project_update", actor=operator, status="succeeded", input_data={"project_id": project_id, "patch": patch}, output_data=result)
+        return result
+
+    def delete_project(self, project_id: str, *, operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        if not self._conn.execute("SELECT 1 FROM wm_projects WHERE wm_project_id=?", (project_id,)).fetchone():
+            raise KeyError(project_id)
+        self._conn.execute("UPDATE wm_projects SET status='archived', stage='archived', updated_at=? WHERE wm_project_id=?", (utc_now_iso(), project_id))
+        self._runtime_event(project_id, "project.archived", operator, {})
+        result = {"wm_project_id": project_id, "status": "archived"}
+        self._audit.record(action="writing.project.delete", subject_type="wm_project", subject_id=project_id, actor_id=operator, details=result)
+        self._record_command(idempotency_key=idempotency_key, command_type="project_delete", actor=operator, status="succeeded", input_data={"project_id": project_id}, output_data=result)
+        return result
+
+    def list_batches(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM wm_batches ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 200)),)).fetchall()
+        return [self._batch_public(row) for row in rows]
+
+    def batch(self, batch_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM wm_batches WHERE wm_batch_id=?", (batch_id,)).fetchone()
+        return self._batch_public(row) if row else None
+
+    def update_batch(self, batch_id: str, *, patch: dict[str, Any], operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        row = self._conn.execute("SELECT * FROM wm_batches WHERE wm_batch_id=?", (batch_id,)).fetchone()
+        if not row:
+            raise KeyError(batch_id)
+        title = str(patch.get("title", row["title"])).strip()[:300]
+        source = str(patch.get("source", row["source"])).strip()[:120]
+        requirements = patch.get("requirements")
+        if requirements is None:
+            requirements = json.loads(row["requirements_json"] or "{}")
+        if not isinstance(requirements, dict):
+            raise ValueError("requirements 必须是对象")
+        self._conn.execute(
+            "UPDATE wm_batches SET title=?, source=?, requirements_json=?, updated_at=? WHERE wm_batch_id=?",
+            (title, source, json.dumps(requirements, ensure_ascii=False, sort_keys=True), utc_now_iso(), batch_id),
+        )
+        result = self.batch(batch_id) or {}
+        self._audit.record(action="writing.batch.update", subject_type="wm_batch", subject_id=batch_id, actor_id=operator, details={"fields": sorted(patch)})
+        self._record_command(idempotency_key=idempotency_key, command_type="batch_update", actor=operator, status="succeeded", input_data={"batch_id": batch_id, "patch": patch}, output_data=result)
+        return result
+
+    def delete_batch(self, batch_id: str, *, operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        if not self._conn.execute("SELECT 1 FROM wm_batches WHERE wm_batch_id=?", (batch_id,)).fetchone():
+            raise KeyError(batch_id)
+        self._conn.execute("UPDATE wm_batches SET status='archived', updated_at=? WHERE wm_batch_id=?", (utc_now_iso(), batch_id))
+        result = {"wm_batch_id": batch_id, "status": "archived"}
+        self._audit.record(action="writing.batch.delete", subject_type="wm_batch", subject_id=batch_id, actor_id=operator, details=result)
+        self._record_command(idempotency_key=idempotency_key, command_type="batch_delete", actor=operator, status="succeeded", input_data={"batch_id": batch_id}, output_data=result)
+        return result
+
+    def list_keywords(self, batch_id: str) -> list[dict[str, Any]]:
+        return self._runtime_keywords(batch_id, include_ids=True)
+
+    def create_keyword(self, batch_id: str, *, data: dict[str, Any], operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        if not self._conn.execute("SELECT 1 FROM wm_batches WHERE wm_batch_id=?", (batch_id,)).fetchone():
+            raise KeyError(batch_id)
+        keyword = str(data.get("keyword") or "").strip()[:200]
+        if not keyword:
+            raise ValueError("关键词不能为空")
+        count = max(1, min(100, int(data.get("target_article_count", data.get("count", 1)))))
+        readiness = str(data.get("readiness_status") or "pending")
+        if readiness not in {"pending", "ready", "blocked"}:
+            raise ValueError("关键词就绪状态不合法")
+        keyword_id = generate_ulid_like("wmk")
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO wm_batch_keywords(
+                wm_batch_keyword_id, wm_batch_id, keyword_text, purpose,
+                target_article_count, readiness_status, ordinal, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                keyword_id, batch_id, keyword, str(data.get("purpose") or "")[:4000],
+                count, readiness,
+                int(data.get("ordinal") or 0),
+                json.dumps({"created_via": "writing-api"}, ensure_ascii=False),
+            ),
+        )
+        self._conn.execute("UPDATE wm_batches SET updated_at=? WHERE wm_batch_id=?", (now, batch_id))
+        output = dict(self._conn.execute("SELECT * FROM wm_batch_keywords WHERE wm_batch_keyword_id=?", (keyword_id,)).fetchone())
+        self._audit.record(action="writing.keyword.create", subject_type="wm_batch_keyword", subject_id=keyword_id, actor_id=operator, details={"batch_id": batch_id})
+        self._record_command(idempotency_key=idempotency_key, command_type="keyword_create", actor=operator, status="succeeded", input_data={"batch_id": batch_id, "data": data}, output_data=output)
+        return output
+
+    def update_keyword(self, keyword_id: str, *, patch: dict[str, Any], operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        row = self._conn.execute("SELECT * FROM wm_batch_keywords WHERE wm_batch_keyword_id=?", (keyword_id,)).fetchone()
+        if not row:
+            raise KeyError(keyword_id)
+        keyword = str(patch.get("keyword", row["keyword_text"])).strip()[:200]
+        purpose = str(patch.get("purpose", row["purpose"])).strip()[:4000]
+        count = max(1, min(100, int(patch.get("target_article_count", row["target_article_count"]))))
+        readiness = str(patch.get("readiness_status", row["readiness_status"]))
+        if not keyword or readiness not in {"pending", "ready", "blocked"}:
+            raise ValueError("关键词或就绪状态不合法")
+        self._conn.execute(
+            "UPDATE wm_batch_keywords SET keyword_text=?, purpose=?, target_article_count=?, readiness_status=? WHERE wm_batch_keyword_id=?",
+            (keyword, purpose, count, readiness, keyword_id),
+        )
+        result = self._conn.execute("SELECT * FROM wm_batch_keywords WHERE wm_batch_keyword_id=?", (keyword_id,)).fetchone()
+        output = dict(result)
+        self._audit.record(action="writing.keyword.update", subject_type="wm_batch_keyword", subject_id=keyword_id, actor_id=operator, details={"fields": sorted(patch)})
+        self._record_command(idempotency_key=idempotency_key, command_type="keyword_update", actor=operator, status="succeeded", input_data={"keyword_id": keyword_id, "patch": patch}, output_data=output)
+        return output
+
+    def delete_keyword(self, keyword_id: str, *, operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        if not self._conn.execute("SELECT 1 FROM wm_batch_keywords WHERE wm_batch_keyword_id=?", (keyword_id,)).fetchone():
+            raise KeyError(keyword_id)
+        self._conn.execute("DELETE FROM wm_batch_keywords WHERE wm_batch_keyword_id=?", (keyword_id,))
+        result = {"wm_batch_keyword_id": keyword_id, "deleted": True}
+        self._audit.record(action="writing.keyword.delete", subject_type="wm_batch_keyword", subject_id=keyword_id, actor_id=operator, details=result)
+        self._record_command(idempotency_key=idempotency_key, command_type="keyword_delete", actor=operator, status="succeeded", input_data={"keyword_id": keyword_id}, output_data=result)
+        return result
+
+    def list_drafts(self, *, project_id: str = "", batch_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses, args = [], []
+        if project_id:
+            clauses.append("wm_project_id=?"); args.append(project_id)
+        if batch_id:
+            clauses.append("wm_batch_id=?"); args.append(batch_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(f"SELECT * FROM wm_drafts {where} ORDER BY updated_at DESC LIMIT ?", (*args, max(1, min(limit, 500)))).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_draft(self, *, data: dict[str, Any], operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        project_id = str(data.get("wm_project_id") or "") or None
+        batch_id = str(data.get("wm_batch_id") or "") or None
+        keyword_id = str(data.get("wm_batch_keyword_id") or "") or None
+        if not project_id and not batch_id:
+            raise ValueError("草稿必须关联项目或批次")
+        if project_id and not self._conn.execute("SELECT 1 FROM wm_projects WHERE wm_project_id=?", (project_id,)).fetchone():
+            raise KeyError(project_id)
+        if batch_id and not self._conn.execute("SELECT 1 FROM wm_batches WHERE wm_batch_id=?", (batch_id,)).fetchone():
+            raise KeyError(batch_id)
+        draft_id = generate_ulid_like("wmd")
+        now = utc_now_iso()
+        title = str(data.get("title") or "未命名草稿").strip()[:400]
+        status = str(data.get("status") or "queued")
+        if status not in {"queued", "draft", "review", "rework"}:
+            raise ValueError("新草稿状态不合法")
+        self._conn.execute(
+            """
+            INSERT INTO wm_drafts(
+                wm_draft_id, wm_project_id, wm_batch_id, wm_batch_keyword_id,
+                status, title, input_hash, provider_kind, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                draft_id, project_id, batch_id, keyword_id, status, title,
+                hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+                self._provider_kind, now, now,
+            ),
+        )
+        output = self.draft(draft_id) or {}
+        self._audit.record(action="writing.draft.create", subject_type="wm_draft", subject_id=draft_id, actor_id=operator, details={"project_id": project_id, "batch_id": batch_id})
+        self._record_command(idempotency_key=idempotency_key, command_type="draft_create", actor=operator, status="succeeded", input_data=data, output_data=output)
+        return output
+
+    def draft(self, draft_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM wm_drafts WHERE wm_draft_id=?", (draft_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_draft(self, draft_id: str, *, patch: dict[str, Any], operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        row = self._conn.execute("SELECT * FROM wm_drafts WHERE wm_draft_id=?", (draft_id,)).fetchone()
+        if not row:
+            raise KeyError(draft_id)
+        status = str(patch.get("status", row["status"]))
+        if status not in {"queued", "running", "draft", "review", "rework", "ready_for_publish", "published", "failed", "cancelled"}:
+            raise ValueError("草稿状态不合法")
+        title = str(patch.get("title", row["title"] or "")).strip()[:400]
+        self._conn.execute("UPDATE wm_drafts SET status=?, title=?, updated_at=? WHERE wm_draft_id=?", (status, title, utc_now_iso(), draft_id))
+        output = self.draft(draft_id) or {}
+        self._audit.record(action="writing.draft.update", subject_type="wm_draft", subject_id=draft_id, actor_id=operator, details={"fields": sorted(patch)})
+        self._record_command(idempotency_key=idempotency_key, command_type="draft_update", actor=operator, status="succeeded", input_data={"draft_id": draft_id, "patch": patch}, output_data=output)
+        return output
+
+    def delete_draft(self, draft_id: str, *, operator: str, idempotency_key: str = "") -> dict[str, Any]:
+        prior = self._idempotent_output(idempotency_key)
+        if prior is not None:
+            return prior
+        if not self._conn.execute("SELECT 1 FROM wm_drafts WHERE wm_draft_id=?", (draft_id,)).fetchone():
+            raise KeyError(draft_id)
+        self._conn.execute("UPDATE wm_drafts SET status='cancelled', updated_at=? WHERE wm_draft_id=?", (utc_now_iso(), draft_id))
+        output = {"wm_draft_id": draft_id, "status": "cancelled"}
+        self._audit.record(action="writing.draft.delete", subject_type="wm_draft", subject_id=draft_id, actor_id=operator, details=output)
+        self._record_command(idempotency_key=idempotency_key, command_type="draft_delete", actor=operator, status="succeeded", input_data={"draft_id": draft_id}, output_data=output)
+        return output
+
+    def _batch_public(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        result = dict(row)
+        result["requirements"] = json.loads(result.pop("requirements_json") or "{}")
+        result["keywords"] = self.list_keywords(result["wm_batch_id"])
+        result["drafts"] = self.list_drafts(batch_id=result["wm_batch_id"])
+        result["queue"] = [dict(item) for item in self._conn.execute(
+            "SELECT * FROM wm_batch_queue_items WHERE wm_batch_id=? ORDER BY ordinal",
+            (result["wm_batch_id"],),
+        ).fetchall()]
+        return result
 
     def _create_runtime_project(
         self,
@@ -1171,6 +1586,8 @@ class WritingService:
             if not isinstance(raw, dict):
                 continue
             status = str(raw.get("status") or "waiting")
+            queue_item_id = _runtime_deterministic_id("wmq", batch_id, str(raw.get("id") or ordinal))
+            keyword_id = keyword_ids.get(str(raw.get("keywordId") or ""))
             self._conn.execute(
                 """
                 INSERT INTO wm_batch_queue_items(
@@ -1179,9 +1596,9 @@ class WritingService:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    _runtime_deterministic_id("wmq", batch_id, str(raw.get("id") or ordinal)),
+                    queue_item_id,
                     batch_id,
-                    keyword_ids.get(str(raw.get("keywordId") or "")),
+                    keyword_id,
                     ordinal,
                     str(raw.get("title") or "")[:400],
                     status if status in allowed else "waiting",
@@ -1189,6 +1606,32 @@ class WritingService:
                     now,
                     now,
                 ),
+            )
+            draft_id = _runtime_deterministic_id("wmd", batch_id, str(raw.get("id") or ordinal))
+            self._conn.execute(
+                """
+                INSERT INTO wm_drafts(
+                    wm_draft_id, wm_batch_id, wm_batch_keyword_id, status, title,
+                    input_hash, provider_kind, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wm_draft_id) DO UPDATE SET
+                    status=excluded.status, title=excluded.title, updated_at=excluded.updated_at
+                """,
+                (
+                    draft_id,
+                    batch_id,
+                    keyword_id,
+                    {"waiting": "queued", "running": "running", "done": "draft"}.get(status, "queued"),
+                    str(raw.get("title") or "")[:400],
+                    hashlib.sha256(f"{batch_id}:{ordinal}".encode()).hexdigest(),
+                    self._provider_kind,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "UPDATE wm_batch_queue_items SET wm_draft_id=? WHERE wm_batch_queue_item_id=?",
+                (draft_id, queue_item_id),
             )
 
     def _record_runtime_draft(
@@ -1496,10 +1939,11 @@ class WritingService:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _runtime_keywords(self, batch_id: str) -> list[dict[str, Any]]:
+    def _runtime_keywords(self, batch_id: str, *, include_ids: bool = False) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             """
             SELECT wm_batch_keyword_id AS id, keyword_text AS keyword, purpose,
+                   wm_batch_keyword_id,
                    target_article_count AS count, readiness_status AS readiness
             FROM wm_batch_keywords WHERE wm_batch_id=? ORDER BY ordinal
             """,
@@ -1510,6 +1954,8 @@ class WritingService:
             item = dict(row)
             item["readiness"] = "ready" if item["readiness"] == "ready" else "needs-mother"
             item["motherMatches"] = []
+            if not include_ids:
+                item.pop("wm_batch_keyword_id", None)
             result.append(item)
         return result
 
