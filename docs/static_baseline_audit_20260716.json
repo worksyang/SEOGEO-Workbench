@@ -1,0 +1,2697 @@
+{
+  "generated_at": "2026-07-16T01:27:22+08:00",
+  "timezone": "CST",
+  "purpose": "T003-T010/T018/T019 当前静态基线与安全审计证据",
+  "read_only": true,
+  "path_policy": "证据文档仅使用仓库内相对路径和系统标签；不写入 Cookie、Token、API Key、密码或绝对敏感路径。",
+  "development_before_after": {
+    "status": "NOT RUN",
+    "reason": "本次任务开始前没有已签名/已保存的同口径前置快照，当前结果只能证明现状，不能证明开发前后不变。"
+  },
+  "snapshots": {
+    "repo_source": {
+      "exists": true,
+      "file_count": 126107,
+      "bytes": 4688099077,
+      "sha256": "932e285c74a093ed58f22b21ce7432581bbc7e998b7e3b996e2bebe19acc4e5d",
+      "extensions": {
+        ".0": 2,
+        ".1": 3,
+        ".11": 1,
+        ".2": 4,
+        ".3": 4,
+        ".4": 4,
+        ".5": 4,
+        ".6": 4,
+        ".7": 4,
+        ".7z": 3,
+        ".8": 4,
+        ".9": 4,
+        ".afm": 2,
+        ".ak8jym": 1,
+        ".apache": 5,
+        ".apache2": 3,
+        ".asm": 2,
+        ".baf": 4,
+        ".baj": 4,
+        ".bak": 5,
+        ".bat": 12,
+        ".before": 7,
+        ".before_170_keyword_reclass_20260712_090544": 1,
+        ".before_first_probe_noise_cleanup_20260712_085210": 1,
+        ".before_keyword_discovery_20260712_013428": 1,
+        ".bf": 3,
+        ".bsd": 5,
+        ".c": 1,
+        ".cfg": 6,
+        ".cmd": 1,
+        ".conf": 4,
+        ".cpp": 15,
+        ".csh": 1,
+        ".css": 54,
+        ".csv": 65,
+        ".dat": 1,
+        ".db": 22,
+        ".db-journal": 8,
+        ".db-shm": 1,
+        ".db-wal": 4,
+        ".dev": 2,
+        ".development": 2,
+        ".docx": 1,
+        ".dylib": 26,
+        ".example": 4,
+        ".exe": 15,
+        ".fish": 1,
+        ".flag": 9,
+        ".gif": 2,
+        ".gz": 3,
+        ".h": 110,
+        ".headers": 92,
+        ".hpp": 13,
+        ".html": 113,
+        ".journal": 3,
+        ".jpeg": 8,
+        ".jpg": 464,
+        ".js": 670,
+        ".json": 3410,
+        ".jsonl": 494,
+        ".ldb": 4,
+        ".lic": 5,
+        ".lock": 4,
+        ".log": 13195,
+        ".log2": 1,
+        ".md": 92015,
+        ".mdc": 8,
+        ".mit": 3,
+        ".mjs": 2,
+        ".model": 2,
+        ".obj": 2,
+        ".old": 56,
+        ".p1rf68": 1,
+        ".pb": 27,
+        ".pdf": 5,
+        ".pdf#": 2,
+        ".pem": 2,
+        ".pfb": 18,
+        ".plist": 5,
+        ".pma": 5,
+        ".png": 243,
+        ".production": 2,
+        ".ps1": 7,
+        ".psf": 1,
+        ".pth": 1,
+        ".pxd": 17,
+        ".pxi": 26,
+        ".py": 4029,
+        ".pyi": 49,
+        ".pyx": 7,
+        ".rels": 2,
+        ".rng": 1,
+        ".rst": 4,
+        ".sfd": 1,
+        ".sh": 38,
+        ".so": 32,
+        ".sqlite": 1,
+        ".svg": 9,
+        ".tab": 4,
+        ".testcase": 18,
+        ".tflite": 26,
+        ".tmpl": 2,
+        ".toml": 8,
+        ".ts": 74,
+        ".tsv": 3,
+        ".ttf": 10,
+        ".txt": 309,
+        ".typed": 69,
+        ".vue": 84,
+        ".webp": 2,
+        ".xml": 19,
+        ".xsl": 7,
+        ".yaml": 31,
+        ".yml": 243,
+        ".zi": 1,
+        "<no_extension>": 9643
+      }
+    },
+    "local_full_backup_demo": {
+      "exists": false,
+      "file_count": 0,
+      "bytes": 0,
+      "sha256": null,
+      "extensions": {}
+    },
+    "demo_html": {
+      "exists": true,
+      "file_count": 1,
+      "bytes": 284748,
+      "sha256": "68b8fbc37ae3891fe64672f7871f8fdfab6827c57499751125d78b03a23a173d",
+      "extensions": {
+        ".html": 1
+      }
+    }
+  },
+  "systems": {
+    "wechat_search": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 109482,
+        "bytes": 2938416390,
+        "sha256": "e5cf27c8b4912d40572c1980dab087d47abe6f7b9ad5ef4eb175610fb486ea8e",
+        "extensions": {
+          ".ak8jym": 1,
+          ".baf": 3,
+          ".baj": 3,
+          ".before_170_keyword_reclass_20260712_090544": 1,
+          ".before_first_probe_noise_cleanup_20260712_085210": 1,
+          ".before_keyword_discovery_20260712_013428": 1,
+          ".bf": 3,
+          ".css": 4,
+          ".csv": 4,
+          ".db": 17,
+          ".db-journal": 6,
+          ".db-shm": 4,
+          ".db-wal": 4,
+          ".flag": 8,
+          ".gif": 2,
+          ".gz": 2,
+          ".html": 22,
+          ".journal": 3,
+          ".jpeg": 7,
+          ".jpg": 5,
+          ".js": 13,
+          ".json": 1641,
+          ".jsonl": 507,
+          ".ldb": 3,
+          ".log": 13825,
+          ".log2": 1,
+          ".md": 84773,
+          ".mjs": 1,
+          ".model": 2,
+          ".old": 27,
+          ".p1rf68": 1,
+          ".pb": 19,
+          ".plist": 2,
+          ".pma": 1,
+          ".png": 182,
+          ".py": 185,
+          ".tflite": 18,
+          ".tsv": 3,
+          ".txt": 72,
+          ".yml": 206,
+          "<no_extension>": 7899
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".ak8jym": 1,
+          ".baf": 3,
+          ".baj": 3,
+          ".before_170_keyword_reclass_20260712_090544": 1,
+          ".before_first_probe_noise_cleanup_20260712_085210": 1,
+          ".before_keyword_discovery_20260712_013428": 1,
+          ".bf": 3,
+          ".css": 4,
+          ".csv": 4,
+          ".db": 17,
+          ".db-journal": 6,
+          ".db-shm": 4,
+          ".db-wal": 4,
+          ".flag": 8,
+          ".gif": 2,
+          ".gz": 2,
+          ".html": 22,
+          ".journal": 3,
+          ".jpeg": 7,
+          ".jpg": 5,
+          ".js": 13,
+          ".json": 1641,
+          ".jsonl": 507,
+          ".ldb": 3,
+          ".log": 13825,
+          ".log2": 1,
+          ".md": 84773,
+          ".mjs": 1,
+          ".model": 2,
+          ".old": 27,
+          ".p1rf68": 1,
+          ".pb": 19,
+          ".plist": 2,
+          ".pma": 1,
+          ".png": 182,
+          ".py": 185,
+          ".tflite": 18,
+          ".tsv": 3,
+          ".txt": 72,
+          ".yml": 206,
+          "<no_extension>": 7899
+        },
+        "bytes_by_extension": {
+          ".ak8jym": 2807,
+          ".baf": 60,
+          ".baj": 12,
+          ".before_170_keyword_reclass_20260712_090544": 413696,
+          ".before_first_probe_noise_cleanup_20260712_085210": 413696,
+          ".before_keyword_discovery_20260712_013428": 245760,
+          ".bf": 1080,
+          ".css": 182479,
+          ".csv": 74352,
+          ".db": 35921920,
+          ".db-journal": 0,
+          ".db-shm": 131072,
+          ".db-wal": 37176,
+          ".flag": 0,
+          ".gif": 140728,
+          ".gz": 935702,
+          ".html": 340254,
+          ".journal": 0,
+          ".jpeg": 293768,
+          ".jpg": 254125,
+          ".js": 2101845,
+          ".json": 473172507,
+          ".jsonl": 96664834,
+          ".ldb": 287772,
+          ".log": 65221857,
+          ".log2": 0,
+          ".md": 776486188,
+          ".mjs": 2836,
+          ".model": 1588692,
+          ".old": 4381,
+          ".p1rf68": 0,
+          ".pb": 16870,
+          ".plist": 1900,
+          ".pma": 4194304,
+          ".png": 13134045,
+          ".py": 1671182,
+          ".tflite": 87485268,
+          ".tsv": 103514,
+          ".txt": 124694,
+          ".yml": 8472008,
+          "<no_extension>": 1368293006
+        },
+        "sqlite": [
+          {
+            "file": ".claude/worktrees/agent-abc0d8e760baa09cb/chat.db",
+            "tables": [
+              {
+                "table": "accounts",
+                "row_count": 1
+              },
+              {
+                "table": "ai_summaries",
+                "row_count": 2
+              },
+              {
+                "table": "chatrooms",
+                "row_count": 226
+              },
+              {
+                "table": "friends",
+                "row_count": 5827
+              },
+              {
+                "table": "messages",
+                "row_count": 6321
+              },
+              {
+                "table": "sync_state",
+                "row_count": 11
+              }
+            ]
+          },
+          {
+            "file": ".claude/worktrees/agent-abc0d8e760baa09cb/data/state/app.db",
+            "tables": [
+              {
+                "table": "keyword_settings",
+                "row_count": 238
+              }
+            ]
+          },
+          {
+            "file": ".playwright-mcp/profiles/wechat-ybxhyyh-top3/first_party_sets.db",
+            "tables": [
+              {
+                "table": "browser_context_sets_version",
+                "row_count": 0
+              },
+              {
+                "table": "browser_context_sites_to_clear",
+                "row_count": 0
+              },
+              {
+                "table": "browser_contexts_cleared",
+                "row_count": 1
+              },
+              {
+                "table": "manual_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "meta",
+                "row_count": 4
+              },
+              {
+                "table": "policy_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "public_sets",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": ".playwright-mcp/profiles/wechat-ybxhyyh-top3/Default/heavy_ad_intervention_opt_out.db",
+            "tables": [
+              {
+                "table": "enabled_previews_v1",
+                "row_count": 1
+              },
+              {
+                "table": "previews_v1",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": ".playwright-mcp/profiles/wechat-ybxhyyh-top3/GPUPersistentCache/GPUCache/PTQ63FIQTGZLDYDBJX5ASZSLI4I763MA/cache.db",
+            "tables": [
+              {
+                "table": "entries",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state.app.db",
+            "tables": []
+          },
+          {
+            "file": "data/state/app.db",
+            "tables": [
+              {
+                "table": "keyword_discovery_candidates",
+                "row_count": 352
+              },
+              {
+                "table": "keyword_discovery_evidence",
+                "row_count": 392
+              },
+              {
+                "table": "keyword_discovery_probes",
+                "row_count": 46
+              },
+              {
+                "table": "keyword_groups",
+                "row_count": 18
+              },
+              {
+                "table": "keyword_registry",
+                "row_count": 457
+              }
+            ]
+          },
+          {
+            "file": "data/state/chat.db",
+            "tables": []
+          },
+          {
+            "file": "data/state/aidso_chrome_profile/first_party_sets.db",
+            "tables": [
+              {
+                "table": "browser_context_sets_version",
+                "row_count": 0
+              },
+              {
+                "table": "browser_context_sites_to_clear",
+                "row_count": 0
+              },
+              {
+                "table": "browser_contexts_cleared",
+                "row_count": 1
+              },
+              {
+                "table": "manual_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "meta",
+                "row_count": 4
+              },
+              {
+                "table": "policy_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "public_sets",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state/aidso_chrome_profile/Default/heavy_ad_intervention_opt_out.db",
+            "tables": [
+              {
+                "table": "enabled_previews_v1",
+                "row_count": 1
+              },
+              {
+                "table": "previews_v1",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state/aidso_chrome_profile/GPUPersistentCache/GPUCache/PSKHW4JQPKDH2IFE2DALFNDN3WZ7ERA2/cache.db",
+            "tables": [
+              {
+                "table": "entries",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state/aidso_playwright_profile/first_party_sets.db",
+            "tables": [
+              {
+                "table": "browser_context_sets_version",
+                "row_count": 0
+              },
+              {
+                "table": "browser_context_sites_to_clear",
+                "row_count": 0
+              },
+              {
+                "table": "browser_contexts_cleared",
+                "row_count": 1
+              },
+              {
+                "table": "manual_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "meta",
+                "row_count": 4
+              },
+              {
+                "table": "policy_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "public_sets",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state/aidso_playwright_profile/Default/heavy_ad_intervention_opt_out.db",
+            "tables": [
+              {
+                "table": "enabled_previews_v1",
+                "row_count": 1
+              },
+              {
+                "table": "previews_v1",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "data/state/aidso_playwright_profile/GPUPersistentCache/GPUCache/2WYV5BC6F4TL664JPYRELWTXUV35PARL/cache.db",
+            "tables": [
+              {
+                "table": "entries",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "临时产物/260711_013059_关键词注册表迁移备份/app.db",
+            "tables": [
+              {
+                "table": "keyword_settings",
+                "row_count": 306
+              }
+            ]
+          },
+          {
+            "file": "临时产物/260711_013751_关键词注册表迁移备份/app.db",
+            "tables": [
+              {
+                "table": "keyword_settings",
+                "row_count": 306
+              }
+            ]
+          },
+          {
+            "file": "临时产物/260711_关键词注册表迁移备份/app.before.db",
+            "tables": [
+              {
+                "table": "keyword_settings",
+                "row_count": 306
+              }
+            ]
+          }
+        ],
+        "json_top_level_keys": {
+          "schema_version": 625,
+          "evidence_id": 621,
+          "kind": 621,
+          "observed_scope": 621,
+          "caveats": 621,
+          "batch_id": 518,
+          "article": 422,
+          "content_preview": 422,
+          "status": 404,
+          "runner_pid": 379,
+          "current_keyword": 377,
+          "current_item_id": 376,
+          "updated_at": 371,
+          "success_count": 256,
+          "failed_count": 256,
+          "pending_count": 251,
+          "current_attempt": 251,
+          "heartbeat_at": 250,
+          "groups": 239,
+          "started_at": 152,
+          "finished_at": 145,
+          "at": 143,
+          "total_keywords": 132,
+          "runner_alive": 131,
+          "heartbeat_age_sec": 131,
+          "alert": 126,
+          "ledger_updated": 124,
+          "ledger_updated_count": 124,
+          "batch_dir": 123,
+          "watchdog_pid": 123,
+          "runner_log": 123,
+          "watchdog_log": 123,
+          "runner_cmd": 123,
+          "launched_at": 122,
+          "keyword": 118,
+          "refresh_round": 118,
+          "source": 117,
+          "account": 114,
+          "last_rebuild_at": 113,
+          "last_rebuild_ok": 113
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 100609,
+        "route_count": 46,
+        "routes": [
+          {
+            "method": "DELETE",
+            "path": "/keyword-manage/groups/<group_id>"
+          },
+          {
+            "method": "DELETE",
+            "path": "/keyword-manage/keywords/<keyword_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/account-aliases"
+          },
+          {
+            "method": "GET",
+            "path": "/account-score-analysis"
+          },
+          {
+            "method": "GET",
+            "path": "/account-score-formula"
+          },
+          {
+            "method": "GET",
+            "path": "/agent/daily-brief"
+          },
+          {
+            "method": "GET",
+            "path": "/agent/evidence/<evidence_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/agent/manifest"
+          },
+          {
+            "method": "GET",
+            "path": "/agent/metric-dictionary"
+          },
+          {
+            "method": "GET",
+            "path": "/article-content"
+          },
+          {
+            "method": "GET",
+            "path": "/article-cover-image"
+          },
+          {
+            "method": "GET",
+            "path": "/article-hit-detail"
+          },
+          {
+            "method": "GET",
+            "path": "/article-hit-detail-demo"
+          },
+          {
+            "method": "GET",
+            "path": "/articles"
+          },
+          {
+            "method": "GET",
+            "path": "/articles/accounts"
+          },
+          {
+            "method": "GET",
+            "path": "/keyword-discovery"
+          },
+          {
+            "method": "GET",
+            "path": "/keyword-manage"
+          },
+          {
+            "method": "GET",
+            "path": "/keyword-turnover"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/account/<account_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/bootstrap"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/keyword/<keyword_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/penalty-signals"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-all/history"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-all/status"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-status/<job_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/scheduler/status"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/groups/<group_id>"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/keywords/<keyword_id>"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/keywords/<keyword_id>/auto-archive-lock"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/keywords/<keyword_id>/commercial-value"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/keywords/<keyword_id>/refresh-policy"
+          },
+          {
+            "method": "POST",
+            "path": "/article-covers"
+          },
+          {
+            "method": "POST",
+            "path": "/keyword-manage/groups"
+          },
+          {
+            "method": "POST",
+            "path": "/keyword-manage/keywords"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/bucket"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/note"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/pin"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/refresh"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/topic"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/unpin"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh-all"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh-all/cancel"
+          },
+          {
+            "method": "POST",
+            "path": "/scheduler/config"
+          },
+          {
+            "method": "POST",
+            "path": "/scheduler/trigger"
+          }
+        ],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "wechat_mp": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 7062,
+        "bytes": 453605918,
+        "sha256": "c35a88907268bc60a80364f43bb64db9bbaaab0361c4ab5d453c2b94c771d8bd",
+        "extensions": {
+          ".0": 2,
+          ".1": 3,
+          ".11": 1,
+          ".2": 4,
+          ".3": 4,
+          ".4": 4,
+          ".5": 4,
+          ".6": 4,
+          ".7": 4,
+          ".7z": 1,
+          ".8": 4,
+          ".9": 4,
+          ".afm": 2,
+          ".apache": 5,
+          ".apache2": 3,
+          ".asm": 2,
+          ".bat": 12,
+          ".bsd": 5,
+          ".c": 1,
+          ".cfg": 6,
+          ".cmd": 1,
+          ".conf": 4,
+          ".cpp": 15,
+          ".csh": 1,
+          ".css": 40,
+          ".csv": 53,
+          ".db": 2,
+          ".dev": 2,
+          ".development": 2,
+          ".docx": 1,
+          ".dylib": 26,
+          ".example": 3,
+          ".exe": 15,
+          ".fish": 1,
+          ".h": 110,
+          ".headers": 92,
+          ".hpp": 13,
+          ".html": 50,
+          ".jpeg": 1,
+          ".jpg": 169,
+          ".js": 630,
+          ".json": 30,
+          ".lic": 3,
+          ".lock": 4,
+          ".log": 3,
+          ".md": 275,
+          ".mit": 3,
+          ".mjs": 1,
+          ".obj": 2,
+          ".pdf#": 2,
+          ".pem": 2,
+          ".pfb": 18,
+          ".png": 20,
+          ".production": 2,
+          ".ps1": 7,
+          ".psf": 1,
+          ".pth": 1,
+          ".pxd": 17,
+          ".pxi": 26,
+          ".py": 3460,
+          ".pyi": 49,
+          ".pyx": 7,
+          ".rels": 2,
+          ".rng": 1,
+          ".rst": 4,
+          ".sfd": 1,
+          ".sh": 32,
+          ".so": 32,
+          ".svg": 9,
+          ".tab": 4,
+          ".testcase": 18,
+          ".tmpl": 2,
+          ".toml": 7,
+          ".ts": 71,
+          ".ttf": 10,
+          ".txt": 155,
+          ".typed": 69,
+          ".vue": 83,
+          ".webp": 2,
+          ".xml": 19,
+          ".xsl": 7,
+          ".yaml": 30,
+          ".yml": 4,
+          ".zi": 1,
+          "<no_extension>": 1260
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".0": 2,
+          ".1": 3,
+          ".11": 1,
+          ".2": 4,
+          ".3": 4,
+          ".4": 4,
+          ".5": 4,
+          ".6": 4,
+          ".7": 4,
+          ".7z": 1,
+          ".8": 4,
+          ".9": 4,
+          ".afm": 2,
+          ".apache": 5,
+          ".apache2": 3,
+          ".asm": 2,
+          ".bat": 12,
+          ".bsd": 5,
+          ".c": 1,
+          ".cfg": 6,
+          ".cmd": 1,
+          ".conf": 4,
+          ".cpp": 15,
+          ".csh": 1,
+          ".css": 40,
+          ".csv": 53,
+          ".db": 2,
+          ".dev": 2,
+          ".development": 2,
+          ".docx": 1,
+          ".dylib": 26,
+          ".example": 3,
+          ".exe": 15,
+          ".fish": 1,
+          ".h": 110,
+          ".headers": 92,
+          ".hpp": 13,
+          ".html": 50,
+          ".jpeg": 1,
+          ".jpg": 169,
+          ".js": 630,
+          ".json": 30,
+          ".lic": 3,
+          ".lock": 4,
+          ".log": 3,
+          ".md": 275,
+          ".mit": 3,
+          ".mjs": 1,
+          ".obj": 2,
+          ".pdf#": 2,
+          ".pem": 2,
+          ".pfb": 18,
+          ".png": 20,
+          ".production": 2,
+          ".ps1": 7,
+          ".psf": 1,
+          ".pth": 1,
+          ".pxd": 17,
+          ".pxi": 26,
+          ".py": 3460,
+          ".pyi": 49,
+          ".pyx": 7,
+          ".rels": 2,
+          ".rng": 1,
+          ".rst": 4,
+          ".sfd": 1,
+          ".sh": 32,
+          ".so": 32,
+          ".svg": 9,
+          ".tab": 4,
+          ".testcase": 18,
+          ".tmpl": 2,
+          ".toml": 7,
+          ".ts": 71,
+          ".ttf": 10,
+          ".txt": 155,
+          ".typed": 69,
+          ".vue": 83,
+          ".webp": 2,
+          ".xml": 19,
+          ".xsl": 7,
+          ".yaml": 30,
+          ".yml": 4,
+          ".zi": 1,
+          "<no_extension>": 1260
+        },
+        "bytes_by_extension": {
+          ".0": 596,
+          ".1": 8083,
+          ".11": 233,
+          ".2": 492,
+          ".3": 550,
+          ".4": 532,
+          ".5": 196,
+          ".6": 444,
+          ".7": 426,
+          ".7z": 467886,
+          ".8": 386,
+          ".9": 866,
+          ".afm": 18669,
+          ".apache": 52056,
+          ".apache2": 34074,
+          ".asm": 3086,
+          ".bat": 8414,
+          ".bsd": 6908,
+          ".c": 5773,
+          ".cfg": 5814,
+          ".cmd": 143,
+          ".conf": 1814,
+          ".cpp": 147984,
+          ".csh": 962,
+          ".css": 2060916,
+          ".csv": 1320382,
+          ".db": 245760,
+          ".dev": 388,
+          ".development": 320,
+          ".docx": 38116,
+          ".dylib": 17690864,
+          ".example": 885,
+          ".exe": 4594176,
+          ".fish": 2238,
+          ".h": 807343,
+          ".headers": 54952,
+          ".hpp": 112721,
+          ".html": 561155,
+          ".jpeg": 8324,
+          ".jpg": 136949228,
+          ".js": 27440079,
+          ".json": 3454584,
+          ".lic": 3739,
+          ".lock": 151749,
+          ".log": 140,
+          ".md": 2374329,
+          ".mit": 3183,
+          ".mjs": 1063,
+          ".obj": 1824,
+          ".pdf#": 142,
+          ".pem": 554725,
+          ".pfb": 839863,
+          ".png": 2227372,
+          ".production": 274,
+          ".ps1": 13686,
+          ".psf": 2424,
+          ".pth": 151,
+          ".pxd": 128632,
+          ".pxi": 574988,
+          ".py": 47682033,
+          ".pyi": 148605,
+          ".pyx": 236990,
+          ".rels": 1553,
+          ".rng": 18337,
+          ".rst": 11929,
+          ".sfd": 519634,
+          ".sh": 46904,
+          ".so": 46934264,
+          ".svg": 18803,
+          ".tab": 49294,
+          ".testcase": 119076,
+          ".tmpl": 356,
+          ".toml": 3590,
+          ".ts": 3128140,
+          ".ttf": 687688,
+          ".txt": 326340,
+          ".typed": 498,
+          ".vue": 749369,
+          ".webp": 57692,
+          ".xml": 927984,
+          ".xsl": 153556,
+          ".yaml": 71924,
+          ".yml": 86215,
+          ".zi": 107469,
+          "<no_extension>": 148530573
+        },
+        "sqlite": [
+          {
+            "file": ".web_console/app.db",
+            "tables": [
+              {
+                "table": "account_flags",
+                "row_count": 26
+              },
+              {
+                "table": "categories",
+                "row_count": 2
+              },
+              {
+                "table": "settings",
+                "row_count": 12
+              }
+            ]
+          },
+          {
+            "file": "TEST/we-mp-rss/data/db.db",
+            "tables": [
+              {
+                "table": "access_keys",
+                "row_count": 0
+              },
+              {
+                "table": "articles",
+                "row_count": 0
+              },
+              {
+                "table": "cascade_nodes",
+                "row_count": 0
+              },
+              {
+                "table": "cascade_sync_logs",
+                "row_count": 0
+              },
+              {
+                "table": "cascade_task_allocations",
+                "row_count": 0
+              },
+              {
+                "table": "config_management",
+                "row_count": 0
+              },
+              {
+                "table": "feeds",
+                "row_count": 0
+              },
+              {
+                "table": "filter_rules",
+                "row_count": 0
+              },
+              {
+                "table": "message_tasks",
+                "row_count": 0
+              },
+              {
+                "table": "message_tasks_logs",
+                "row_count": 0
+              },
+              {
+                "table": "tags",
+                "row_count": 0
+              },
+              {
+                "table": "users",
+                "row_count": 1
+              }
+            ]
+          }
+        ],
+        "json_top_level_keys": {
+          "name": 11,
+          "version": 11,
+          "scripts": 7,
+          "description": 5,
+          "dependencies": 5,
+          "devDependencies": 5,
+          "author": 5,
+          "license": 5,
+          "main": 4,
+          "keywords": 4,
+          "lockfileVersion": 3,
+          "requires": 3,
+          "packages": 3,
+          "private": 3,
+          "compilerOptions": 3,
+          "include": 3,
+          "homepage": 3,
+          "repository": 3,
+          "type": 3,
+          "platforms": 2,
+          "concurrent": 2,
+          "max_concurrent_tasks": 2,
+          "default_timeout": 2,
+          "log": 2,
+          "inbounds": 2,
+          "outbounds": 2,
+          "route": 2,
+          "files": 2,
+          "bugs": 2,
+          "$schema": 2,
+          "$id": 2,
+          "title": 2,
+          "$$description": 2,
+          "properties": 2,
+          "permissions": 1,
+          "comment": 1,
+          "browsers": 1,
+          "engines": 1,
+          "exports": 1,
+          "bin": 1
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 4853,
+        "route_count": 168,
+        "routes": [
+          {
+            "method": "DELETE",
+            "path": "/ak/{ak_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/api/categories/{name}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/clean"
+          },
+          {
+            "method": "DELETE",
+            "path": "/clean_duplicate_articles"
+          },
+          {
+            "method": "DELETE",
+            "path": "/clear"
+          },
+          {
+            "method": "DELETE",
+            "path": "/clear/{pattern}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/export/delete"
+          },
+          {
+            "method": "DELETE",
+            "path": "/export/delete-by-query"
+          },
+          {
+            "method": "DELETE",
+            "path": "/items/{item_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/nodes/{node_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{article_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{config_key}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{mp_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{rule_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{tag_id}"
+          },
+          {
+            "method": "DELETE",
+            "path": "/{task_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/ak/list"
+          },
+          {
+            "method": "GET",
+            "path": "/allocations"
+          },
+          {
+            "method": "GET",
+            "path": "/api/accounts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/ai/models"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/wechat/qrcode/image/{qr_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/api/categories"
+          },
+          {
+            "method": "GET",
+            "path": "/api/jobs"
+          },
+          {
+            "method": "GET",
+            "path": "/api/jobs/{job_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/api/runtime/overview"
+          },
+          {
+            "method": "GET",
+            "path": "/api/settings"
+          },
+          {
+            "method": "GET",
+            "path": "/article/{article_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/articles"
+          },
+          {
+            "method": "GET",
+            "path": "/base_info"
+          },
+          {
+            "method": "GET",
+            "path": "/branches"
+          },
+          {
+            "method": "GET",
+            "path": "/commits"
+          },
+          {
+            "method": "GET",
+            "path": "/content/status"
+          },
+          {
+            "method": "GET",
+            "path": "/content/{content_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/example"
+          },
+          {
+            "method": "GET",
+            "path": "/export/download"
+          },
+          {
+            "method": "GET",
+            "path": "/export/list"
+          },
+          {
+            "method": "GET",
+            "path": "/featured/article/tasks/{task_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/feed-status"
+          },
+          {
+            "method": "GET",
+            "path": "/feeds"
+          },
+          {
+            "method": "GET",
+            "path": "/fresh"
+          },
+          {
+            "method": "GET",
+            "path": "/health"
+          },
+          {
+            "method": "GET",
+            "path": "/history"
+          },
+          {
+            "method": "GET",
+            "path": "/home"
+          },
+          {
+            "method": "GET",
+            "path": "/image/download/{filename}"
+          },
+          {
+            "method": "GET",
+            "path": "/image/proxy"
+          },
+          {
+            "method": "GET",
+            "path": "/info"
+          },
+          {
+            "method": "GET",
+            "path": "/items/"
+          },
+          {
+            "method": "GET",
+            "path": "/items/{item_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/list"
+          },
+          {
+            "method": "GET",
+            "path": "/main/status"
+          },
+          {
+            "method": "GET",
+            "path": "/message-tasks"
+          },
+          {
+            "method": "GET",
+            "path": "/mp/{mp_id}/active"
+          },
+          {
+            "method": "GET",
+            "path": "/mps"
+          },
+          {
+            "method": "GET",
+            "path": "/mps/export"
+          },
+          {
+            "method": "GET",
+            "path": "/mps/opml"
+          },
+          {
+            "method": "GET",
+            "path": "/nodes"
+          },
+          {
+            "method": "GET",
+            "path": "/nodes/{node_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/pending-allocations"
+          },
+          {
+            "method": "GET",
+            "path": "/pending-tasks"
+          },
+          {
+            "method": "GET",
+            "path": "/qr/code"
+          },
+          {
+            "method": "GET",
+            "path": "/qr/image"
+          },
+          {
+            "method": "GET",
+            "path": "/qr/over"
+          },
+          {
+            "method": "GET",
+            "path": "/qr/status"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh/tasks/{task_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/resources"
+          },
+          {
+            "method": "GET",
+            "path": "/scheduler/jobs"
+          },
+          {
+            "method": "GET",
+            "path": "/scheduler/status"
+          },
+          {
+            "method": "GET",
+            "path": "/search/{kw}"
+          },
+          {
+            "method": "GET",
+            "path": "/search/{kw}/{feed_id}.{ext}"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/status"
+          },
+          {
+            "method": "GET",
+            "path": "/sync-logs"
+          },
+          {
+            "method": "GET",
+            "path": "/tag/{tag_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/tag/{tag_id}.{ext}"
+          },
+          {
+            "method": "GET",
+            "path": "/tags"
+          },
+          {
+            "method": "GET",
+            "path": "/today"
+          },
+          {
+            "method": "GET",
+            "path": "/update/{mp_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/users/"
+          },
+          {
+            "method": "GET",
+            "path": "/users/me"
+          },
+          {
+            "method": "GET",
+            "path": "/users/me/items/"
+          },
+          {
+            "method": "GET",
+            "path": "/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/{article_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{article_id}/next"
+          },
+          {
+            "method": "GET",
+            "path": "/{article_id}/prev"
+          },
+          {
+            "method": "GET",
+            "path": "/{config_key}"
+          },
+          {
+            "method": "GET",
+            "path": "/{feed_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{feed_id}.{ext}"
+          },
+          {
+            "method": "GET",
+            "path": "/{feed_id}/api"
+          },
+          {
+            "method": "GET",
+            "path": "/{mp_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{path:path}"
+          },
+          {
+            "method": "GET",
+            "path": "/{rule_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{tag_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{task_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/{task_id}/run"
+          },
+          {
+            "method": "HEAD",
+            "path": "/items/"
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/items/"
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/{path:path}"
+          },
+          {
+            "method": "PATCH",
+            "path": "/api/accounts/{mp_id}/flags"
+          },
+          {
+            "method": "PATCH",
+            "path": "/items/"
+          },
+          {
+            "method": "PATCH",
+            "path": "distutils.command.bdist_rpm.bdist_rpm"
+          },
+          {
+            "method": "PATCH",
+            "path": "psutil._pslinux.socket.inet_ntop"
+          },
+          {
+            "method": "PATCH",
+            "path": "psutil._pslinux.supports_ipv6"
+          },
+          {
+            "method": "PATCH",
+            "path": "setuptools.command.build_clib.newer_pairwise_group"
+          },
+          {
+            "method": "PATCH",
+            "path": "time.sleep"
+          },
+          {
+            "method": "POST",
+            "path": "/ak/create"
+          },
+          {
+            "method": "POST",
+            "path": "/ak/{ak_id}/deactivate"
+          },
+          {
+            "method": "POST",
+            "path": "/api/ai/models/classifier/probe"
+          },
+          {
+            "method": "POST",
+            "path": "/api/auth/wechat/check"
+          },
+          {
+            "method": "POST",
+            "path": "/api/auth/wechat/qrcode"
+          },
+          {
+            "method": "POST",
+            "path": "/api/auth/wechat/qrcode/finish"
+          },
+          {
+            "method": "POST",
+            "path": "/api/categories"
+          },
+          {
+            "method": "POST",
+            "path": "/api/jobs"
+          },
+          {
+            "method": "POST",
+            "path": "/api/jobs/{job_id}/cancel"
+          },
+          {
+            "method": "POST",
+            "path": "/avatar"
+          },
+          {
+            "method": "POST",
+            "path": "/by_article"
+          },
+          {
+            "method": "POST",
+            "path": "/claim-task"
+          },
+          {
+            "method": "POST",
+            "path": "/clear"
+          },
+          {
+            "method": "POST",
+            "path": "/dispatch-task"
+          },
+          {
+            "method": "POST",
+            "path": "/export/articles"
+          },
+          {
+            "method": "POST",
+            "path": "/featured/article"
+          },
+          {
+            "method": "POST",
+            "path": "/files/"
+          },
+          {
+            "method": "POST",
+            "path": "/heartbeat"
+          },
+          {
+            "method": "POST",
+            "path": "/history/clear"
+          },
+          {
+            "method": "POST",
+            "path": "/image/crop"
+          },
+          {
+            "method": "POST",
+            "path": "/items/"
+          },
+          {
+            "method": "POST",
+            "path": "/login"
+          },
+          {
+            "method": "POST",
+            "path": "/logout"
+          },
+          {
+            "method": "POST",
+            "path": "/message/test/{task_id}"
+          },
+          {
+            "method": "POST",
+            "path": "/mps/import"
+          },
+          {
+            "method": "POST",
+            "path": "/nodes"
+          },
+          {
+            "method": "POST",
+            "path": "/nodes/{node_id}/credentials"
+          },
+          {
+            "method": "POST",
+            "path": "/nodes/{node_id}/test-connection"
+          },
+          {
+            "method": "POST",
+            "path": "/notify"
+          },
+          {
+            "method": "POST",
+            "path": "/password/reset"
+          },
+          {
+            "method": "POST",
+            "path": "/password/reset-request"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh"
+          },
+          {
+            "method": "POST",
+            "path": "/reload-scheduler"
+          },
+          {
+            "method": "POST",
+            "path": "/report-completion"
+          },
+          {
+            "method": "POST",
+            "path": "/report-result"
+          },
+          {
+            "method": "POST",
+            "path": "/rollback"
+          },
+          {
+            "method": "POST",
+            "path": "/send-notification/{email}"
+          },
+          {
+            "method": "POST",
+            "path": "/start-scheduler"
+          },
+          {
+            "method": "POST",
+            "path": "/stop-scheduler"
+          },
+          {
+            "method": "POST",
+            "path": "/switch"
+          },
+          {
+            "method": "POST",
+            "path": "/tags/import"
+          },
+          {
+            "method": "POST",
+            "path": "/token"
+          },
+          {
+            "method": "POST",
+            "path": "/update"
+          },
+          {
+            "method": "POST",
+            "path": "/upload"
+          },
+          {
+            "method": "POST",
+            "path": "/upload-articles"
+          },
+          {
+            "method": "POST",
+            "path": "/uploadfile/"
+          },
+          {
+            "method": "POST",
+            "path": "/{article_id}/refresh"
+          },
+          {
+            "method": "POST",
+            "path": "/{path:path}"
+          },
+          {
+            "method": "PUT",
+            "path": "/ak/{ak_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/api/ai/models/classifier"
+          },
+          {
+            "method": "PUT",
+            "path": "/api/settings"
+          },
+          {
+            "method": "PUT",
+            "path": "/items/{item_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/job/fresh"
+          },
+          {
+            "method": "PUT",
+            "path": "/nodes/{node_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/password"
+          },
+          {
+            "method": "PUT",
+            "path": "/task-status"
+          },
+          {
+            "method": "PUT",
+            "path": "/{article_id}/favorite"
+          },
+          {
+            "method": "PUT",
+            "path": "/{article_id}/read"
+          },
+          {
+            "method": "PUT",
+            "path": "/{config_key}"
+          },
+          {
+            "method": "PUT",
+            "path": "/{mp_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/{rule_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/{tag_id}"
+          },
+          {
+            "method": "PUT",
+            "path": "/{task_id}"
+          }
+        ],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "xhs": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 2186,
+        "bytes": 928999631,
+        "sha256": "4bc5f377a51c2cc45386470e6f360a5c218c24ae010ca0372b48ff0204e3b0aa",
+        "extensions": {
+          ".bak": 1,
+          ".before": 7,
+          ".css": 1,
+          ".db": 1,
+          ".example": 1,
+          ".flag": 2,
+          ".html": 5,
+          ".js": 6,
+          ".json": 2056,
+          ".jsonl": 22,
+          ".log": 16,
+          ".md": 2,
+          ".plist": 1,
+          ".py": 58,
+          ".sh": 1,
+          ".txt": 2,
+          "<no_extension>": 4
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".bak": 1,
+          ".before": 7,
+          ".css": 1,
+          ".db": 1,
+          ".example": 1,
+          ".flag": 2,
+          ".html": 5,
+          ".js": 6,
+          ".json": 2056,
+          ".jsonl": 22,
+          ".log": 16,
+          ".md": 2,
+          ".plist": 1,
+          ".py": 58,
+          ".sh": 1,
+          ".txt": 2,
+          "<no_extension>": 4
+        },
+        "bytes_by_extension": {
+          ".bak": 218078,
+          ".before": 209238098,
+          ".css": 126050,
+          ".db": 12288,
+          ".example": 1089,
+          ".flag": 0,
+          ".html": 60493,
+          ".js": 336737,
+          ".json": 716573503,
+          ".jsonl": 1037207,
+          ".log": 746943,
+          ".md": 15161,
+          ".plist": 1770,
+          ".py": 612244,
+          ".sh": 4372,
+          ".txt": 1956,
+          "<no_extension>": 13642
+        },
+        "sqlite": [
+          {
+            "file": "data/state/app.db",
+            "tables": [
+              {
+                "table": "keyword_settings",
+                "row_count": 0
+              }
+            ]
+          }
+        ],
+        "json_top_level_keys": {
+          "code": 1980,
+          "data": 1980,
+          "request_id": 1324,
+          "message": 1324,
+          "message_zh": 1324,
+          "support": 1324,
+          "time": 1324,
+          "time_stamp": 1324,
+          "time_zone": 1324,
+          "docs": 1324,
+          "cache_message": 1324,
+          "cache_message_zh": 1324,
+          "cache_url": 1324,
+          "router": 1324,
+          "params": 1324,
+          "msg": 656,
+          "_cached_at": 114,
+          "batch_id": 19,
+          "runner_pid": 18,
+          "updated_at": 15,
+          "status": 14,
+          "total_keywords": 14,
+          "success_count": 14,
+          "failed_count": 13,
+          "at": 12,
+          "guard_pid": 12,
+          "started_at": 8,
+          "finished_at": 8,
+          "provider": 8,
+          "keyword": 7,
+          "keywords": 7,
+          "current_keyword": 7,
+          "cancel_requested": 7,
+          "current_attempt": 7,
+          "runner_alive": 6,
+          "revive_count": 6,
+          "action": 6,
+          "index": 6,
+          "total": 6,
+          "launched_at": 6
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 2139,
+        "route_count": 40,
+        "routes": [
+          {
+            "method": "DELETE",
+            "path": "/keyword-manage/groups/<group_id>"
+          },
+          {
+            "method": "DELETE",
+            "path": "/keyword-manage/keywords/<keyword_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/account-aliases"
+          },
+          {
+            "method": "GET",
+            "path": "/article-content"
+          },
+          {
+            "method": "GET",
+            "path": "/article-cover-image"
+          },
+          {
+            "method": "GET",
+            "path": "/article-hit-detail"
+          },
+          {
+            "method": "GET",
+            "path": "/article-hit-detail-demo"
+          },
+          {
+            "method": "GET",
+            "path": "/articles"
+          },
+          {
+            "method": "GET",
+            "path": "/articles/accounts"
+          },
+          {
+            "method": "GET",
+            "path": "/creator-detail"
+          },
+          {
+            "method": "GET",
+            "path": "/keyword-manage"
+          },
+          {
+            "method": "GET",
+            "path": "/keyword-turnover"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/account/<account_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/bootstrap"
+          },
+          {
+            "method": "GET",
+            "path": "/monitor-data/keyword/<keyword_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/note-detail"
+          },
+          {
+            "method": "GET",
+            "path": "/penalty-signals"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-all/history"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-all/status"
+          },
+          {
+            "method": "GET",
+            "path": "/refresh-status/<job_id>"
+          },
+          {
+            "method": "GET",
+            "path": "/scheduler/status"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/groups/<group_id>"
+          },
+          {
+            "method": "PATCH",
+            "path": "/keyword-manage/keywords/<keyword_id>"
+          },
+          {
+            "method": "POST",
+            "path": "/article-covers"
+          },
+          {
+            "method": "POST",
+            "path": "/keyword-manage/batch-default"
+          },
+          {
+            "method": "POST",
+            "path": "/keyword-manage/groups"
+          },
+          {
+            "method": "POST",
+            "path": "/keyword-manage/keywords"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/bucket"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/note"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/pin"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/refresh"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/topic"
+          },
+          {
+            "method": "POST",
+            "path": "/keywords/<keyword_id>/unpin"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh-all"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh-all/cancel"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh-all/resume"
+          },
+          {
+            "method": "POST",
+            "path": "/scheduler/config"
+          },
+          {
+            "method": "POST",
+            "path": "/scheduler/trigger"
+          }
+        ],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "geo": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 7946,
+        "bytes": 344717141,
+        "sha256": "047aace531c956c8f59ce4a1c2efa26701ffc4d96b2f18f8d8cfc73dd025f8c3",
+        "extensions": {
+          ".html": 2,
+          ".json": 14,
+          ".md": 7893,
+          ".png": 17,
+          ".py": 10,
+          ".sh": 1,
+          ".sqlite": 1,
+          "<no_extension>": 8
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".html": 2,
+          ".json": 14,
+          ".md": 7893,
+          ".png": 17,
+          ".py": 10,
+          ".sh": 1,
+          ".sqlite": 1,
+          "<no_extension>": 8
+        },
+        "bytes_by_extension": {
+          ".html": 19303708,
+          ".json": 210515521,
+          ".md": 88694913,
+          ".png": 3105762,
+          ".py": 171610,
+          ".sh": 2148,
+          ".sqlite": 22872064,
+          "<no_extension>": 51415
+        },
+        "sqlite": [
+          {
+            "file": "data/index/geopromax.sqlite",
+            "tables": [
+              {
+                "table": "answers",
+                "row_count": 1164
+              },
+              {
+                "table": "batches",
+                "row_count": 6
+              },
+              {
+                "table": "source_metrics",
+                "row_count": 9135
+              },
+              {
+                "table": "source_relations",
+                "row_count": 20028
+              },
+              {
+                "table": "sources",
+                "row_count": 7811
+              },
+              {
+                "table": "suggested_questions",
+                "row_count": 1816
+              },
+              {
+                "table": "tool_search_keywords",
+                "row_count": 3557
+              },
+              {
+                "table": "tools",
+                "row_count": 1071
+              }
+            ]
+          }
+        ],
+        "json_top_level_keys": {
+          "schema_version": 3,
+          "updated_at": 3,
+          "description": 3,
+          "topics": 3,
+          "question_id": 3,
+          "question": 3,
+          "submitted_at": 3,
+          "captured_at": 3,
+          "task_id": 3,
+          "submit_response": 3,
+          "final_response": 3,
+          "summary": 3,
+          "geo_field_fit": 3,
+          "questions": 2,
+          "version": 1,
+          "platforms": 1,
+          "snapshots": 1,
+          "run_id": 1,
+          "started_at": 1,
+          "question_count": 1,
+          "finished_at": 1
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 7920,
+        "route_count": 0,
+        "routes": [],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "wiki": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 25,
+        "bytes": 4411078,
+        "sha256": "db4ccb213b09008af009a7ff026ce864a65a1d0b512c39e95c883d70409f3248",
+        "extensions": {
+          ".bak": 1,
+          ".css": 1,
+          ".html": 4,
+          ".js": 2,
+          ".json": 3,
+          ".log": 1,
+          ".md": 3,
+          ".png": 5,
+          ".py": 4,
+          "<no_extension>": 1
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".bak": 1,
+          ".css": 1,
+          ".html": 4,
+          ".js": 2,
+          ".json": 3,
+          ".log": 1,
+          ".md": 3,
+          ".png": 5,
+          ".py": 4,
+          "<no_extension>": 1
+        },
+        "bytes_by_extension": {
+          ".bak": 1258070,
+          ".css": 47121,
+          ".html": 63460,
+          ".js": 148853,
+          ".json": 1672661,
+          ".log": 1599,
+          ".md": 23070,
+          ".png": 1144117,
+          ".py": 41883,
+          "<no_extension>": 10244
+        },
+        "sqlite": [],
+        "json_top_level_keys": {
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp71WicM6zZakpUImq1jj7RVALcsO8XdAh50Yicqg9ZJ0nqHcc6tvM0rdHmFibku2bVZicRYExCSHRklMvVmnrpP4rQfByHsVdtByfXc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp72P3ztLxPibunWBokd9LFnia7RBcjKe4L6wfE0T1H1PT16g2lBEq4icibBEuMbfdf2Ky1wFHR79iasgYxrdGvhqEsPzHiauicY1aic0K8Y": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp72WxBg5ib6WwDOzzjBwtvI6UmN3FEibaic8IibxQpG1XzPCZ9dX7PVWHANpZuFQuS3n4uZtDy58Sfv8SF28q2SibhnGugVReodzfDjk": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp73I8L1dZIMDkt4QV6nkU48icC4qwbboWIUlTtxMTNibiaZAsvZIm5C9mZzcwvmHReZN2S7PR4dymBFtsMHVeIjia1mzVAJbxLb2H60": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP25eGuMcrZVmCIiceba7zETWj9zGWcHuBQicb8doyIiaMJ8FpFr5UTrBn8oSXz9joDllSxAUaZjqQXzLVTf3OpXFI0DHVvic8GQzhE": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdJ9CibE1hV7I9Vj0SwYrsmo1s7chAMugDnzA8vR7oJ9iarCFuicE6F2pK5icqmONQdZVmHJ7reJCOx5ibQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP12TaeWzGEaicff7fxqF3cVMZ7PppfIoywvHgMhVH7qgHRKCwvcHf1aEM1OqQTU5fhiaj7Ac2wKdFxNLVPzVTfNb2ALIQOmo1CtY": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP1qm7ByHEIz5QyKIbBOyudeY5tFgsRTze6hHMRegHuJeIuNI7SZjBwN8mgLNmPxic4yYbicBZfTicwpEFeA9uNMHhuJNlp48r4VbM": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp73Ylb9z5Fse94MZKnOibE3zudbDw4IoUQ162CTgEtbGQ4FjPZPHpPAYYdnqlpicn1mCvpe4ibMjR1eHorNjaO4rsGdXZNQ44YAdg0": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP0g88GGRKcNGjJ99RearZDWWhp1JjEfhFwBrwGmbZ6xBnr9LmIOuHuk0KHMgOxFCGNZ9B96gEGicg6IN753hqrYic1M3sxUNJZTg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdL31unrCpljXRHhVyU7HKXHS3WrCXhQk5hxsRBYkfAewnxBuMl9z8QJY4T94Jt551enVOAABLlwXA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/UO2FWLDdWQib150xcS1eic5wuicxXxoRuK8jWuN4oUsJoSXTHXIj3ChFoot168n0ia8VXaE4t0FoRqRTA4sZw0AjfdDyG6Cs6sROmtkVw9TqF1M": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZroic85niaX0akMF4VsyHsztzusr3gwe8FVkVkRlaKf7XJvevNSwW2nzjqK5l3pZfWPicZTtBibwQWxAUw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/uRDYLLiatXF7F5upNojiaUuASHPeGxPEbXcJwyFziaIlmxXzO8MTfINID5EtyeeBicApibLPNO6EMKdLuBDWlvqGmKYJ1wAf1u3yEaTv2aFLw91M": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/uRDYLLiatXF50q11Mibibt4wSZ2CSzQdB9bInFqpoOJM8ZAC2tontdd5PXFhicA6SjI3bFNibxDL3lJJZygnyKzvdTSj0iagqGTySQTEzzcLfbI8Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNqMf4lxtY8JpIzibibM2ic2efkuxjQRyg1ic2w1PhpSZh4fjHWqAj7YlwJw": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp70ic6qgUKcWnALK7aPCjp0nziaic0eamorW7rJoWeuUKKmH0z8jibDGeXpbYhTvZJryaTVTe1rOsI79ggQXd6TFD318NUr2ibR0UKhw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibN0PKRG0BR1lmyyQicCffMyHMf2laBms7hxuncMPeX44VWt4DhZEdMHxQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNAXOibAwXVMibmsu3HDOUjMo1ry7uvbJXtd1ku8JWcFUuDjeIyic4CFFDQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNGDObibqQBXCxM2VBr12YRAOaw4A6yveU6rDYmnUDKTjOKdSYmCsYoPA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNsP9rnvrysjAQg1XGmFqibCS4vpOKdmPaqD4CTrHfLaJ8HnWnAibk9wUA": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/mm0SFeTD9mG9NvTfBre0k2skrUqL1dzY0SbzicoNEeqVskPaCkSJVlgvAhWd7xpjf6ENjD4X5oEkscYTFP7Xp8x3WLCx9kE6bmY9ny2uiaCCA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/vv6EicHFdTb1SwElfNEw1piaaxezCYTKyGGMmN62GTj48KlTPqaWt56PwBcT7Jycleech5H0AwxMpgFwGEbOKvKYJLGToGh3RIekbgOFlwBOc": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/vv6EicHFdTb38ynuQ8jCldqlIAHia6n06SRv3YibWwEZF374uOAfzf9cXuEvwOsLUjllCskxoJEibJZW6LibckugaHQEL8t2vWpb3vticOkSpOML4": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/OmA5ibs4X3eHVduGgOd4gQtIEkVroTLkqQwL24KiaHKoBGkSOemF5vvsqpL5aCeYTRVotjWwBAAs4FY8M7AOmX5Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/OmA5ibs4X3eHVduGgOd4gQtIEkVroTLkqRdJwG5dkxAnmSpzfg3xxNlXpye3yVFz0fTSA5vLd5kEdgaVQLqibBgg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibS4dCQOEPeJhjtJjbWicmE8ibkia4v6j782hGyplCDDfgqibjnJZlW9GkiaMg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibSr3gX3QMeLRbE8gKLADE5H0PpXRpSwuaibW2zc7aNuDKZ8arpfNdOy2Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibSG7mBOF6q9qCTqApiavicOL9NJHRqyDtb0XUjBQ7qnzU8ibJ7aiaZMQxSqw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/PXKyvKHFU43ciba38cW7V85ib7S9K9CIWVJal0KsXdyPb0iaphel0qfkO49rVgWPaq3iaI1vxB1xM74HeAibGYh598AXJOEPVUSpzualkI0uyoiaI": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/PXKyvKHFU41Slziaap5qBEzrgKoZiaBaicw1KSibqEOwKokrpT7ibtJUfT9gBOTxibKINEFlbHpwASLnFbHYEI7UicibH9DfnyxiaRXOMlTRqR3lYO7c": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/PXKyvKHFU40wYH0uMwL0wic5GKW6Y4hIQz4SBlfJh2NS3N3pujTY4usCdsym16dzckf3KXia83pkVqcYeHndaVrt95RNiaE75GVsKsvNAJrw5I": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2AGPr5ep3DReqicD0XwvHFjh7DAR7BM3s97xvctyHg9OlZPAhIDkemSRh13flRrWtITibTmJibesmNV7KA2TN4DvbJCqpiaU4D0fM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP1YD90TLaWLI23xYiciaGiaibKKYvd5HBX5DnK3Tkqd8I87jphJ1cw7hhCzGibkFuvT76Qse7lqXKWLliaBIWuVdYdwhA6gjYreaJ0sM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP3c4vbcs3BWKYGSHI2oNmWB6WDicK3DIFX53PrWgiaEYdxTkW2sYmB4I6W9NDZYbicT5hGHaVianTicxkG4qvmCe9oW79jXTy057wwc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2Y1G5D8rE0giaVLLoJC3KDjFxWW6PTfGkrIuUVOnEWru2FXicPD6cnfh0clJBzfPFQricnyYI1DDcjOmTxJ4zCzPNViaZqoSt1XwM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP1szec5SiaY62NeQDhJfriaM6AxDWR4MQRIEibW6YhFMDKYn9ROH6xPnFDyTArVhPBLj4Meicr92v84icPm1MicwumpKXEJA0z0JaUdc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2tQsfWb8KPiaD3kz8tyevk7WGfTiaq06ua8wLect6uAzS0nRfpZXvg61678ZW5kmEVV5epKWEu7bCOibQgsiboRzBbDPtplicPtAiaU": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP36AbT3dic94CVreIXVG46ESnLOD9ZRsiaj2HQwY4wLDesljiaBnY8cgb1XSVtMWIFn5xxfH7HI3UzjNibwmZZ0HApFkjgQr3EKB3E": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP00qSlj8weZ86k6oCfShsVHNFyBZqKaK6Vlp95VAcoQEcbLmTCg1u5u67nf9rYllaXZklSMfMicyCd67jibu9xVqxMhvx4cpbAOU": 2
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 18,
+        "route_count": 0,
+        "routes": [],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "writing_money": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 5,
+        "bytes": 190030,
+        "sha256": "d57b8d352d8076fa24e5c0308360ab30def7b588be9d35d0a9bc257a357270c6",
+        "extensions": {
+          ".css": 1,
+          ".html": 1,
+          ".js": 1,
+          ".md": 2
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".css": 1,
+          ".html": 1,
+          ".js": 1,
+          ".md": 2
+        },
+        "bytes_by_extension": {
+          ".css": 47121,
+          ".html": 12657,
+          ".js": 119865,
+          ".md": 10387
+        },
+        "sqlite": [],
+        "json_top_level_keys": {},
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 5,
+        "route_count": 0,
+        "routes": [],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "wechat_publish": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 650,
+        "bytes": 64952852,
+        "sha256": "57c51ce8c7f5d2685fddff859376af88cb0bff9699f2942c34bd2ea9c72d98eb",
+        "extensions": {
+          ".7z": 1,
+          ".baf": 1,
+          ".baj": 1,
+          ".dat": 1,
+          ".db": 2,
+          ".db-journal": 2,
+          ".gz": 1,
+          ".json": 4,
+          ".ldb": 1,
+          ".log": 12,
+          ".mdc": 4,
+          ".old": 29,
+          ".pb": 8,
+          ".pma": 4,
+          ".py": 41,
+          ".tflite": 8,
+          ".txt": 21,
+          ".yaml": 1,
+          "<no_extension>": 508
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".7z": 1,
+          ".baf": 1,
+          ".baj": 1,
+          ".dat": 1,
+          ".db": 2,
+          ".db-journal": 2,
+          ".gz": 1,
+          ".json": 4,
+          ".ldb": 1,
+          ".log": 12,
+          ".mdc": 4,
+          ".old": 29,
+          ".pb": 8,
+          ".pma": 4,
+          ".py": 41,
+          ".tflite": 8,
+          ".txt": 21,
+          ".yaml": 1,
+          "<no_extension>": 508
+        },
+        "bytes_by_extension": {
+          ".7z": 37939,
+          ".baf": 20,
+          ".baj": 4,
+          ".dat": 40,
+          ".db": 65536,
+          ".db-journal": 0,
+          ".gz": 467851,
+          ".json": 5630,
+          ".ldb": 36727,
+          ".log": 225978,
+          ".mdc": 1894,
+          ".old": 4425,
+          ".pb": 8255,
+          ".pma": 13631488,
+          ".py": 497528,
+          ".tflite": 6962282,
+          ".txt": 399871,
+          ".yaml": 31489,
+          "<no_extension>": 42575895
+        },
+        "sqlite": [
+          {
+            "file": "Publish/config/accounts/account10/chrome_user_data/first_party_sets.db",
+            "tables": [
+              {
+                "table": "browser_context_sets_version",
+                "row_count": 0
+              },
+              {
+                "table": "browser_context_sites_to_clear",
+                "row_count": 0
+              },
+              {
+                "table": "browser_contexts_cleared",
+                "row_count": 1
+              },
+              {
+                "table": "manual_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "meta",
+                "row_count": 4
+              },
+              {
+                "table": "policy_configurations",
+                "row_count": 0
+              },
+              {
+                "table": "public_sets",
+                "row_count": 0
+              }
+            ]
+          },
+          {
+            "file": "Publish/config/accounts/account10/chrome_user_data/Default/heavy_ad_intervention_opt_out.db",
+            "tables": [
+              {
+                "table": "enabled_previews_v1",
+                "row_count": 1
+              },
+              {
+                "table": "previews_v1",
+                "row_count": 0
+              }
+            ]
+          }
+        ],
+        "json_top_level_keys": {
+          "hashes": 2,
+          "accounts": 1,
+          "platforms": 1,
+          "concurrent": 1,
+          "max_concurrent_tasks": 1,
+          "default_timeout": 1
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 78,
+        "route_count": 0,
+        "routes": [],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    },
+    "mother_library": {
+      "present": true,
+      "snapshot": {
+        "exists": true,
+        "file_count": 1296,
+        "bytes": 29688044,
+        "sha256": "38544856c4d38755914b16dcb8dd55c63deb475b08cf400a104c59c0bed51bcd",
+        "extensions": {
+          ".bak": 1,
+          ".css": 1,
+          ".html": 4,
+          ".jpg": 145,
+          ".js": 2,
+          ".json": 8,
+          ".log": 11,
+          ".md": 1051,
+          ".pdf": 5,
+          ".png": 19,
+          ".py": 4,
+          ".toml": 1,
+          ".txt": 2,
+          ".yml": 31,
+          "<no_extension>": 11
+        }
+      },
+      "data_baseline": {
+        "file_counts_by_extension": {
+          ".bak": 1,
+          ".css": 1,
+          ".html": 4,
+          ".jpg": 145,
+          ".js": 2,
+          ".json": 8,
+          ".log": 11,
+          ".md": 1051,
+          ".pdf": 5,
+          ".png": 19,
+          ".py": 4,
+          ".toml": 1,
+          ".txt": 2,
+          ".yml": 31,
+          "<no_extension>": 11
+        },
+        "bytes_by_extension": {
+          ".bak": 1258070,
+          ".css": 47121,
+          ".html": 63460,
+          ".jpg": 2438401,
+          ".js": 148853,
+          ".json": 1682210,
+          ".log": 40806,
+          ".md": 15012522,
+          ".pdf": 4674816,
+          ".png": 3582727,
+          ".py": 41883,
+          ".toml": 9789,
+          ".txt": 174558,
+          ".yml": 418024,
+          "<no_extension>": 94804
+        },
+        "sqlite": [],
+        "json_top_level_keys": {
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp71WicM6zZakpUImq1jj7RVALcsO8XdAh50Yicqg9ZJ0nqHcc6tvM0rdHmFibku2bVZicRYExCSHRklMvVmnrpP4rQfByHsVdtByfXc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp72P3ztLxPibunWBokd9LFnia7RBcjKe4L6wfE0T1H1PT16g2lBEq4icibBEuMbfdf2Ky1wFHR79iasgYxrdGvhqEsPzHiauicY1aic0K8Y": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp72WxBg5ib6WwDOzzjBwtvI6UmN3FEibaic8IibxQpG1XzPCZ9dX7PVWHANpZuFQuS3n4uZtDy58Sfv8SF28q2SibhnGugVReodzfDjk": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp73I8L1dZIMDkt4QV6nkU48icC4qwbboWIUlTtxMTNibiaZAsvZIm5C9mZzcwvmHReZN2S7PR4dymBFtsMHVeIjia1mzVAJbxLb2H60": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP25eGuMcrZVmCIiceba7zETWj9zGWcHuBQicb8doyIiaMJ8FpFr5UTrBn8oSXz9joDllSxAUaZjqQXzLVTf3OpXFI0DHVvic8GQzhE": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdJ9CibE1hV7I9Vj0SwYrsmo1s7chAMugDnzA8vR7oJ9iarCFuicE6F2pK5icqmONQdZVmHJ7reJCOx5ibQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP12TaeWzGEaicff7fxqF3cVMZ7PppfIoywvHgMhVH7qgHRKCwvcHf1aEM1OqQTU5fhiaj7Ac2wKdFxNLVPzVTfNb2ALIQOmo1CtY": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP1qm7ByHEIz5QyKIbBOyudeY5tFgsRTze6hHMRegHuJeIuNI7SZjBwN8mgLNmPxic4yYbicBZfTicwpEFeA9uNMHhuJNlp48r4VbM": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/JgKQun5Cp73Ylb9z5Fse94MZKnOibE3zudbDw4IoUQ162CTgEtbGQ4FjPZPHpPAYYdnqlpicn1mCvpe4ibMjR1eHorNjaO4rsGdXZNQ44YAdg0": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/O1oFUTFpDP0g88GGRKcNGjJ99RearZDWWhp1JjEfhFwBrwGmbZ6xBnr9LmIOuHuk0KHMgOxFCGNZ9B96gEGicg6IN753hqrYic1M3sxUNJZTg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdL31unrCpljXRHhVyU7HKXHS3WrCXhQk5hxsRBYkfAewnxBuMl9z8QJY4T94Jt551enVOAABLlwXA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/UO2FWLDdWQib150xcS1eic5wuicxXxoRuK8jWuN4oUsJoSXTHXIj3ChFoot168n0ia8VXaE4t0FoRqRTA4sZw0AjfdDyG6Cs6sROmtkVw9TqF1M": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZroic85niaX0akMF4VsyHsztzusr3gwe8FVkVkRlaKf7XJvevNSwW2nzjqK5l3pZfWPicZTtBibwQWxAUw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/uRDYLLiatXF7F5upNojiaUuASHPeGxPEbXcJwyFziaIlmxXzO8MTfINID5EtyeeBicApibLPNO6EMKdLuBDWlvqGmKYJ1wAf1u3yEaTv2aFLw91M": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/uRDYLLiatXF50q11Mibibt4wSZ2CSzQdB9bInFqpoOJM8ZAC2tontdd5PXFhicA6SjI3bFNibxDL3lJJZygnyKzvdTSj0iagqGTySQTEzzcLfbI8Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNqMf4lxtY8JpIzibibM2ic2efkuxjQRyg1ic2w1PhpSZh4fjHWqAj7YlwJw": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/JgKQun5Cp70ic6qgUKcWnALK7aPCjp0nziaic0eamorW7rJoWeuUKKmH0z8jibDGeXpbYhTvZJryaTVTe1rOsI79ggQXd6TFD318NUr2ibR0UKhw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibN0PKRG0BR1lmyyQicCffMyHMf2laBms7hxuncMPeX44VWt4DhZEdMHxQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNAXOibAwXVMibmsu3HDOUjMo1ry7uvbJXtd1ku8JWcFUuDjeIyic4CFFDQ": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNGDObibqQBXCxM2VBr12YRAOaw4A6yveU6rDYmnUDKTjOKdSYmCsYoPA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_jpg/Uo8SjRYXVdLLgOm6Jbvk0kibmib4v0lUibNsP9rnvrysjAQg1XGmFqibCS4vpOKdmPaqD4CTrHfLaJ8HnWnAibk9wUA": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/mm0SFeTD9mG9NvTfBre0k2skrUqL1dzY0SbzicoNEeqVskPaCkSJVlgvAhWd7xpjf6ENjD4X5oEkscYTFP7Xp8x3WLCx9kE6bmY9ny2uiaCCA": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/vv6EicHFdTb1SwElfNEw1piaaxezCYTKyGGMmN62GTj48KlTPqaWt56PwBcT7Jycleech5H0AwxMpgFwGEbOKvKYJLGToGh3RIekbgOFlwBOc": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/vv6EicHFdTb38ynuQ8jCldqlIAHia6n06SRv3YibWwEZF374uOAfzf9cXuEvwOsLUjllCskxoJEibJZW6LibckugaHQEL8t2vWpb3vticOkSpOML4": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/OmA5ibs4X3eHVduGgOd4gQtIEkVroTLkqQwL24KiaHKoBGkSOemF5vvsqpL5aCeYTRVotjWwBAAs4FY8M7AOmX5Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/OmA5ibs4X3eHVduGgOd4gQtIEkVroTLkqRdJwG5dkxAnmSpzfg3xxNlXpye3yVFz0fTSA5vLd5kEdgaVQLqibBgg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibS4dCQOEPeJhjtJjbWicmE8ibkia4v6j782hGyplCDDfgqibjnJZlW9GkiaMg": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibSr3gX3QMeLRbE8gKLADE5H0PpXRpSwuaibW2zc7aNuDKZ8arpfNdOy2Q": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/oC6IG50OZrqajLQVnJ2JiaLBe6Uss3CibSG7mBOF6q9qCTqApiavicOL9NJHRqyDtb0XUjBQ7qnzU8ibJ7aiaZMQxSqw": 2,
+          "https://mmbiz.qpic.cn/sz_mmbiz_png/PXKyvKHFU43ciba38cW7V85ib7S9K9CIWVJal0KsXdyPb0iaphel0qfkO49rVgWPaq3iaI1vxB1xM74HeAibGYh598AXJOEPVUSpzualkI0uyoiaI": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/PXKyvKHFU41Slziaap5qBEzrgKoZiaBaicw1KSibqEOwKokrpT7ibtJUfT9gBOTxibKINEFlbHpwASLnFbHYEI7UicibH9DfnyxiaRXOMlTRqR3lYO7c": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/PXKyvKHFU40wYH0uMwL0wic5GKW6Y4hIQz4SBlfJh2NS3N3pujTY4usCdsym16dzckf3KXia83pkVqcYeHndaVrt95RNiaE75GVsKsvNAJrw5I": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2AGPr5ep3DReqicD0XwvHFjh7DAR7BM3s97xvctyHg9OlZPAhIDkemSRh13flRrWtITibTmJibesmNV7KA2TN4DvbJCqpiaU4D0fM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP1YD90TLaWLI23xYiciaGiaibKKYvd5HBX5DnK3Tkqd8I87jphJ1cw7hhCzGibkFuvT76Qse7lqXKWLliaBIWuVdYdwhA6gjYreaJ0sM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP3c4vbcs3BWKYGSHI2oNmWB6WDicK3DIFX53PrWgiaEYdxTkW2sYmB4I6W9NDZYbicT5hGHaVianTicxkG4qvmCe9oW79jXTy057wwc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2Y1G5D8rE0giaVLLoJC3KDjFxWW6PTfGkrIuUVOnEWru2FXicPD6cnfh0clJBzfPFQricnyYI1DDcjOmTxJ4zCzPNViaZqoSt1XwM": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP1szec5SiaY62NeQDhJfriaM6AxDWR4MQRIEibW6YhFMDKYn9ROH6xPnFDyTArVhPBLj4Meicr92v84icPm1MicwumpKXEJA0z0JaUdc": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP2tQsfWb8KPiaD3kz8tyevk7WGfTiaq06ua8wLect6uAzS0nRfpZXvg61678ZW5kmEVV5epKWEu7bCOibQgsiboRzBbDPtplicPtAiaU": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP36AbT3dic94CVreIXVG46ESnLOD9ZRsiaj2HQwY4wLDesljiaBnY8cgb1XSVtMWIFn5xxfH7HI3UzjNibwmZZ0HApFkjgQr3EKB3E": 2,
+          "https://mmbiz.qpic.cn/mmbiz_png/O1oFUTFpDP00qSlj8weZ86k6oCfShsVHNFyBZqKaK6Vlp95VAcoQEcbLmTCg1u5u67nf9rYllaXZklSMfMicyCd67jibu9xVqxMhvx4cpbAOU": 2
+        },
+        "note": "仅记录数量、大小、SQLite 表名/行数和 JSON 顶层键；不记录正文、主键值、Cookie、Token 或原始路径。"
+      },
+      "api_contract_summary": {
+        "files_scanned": 1113,
+        "route_count": 0,
+        "routes": [],
+        "note": "静态正则摘要；未执行服务、未调用外部 API，不能替代运行态契约验收。"
+      }
+    }
+  },
+  "security_scan": {
+    "files_scanned": 110936,
+    "finding_counts_by_category": {
+      "absolute_sensitive_path": 13222,
+      "api_key": 16,
+      "cookie": 67,
+      "password": 22,
+      "token": 2
+    },
+    "finding_file_counts_by_category": {
+      "absolute_sensitive_path": 13222,
+      "api_key": 16,
+      "cookie": 67,
+      "password": 22,
+      "token": 2
+    },
+    "raw_matches_omitted": true,
+    "scope": "Git tracked files plus current worktree text/log/json/md files; external legacy source is summarized separately and not copied into evidence.",
+    "interpretation": "命中可能是变量名、文档说明或真实凭证，需人工复核；本摘要不输出匹配内容。",
+    "git_history": {
+      "status": "FAIL",
+      "matching_commit_count": 1,
+      "finding_counts_by_category": {
+        "secret_shaped_history_match": 1
+      },
+      "raw_matches_omitted": true,
+      "note": "扫描所有本地可见 Git 历史的差异行，仅保留数量，不输出提交内容。"
+    }
+  },
+  "legacy_api_log_scan": {
+    "candidate_file_count": 18322,
+    "files_scanned": 18073,
+    "finding_counts_by_category": {
+      "absolute_sensitive_path": 13750,
+      "api_key": 1,
+      "cookie": 5,
+      "password": 21
+    },
+    "raw_matches_omitted": true,
+    "scope": "七套原系统及母文章库中名称/扩展名疑似 API、请求、响应、历史或日志的文本文件；单文件上限 20 MiB。",
+    "note": "只记录命中数量，不复制原始日志/API 响应，也不记录外部绝对路径。"
+  },
+  "write_boundary": {
+    "allowed": [
+      "workbench/scripts",
+      "tests",
+      "docs",
+      "data",
+      "asset_store"
+    ],
+    "observed_commit_scope": "由提交前 git diff --name-only 人工复核",
+    "status": "NOT RUN",
+    "reason": "脚本只能提供当前快照；最终目录边界需结合本次提交 diff 判定。"
+  }
+}
