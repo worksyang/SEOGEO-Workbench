@@ -220,16 +220,10 @@ def _extract_category(path: Path, root: Path) -> str:
 
 
 def content_id_for_source(connection: sqlite3.Connection, source_ref: str, content_hash: str) -> str:
-    """优先复用已入库 identifier，其次以正文哈希识别移动文件。"""
+    """以 Wiki source_ref 作为文件资产身份，避免重复正文合并掉可追溯索引。"""
     row = connection.execute(
         "SELECT content_id FROM content_identifiers WHERE namespace=? AND external_id=?",
         (IDENTIFIER_NAMESPACE, source_ref),
-    ).fetchone()
-    if row:
-        return str(row[0])
-    row = connection.execute(
-        "SELECT content_id FROM contents WHERE content_hash=? AND content_type IN ('mother_article', 'knowledge_article') LIMIT 1",
-        (content_hash,),
     ).fetchone()
     if row:
         return str(row[0])

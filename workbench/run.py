@@ -19,6 +19,7 @@ from content_hub.db.connection import connect  # noqa: E402
 from content_hub.db.migrations import migrate  # noqa: E402
 from content_hub.services.signals import SignalsService, load_platform_rules  # noqa: E402
 from content_hub.db.writer_lock import writer_lock  # noqa: E402
+from content_hub.services.wiki import WikiService  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +34,22 @@ def parse_args() -> argparse.Namespace:
         "--backfill-core",
         action="store_true",
         help="受控回填 platforms 并重算 signals；不抓取评论、不创建生产任务",
+    )
+    parser.add_argument(
+        "--wiki-import",
+        action="store_true",
+        help="扫描已配置 Wiki 允许根；默认仅 dry-run，不写入 Hub",
+    )
+    parser.add_argument(
+        "--confirm-wiki-import",
+        action="store_true",
+        help="确认执行 Wiki 导入；只允许写入 Hub 与 asset_store 工作副本，不回写原目录",
+    )
+    parser.add_argument(
+        "--wiki-max-files",
+        type=int,
+        default=2000,
+        help="Wiki 导入最多接收的 Markdown 数量，默认 2000",
     )
     return parser.parse_args()
 
@@ -92,6 +109,26 @@ def main() -> None:
                 }
                 connection.commit()
         print(json.dumps({"ok": True, "data": result}, ensure_ascii=False, indent=2))
+        return
+
+    if args.wiki_import:
+        if args.wiki_max_files < 1:
+            raise SystemExit("--wiki-max-files 必须是正整数")
+        migrate(settings)
+        confirming = bool(args.confirm_wiki_import)
+        with connect(settings, readonly=not confirming) as connection:
+            service = WikiService(
+                connection=connection,
+                asset_root=settings.asset_store_path,
+                source_roots=settings.wiki_allowed_roots,
+                lock_path=settings.lock_path,
+            )
+            result = service.import_wiki(
+                confirm=confirming,
+                max_files=args.wiki_max_files,
+                operator="cli/wiki-import",
+            )
+        print(json.dumps({"ok": result.get("status") != "blocked", "data": result}, ensure_ascii=False, indent=2))
         return
 
     if args.check:

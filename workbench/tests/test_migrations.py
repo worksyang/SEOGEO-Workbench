@@ -26,6 +26,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (7, "source_manifest_backfill"),
         (8, "core_fill_indexes"),
         (9, "geo_reconciliation"),
+        (10, "wiki_import_indexes"),
     ]
 
 

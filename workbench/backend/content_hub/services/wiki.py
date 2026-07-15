@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..domain.ids import generate_ulid_like
+from ..domain.ids import content_id_from_text
 from ..errors import AppError
 from ..adapters.wiki import (
     DEFAULT_MAX_FILES,
@@ -112,6 +113,54 @@ class WikiService:
         )
         return version_id
 
+    def _ensure_import_baseline(
+        self,
+        *,
+        content_id: str,
+        source_ref: str,
+        source_path: Path,
+        source_bytes: bytes,
+    ) -> str:
+        """为导入文件建立可恢复的 baseline；原始目录永远不写入。
+
+        workspace 是工作副本，首次导入时复制一次，后续导入绝不覆盖它。
+        版本索引按来源文件 hash 幂等，来源变化时追加新的 baseline，保留旧证据。
+        """
+        file_hash = hashlib.sha256(source_bytes).hexdigest()
+        content_hash = hashlib.sha256(source_bytes.strip()).hexdigest()
+        existing = self._conn.execute(
+            """
+            SELECT version_id FROM wiki_file_versions
+            WHERE content_id=? AND source_ref=? AND file_hash=? AND content_hash=?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """,
+            (content_id, source_ref, file_hash, content_hash),
+        ).fetchone()
+        if existing:
+            return str(existing["version_id"])
+
+        workspace_path = self._ensure_workspace_baseline(source_ref, source_path)
+        latest = self._latest_version_id(content_id)
+        if latest:
+            # 只有旧的 baseline 可以被标记为 superseded；草稿/发布版本不可破坏。
+            self._conn.execute(
+                """
+                UPDATE wiki_file_versions
+                SET version_status='superseded'
+                WHERE version_id=? AND version_status='baseline'
+                """,
+                (latest,),
+            )
+        return self._record_version(
+            content_id=content_id,
+            source_ref=source_ref,
+            workspace_path=workspace_path,
+            content=source_bytes,
+            status="baseline",
+            actor_id="system/wiki-import",
+            parent_version_id=latest,
+        )
+
     def _latest_version_id(self, content_id: str) -> str | None:
         row = self._conn.execute(
             """
@@ -166,6 +215,71 @@ class WikiService:
             ),
         )
 
+    def _repair_duplicate_source_identities(self) -> int:
+        """修复旧版按正文 hash 合并造成的同正文多 source_ref。
+
+        只拆分 Wiki 自己的身份与关系，保留第一条已有 content_id 及其跨系统事实。
+        """
+        repaired = 0
+        duplicate_groups = self._conn.execute(
+            """
+            SELECT content_id, GROUP_CONCAT(external_id, '||') AS refs
+            FROM content_identifiers
+            WHERE namespace='wiki.source_ref'
+            GROUP BY content_id HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        columns = [
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(contents)").fetchall()
+            if row["name"] != "content_id"
+        ]
+        for group in duplicate_groups:
+            refs = sorted(str(group["refs"]).split("||"))
+            for source_ref in refs[1:]:
+                new_id = content_id_from_text("wiki.source_ref", source_ref)
+                if self._conn.execute(
+                    "SELECT 1 FROM contents WHERE content_id=?", (new_id,)
+                ).fetchone():
+                    continue
+                old_id = str(group["content_id"])
+                row = self._conn.execute(
+                    "SELECT * FROM contents WHERE content_id=?", (old_id,)
+                ).fetchone()
+                if not row:
+                    continue
+                values = [row[column] for column in columns]
+                placeholders = ", ".join(["?"] * (len(columns) + 1))
+                self._conn.execute(
+                    f"INSERT INTO contents(content_id, {', '.join(columns)}) VALUES ({placeholders})",
+                    [new_id, *values],
+                )
+                self._conn.execute(
+                    """
+                    UPDATE content_identifiers SET content_id=?
+                    WHERE namespace='wiki.source_ref' AND external_id=?
+                    """,
+                    (new_id, source_ref),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE content_discoveries
+                    SET content_id=?
+                    WHERE content_id=? AND discovery_system='wiki'
+                      AND (source_ref=? OR source_ref LIKE ?)
+                    """,
+                    (new_id, old_id, source_ref, f"%/{source_ref}"),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE wiki_file_versions SET content_id=?
+                    WHERE content_id=? AND source_ref=?
+                    """,
+                    (new_id, old_id, source_ref),
+                )
+                repaired += 1
+        return repaired
+
     def import_wiki(
         self,
         *,
@@ -195,6 +309,7 @@ class WikiService:
                 "truncated": False, "rejections": [],
             }
 
+        repaired_identities = self._repair_duplicate_source_identities()
         raw, adapter_status, scan = make_batch(self._conn, wiki_root=root, max_files=max_files)
         result: dict[str, Any] = {
             "status": "degraded" if scan.rejected else "ready",
@@ -206,6 +321,7 @@ class WikiService:
             "truncated": scan.truncated,
             "max_files": max_files,
             "rejections": list(scan.rejected),
+            "repaired_identities": repaired_identities,
             "classification": {
                 "mother_article": sum(
                     1 for item in scan.files
@@ -307,6 +423,23 @@ class WikiService:
             result["processed"] = scan.accepted - len(
                 [error for error in pipeline_result.errors if error.get("scope") == "content"]
             )
+            baseline_versions = 0
+            for path, _title, _category, _content_hash, _text in scan.files:
+                source_ref = path.relative_to(scan.root).as_posix()
+                content_id = content_id_for_source(
+                    self._conn,
+                    source_ref,
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
+                version_id = self._ensure_import_baseline(
+                    content_id=content_id,
+                    source_ref=source_ref,
+                    source_path=path,
+                    source_bytes=path.read_bytes(),
+                )
+                if version_id:
+                    baseline_versions += 1
+            result["baseline_versions"] = baseline_versions
             result["batch_id"] = pipeline_result.batch_id
             result["records_written"] = pipeline_result.records_written
             result["records_failed"] = pipeline_result.records_failed
