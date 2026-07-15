@@ -17,6 +17,8 @@ from content_hub.config import Settings  # noqa: E402
 from content_hub.db.backup import create_backup  # noqa: E402
 from content_hub.db.connection import connect  # noqa: E402
 from content_hub.db.migrations import migrate  # noqa: E402
+from content_hub.services.signals import SignalsService, load_platform_rules  # noqa: E402
+from content_hub.db.writer_lock import writer_lock  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--migrate-only", action="store_true", help="仅执行数据库迁移")
     parser.add_argument("--backup", action="store_true", help="执行一次带完整性校验的在线备份")
     parser.add_argument("--check", action="store_true", help="检查配置、数据库和前端构建")
+    parser.add_argument(
+        "--backfill-core",
+        action="store_true",
+        help="受控回填 platforms 并重算 signals；不抓取评论、不创建生产任务",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +74,24 @@ def main() -> None:
         migrate(settings)
         backup_path = create_backup(settings)
         print(json.dumps({"ok": True, "backup_path": str(backup_path)}, ensure_ascii=False))
+        return
+
+    if args.backfill_core:
+        migrate(settings)
+        with writer_lock(settings.lock_path):
+            with connect(settings, readonly=False) as connection:
+                service = SignalsService(
+                    connection,
+                    platform_rules=load_platform_rules(settings.geo_platforms_path),
+                )
+                result = {
+                    "platforms": service.backfill_platforms(),
+                    "signals": service.recompute_all(),
+                    "comments_written": 0,
+                    "production_jobs_written": 0,
+                }
+                connection.commit()
+        print(json.dumps({"ok": True, "data": result}, ensure_ascii=False, indent=2))
         return
 
     if args.check:

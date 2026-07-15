@@ -24,6 +24,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (5, "v33_runtime_layers"),
         (6, "writing_runtime_receipts"),
         (7, "source_manifest_backfill"),
+        (8, "core_fill_indexes"),
     ]
 
 

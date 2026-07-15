@@ -1,190 +1,629 @@
-"""信号服务：阅读暴增 / 排名变化 / 新收录 / 新账号 / 评论异常。
+"""跨系统平台回填与可复算信号。
 
-实现 v3.2 §10，所有 signal 都可被重算，可携带 model_version 幂等。
+本模块只消费 Hub 已存在的事实表，不访问旧系统、不创建评论、不创建生产任务。
+回填和重算均使用稳定指纹，重复执行不会新增重复事实。
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
-from ..domain.ids import generate_ulid_like
+from ..services.audit import AuditService
 from ..validation.timestamps import utc_now_iso
 
-SIGNAL_MODEL = "v3.2.0"
+SIGNAL_MODEL = "v3.3.0"
+_SYSTEM_PLATFORM_ALIASES = {
+    "微信搜索结果": "wechat-search",
+    "微信搜一搜": "wechat-search",
+    "公众号": "wechat-mp",
+    "小红书": "xiaohongshu",
+}
+def load_platform_rules(path: Path | None) -> dict[str, str]:
+    """读取 GEO 已有的平台别名规则；文件不存在时不推断新别名。"""
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    aliases: dict[str, str] = {}
+    for canonical, metadata in (payload.get("platforms") or {}).items():
+        canonical = str(canonical).strip()
+        if not canonical:
+            continue
+        aliases[canonical.casefold()] = canonical
+        for alias in (metadata or {}).get("aliases") or []:
+            value = str(alias).strip()
+            if value:
+                aliases[value.casefold()] = canonical
+    return aliases
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _date(value: str | None) -> str | None:
+    if not value:
+        return None
+    return str(value)[:10]
+
+
+def _fingerprint(*parts: Any) -> str:
+    raw = "\x1f".join("" if part is None else str(part) for part in parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 class SignalsService:
-    """信号计算入口。可手动执行，也可被定时任务触发。"""
+    """平台回填、信号重算和信号查询。连接的事务由调用方负责。"""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        platform_rules: dict[str, str] | None = None,
+    ):
         self._conn = connection
-
-    # ── 公共方法 ────────────────────────────────────────────
-
-    def detect_all(self) -> dict[str, int]:
-        today = utc_now_iso()[:10]
-        return {
-            "read_spike": self.detect_read_spikes(today),
-            "new_keyword": self.detect_new_keyword_entries(today),
-            "rank_change": self.detect_rank_changes(today),
-            "new_creator": self.detect_new_creators(today),
-            "comment_anomaly": self.detect_comment_anomalies(today),
+        self._platform_rules = {
+            str(key).casefold(): str(value).strip()
+            for key, value in (platform_rules or {}).items()
+            if str(key).strip() and str(value).strip()
         }
 
-    def detect_read_spikes(self, signal_date: str, threshold: float = 0.5) -> int:
-        """对累计型阅读指标比较最近 2 个有效观测点，增速 > 50% 触发。"""
+    # ── 平台回填 ────────────────────────────────────────────
+
+    def backfill_platforms(self) -> dict[str, Any]:
+        """从已有身份、快照、指标、内容和 GEO 来源安全回填 platforms。"""
+        observations: dict[str, dict[str, Any]] = {}
+
+        def observe(raw: Any, source: str) -> None:
+            value = str(raw or "").strip()
+            if not value:
+                return
+            canonical = self._canonical_platform(value)
+            if not canonical:
+                return
+            item = observations.setdefault(
+                canonical.casefold(),
+                {
+                    "canonical_name": canonical,
+                    "aliases": set(),
+                    "sources": Counter(),
+                    "raw_values": Counter(),
+                },
+            )
+            item["sources"][source] += 1
+            item["raw_values"][value] += 1
+            if value.casefold() != canonical.casefold():
+                item["aliases"].add(value)
+
+        for row in self._conn.execute("SELECT platform FROM creators WHERE platform IS NOT NULL"):
+            observe(row["platform"], "creators.platform")
+        for row in self._conn.execute("SELECT platform FROM keywords WHERE platform IS NOT NULL"):
+            observe(row["platform"], "keywords.platform")
+        for row in self._conn.execute("SELECT platform FROM search_snapshots WHERE platform IS NOT NULL"):
+            observe(row["platform"], "search_snapshots.platform")
+        for row in self._conn.execute("SELECT platform FROM metric_definitions WHERE platform IS NOT NULL"):
+            observe(row["platform"], "metric_definitions.platform")
+
+        # contents.domain 只有在已有 GEO 规则或明确域名/系统名时才进入，避免把分类名伪装成平台。
+        for row in self._conn.execute("SELECT domain FROM contents WHERE domain IS NOT NULL"):
+            value = str(row["domain"]).strip()
+            if value.casefold() in self._platform_rules or value.casefold() in _SYSTEM_PLATFORM_ALIASES:
+                observe(value, "contents.domain")
+            elif "." in value and " " not in value:
+                observe(value, "contents.domain")
+
+        for row in self._conn.execute("SELECT payload_json FROM geo_source_relations"):
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            source_fact = payload.get("source_fact") or {}
+            for key in ("canonical_platform", "platform", "raw_platform"):
+                observe(source_fact.get(key), f"geo_source_relations.source_fact.{key}")
+
+        counts = Counter()
+        existing_rows = self._conn.execute("SELECT * FROM platforms").fetchall()
+        duplicate_groups: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for row in existing_rows:
+            duplicate_groups[str(row["canonical_name"]).casefold()].append(row)
+        for duplicate_rows in duplicate_groups.values():
+            if len(duplicate_rows) < 2:
+                continue
+            keeper = sorted(
+                duplicate_rows,
+                key=lambda row: (str(row["canonical_name"]).casefold(), str(row["canonical_name"])),
+            )[0]
+            aliases = set()
+            payload: dict[str, Any] = {}
+            source_counts: Counter[str] = Counter()
+            raw_counts: Counter[str] = Counter()
+            for row in duplicate_rows:
+                aliases.update(str(value) for value in self._decode_list(row["aliases_json"]))
+                row_payload = self._decode_object(row["payload_json"])
+                source_counts.update(row_payload.get("source_counts") or {})
+                raw_counts.update(row_payload.get("observed_value_counts") or {})
+                payload.update(
+                    {
+                        key: value
+                        for key, value in row_payload.items()
+                        if key not in {"source_counts", "observed_value_counts"}
+                    }
+                )
+                if str(row["canonical_name"]) != str(keeper["canonical_name"]):
+                    aliases.add(str(row["canonical_name"]))
+            payload["source_counts"] = dict(sorted(source_counts.items()))
+            payload["observed_value_counts"] = dict(
+                sorted(raw_counts.items(), key=lambda pair: pair[0].casefold())
+            )
+            self._conn.execute(
+                "UPDATE platforms SET aliases_json = ?, payload_json = ? WHERE platform_key = ?",
+                (_json(sorted(aliases, key=str.casefold)), _json(payload), keeper["platform_key"]),
+            )
+            for row in duplicate_rows:
+                if row["platform_key"] != keeper["platform_key"]:
+                    self._conn.execute(
+                        "DELETE FROM platforms WHERE platform_key = ?",
+                        (row["platform_key"],),
+                    )
+                    counts["deduplicated"] += 1
+        existing = {
+            str(row["canonical_name"]).casefold(): row
+            for row in self._conn.execute("SELECT * FROM platforms")
+        }
+        used_keys = {
+            str(row["platform_key"])
+            for row in self._conn.execute("SELECT platform_key FROM platforms")
+        }
+        for observation_key in sorted(observations):
+            item = observations[observation_key]
+            canonical = item["canonical_name"]
+            aliases = sorted(item["aliases"], key=str.casefold)
+            source_counts = dict(sorted(item["sources"].items()))
+            raw_counts = dict(sorted(item["raw_values"].items(), key=lambda pair: pair[0].casefold()))
+            payload = {
+                "backfill_version": SIGNAL_MODEL,
+                "source_counts": source_counts,
+                "observed_value_counts": raw_counts,
+            }
+            match = existing.get(canonical.casefold())
+            if match:
+                old_aliases = self._decode_list(match["aliases_json"])
+                merged_aliases = sorted(
+                    {str(value).strip() for value in old_aliases + aliases if str(value).strip()},
+                    key=str.casefold,
+                )
+                old_payload = self._decode_object(match["payload_json"])
+                old_payload.update(payload)
+                changed = (
+                    match["aliases_json"] != _json(merged_aliases)
+                    or match["payload_json"] != _json(old_payload)
+                )
+                if changed:
+                    self._conn.execute(
+                        """
+                        UPDATE platforms
+                        SET aliases_json = ?, payload_json = ?, active = 1
+                        WHERE platform_key = ?
+                        """,
+                        (_json(merged_aliases), _json(old_payload), match["platform_key"]),
+                    )
+                    counts["updated"] += 1
+                else:
+                    counts["unchanged"] += 1
+                continue
+
+            platform_key = f"plat_{_fingerprint(canonical.casefold())}"
+            if platform_key in used_keys:
+                # 24 位指纹碰撞极少，但回填不能因碰撞中断；后缀仍由事实名
+                # 稳定计算，重复执行会得到同一个 key。
+                platform_key = f"{platform_key}_{_fingerprint(canonical)}"
+                suffix = 2
+                while platform_key in used_keys:
+                    platform_key = (
+                        f"plat_{_fingerprint(canonical.casefold())}_"
+                        f"{_fingerprint(canonical, suffix)}"
+                    )
+                    suffix += 1
+            self._conn.execute(
+                """
+                INSERT INTO platforms(
+                    platform_key, canonical_name, aliases_json, active, payload_json
+                ) VALUES (?, ?, ?, 1, ?)
+                """,
+                (platform_key, canonical, _json(aliases), _json(payload)),
+            )
+            used_keys.add(platform_key)
+            counts["inserted"] += 1
+
+        audit_id = AuditService(self._conn).record(
+            action="platforms.backfill",
+            subject_type="platforms",
+            subject_id="cross-system",
+            actor_id="system",
+            actor_type="system",
+            details={
+                "model_version": SIGNAL_MODEL,
+                "candidate_platforms": len(observations),
+                "inserted": counts["inserted"],
+                "updated": counts["updated"],
+                "unchanged": counts["unchanged"],
+                "deduplicated": counts["deduplicated"],
+                "source_counts": {
+                    source: sum(item["sources"][source] for item in observations.values())
+                    for source in sorted({source for item in observations.values() for source in item["sources"]})
+                },
+            },
+        )
+        return {
+            "candidate_platforms": len(observations),
+            "inserted": counts["inserted"],
+            "updated": counts["updated"],
+            "unchanged": counts["unchanged"],
+            "deduplicated": counts["deduplicated"],
+            "audit_id": audit_id,
+        }
+
+    def _canonical_platform(self, value: str) -> str:
+        folded = value.casefold()
+        return (
+            self._platform_rules.get(folded)
+            or _SYSTEM_PLATFORM_ALIASES.get(folded)
+            or value
+        )
+
+    @staticmethod
+    def _decode_list(value: str | None) -> list[Any]:
+        try:
+            decoded = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+        return decoded if isinstance(decoded, list) else []
+
+    @staticmethod
+    def _decode_object(value: str | None) -> dict[str, Any]:
+        try:
+            decoded = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    # ── 信号重算 ────────────────────────────────────────────
+
+    def recompute_all(
+        self,
+        *,
+        signal_date: str | None = None,
+        threshold: float = 0.5,
+    ) -> dict[str, Any]:
+        results = {
+            "read_spike": self._detect_read_spikes_stats(signal_date, threshold=threshold),
+            "new_keyword_entry": self._detect_new_keyword_entries_stats(signal_date),
+            "rank_change": self._detect_rank_changes_stats(signal_date),
+            "new_creator": self._detect_new_creators_stats(signal_date),
+            "comment_anomaly": self._detect_comment_anomalies_stats(signal_date),
+        }
+        totals = Counter()
+        for result in results.values():
+            for key, value in result.items():
+                if key != "signal_type":
+                    totals[key] += value
+        audit_id = AuditService(self._conn).record(
+            action="signals.recompute",
+            subject_type="signals",
+            subject_id=signal_date or "all-dates",
+            actor_id="system",
+            actor_type="system",
+            details={
+                "model_version": SIGNAL_MODEL,
+                "signal_date": signal_date,
+                "threshold": threshold,
+                "by_type": results,
+                "totals": dict(totals),
+                "comments_present": self._conn.execute(
+                    "SELECT COUNT(*) FROM comments"
+                ).fetchone()[0],
+                "production_jobs_touched": 0,
+            },
+        )
+        return {"by_type": results, "totals": dict(totals), "audit_id": audit_id}
+
+    def detect_all(self) -> dict[str, int]:
+        """兼容旧触发器：只检测今天，返回每类实际新增/更新数。"""
+        today = utc_now_iso()[:10]
+        result = self.recompute_all(signal_date=today)
+        return {
+            signal_type: int(details["inserted"] + details["updated"])
+            for signal_type, details in result["by_type"].items()
+        }
+
+    def detect_read_spikes(
+        self,
+        signal_date: str | None,
+        *,
+        threshold: float = 0.5,
+    ) -> int:
+        return self._detect_read_spikes_stats(signal_date, threshold=threshold)["candidates"]
+
+    def _detect_read_spikes_stats(
+        self,
+        signal_date: str | None,
+        *,
+        threshold: float = 0.5,
+    ) -> dict[str, int]:
         rows = self._conn.execute(
             """
-            WITH ranked AS (
-                SELECT o.*, ROW_NUMBER() OVER (
-                    PARTITION BY subject_type, subject_id, metric_key
-                    ORDER BY observed_at DESC
-                ) AS rn
+            WITH ordered AS (
+                SELECT o.observation_id, o.subject_type, o.subject_id, o.metric_key,
+                       o.observed_at, o.numeric_value, o.source_ref,
+                       LAG(o.numeric_value) OVER (
+                           PARTITION BY o.subject_type, o.subject_id, o.metric_key
+                           ORDER BY o.observed_at, o.observation_id
+                       ) AS previous_value,
+                       LAG(o.observed_at) OVER (
+                           PARTITION BY o.subject_type, o.subject_id, o.metric_key
+                           ORDER BY o.observed_at, o.observation_id
+                       ) AS previous_at,
+                       LAG(o.observation_id) OVER (
+                           PARTITION BY o.subject_type, o.subject_id, o.metric_key
+                           ORDER BY o.observed_at, o.observation_id
+                       ) AS previous_observation_id
                 FROM metric_observations o
-                WHERE numeric_value IS NOT NULL
-                  AND metric_key IN (
-                    'wechat.article.read_count',
-                    'xhs.note.liked_count',
-                    'geo.source.read_count'
-                )
+                WHERE o.numeric_value IS NOT NULL
+                  AND (
+                    o.metric_key IN ('wechat.read_count', 'wechat.article.read_count',
+                                     'geo.read_count', 'geo.source.read_count')
+                    OR o.metric_key LIKE '%.read_count'
+                  )
             )
-            SELECT cur.subject_type, cur.subject_id, cur.metric_key,
-                   prev.numeric_value AS prev_value, cur.numeric_value AS cur_value,
-                   prev.observed_at AS prev_at, cur.observed_at AS cur_at
-            FROM ranked cur
-            JOIN ranked prev
-              ON prev.subject_type = cur.subject_type
-             AND prev.subject_id = cur.subject_id
-             AND prev.metric_key = cur.metric_key
-             AND prev.rn = cur.rn + 1
-            WHERE cur.rn = 1 AND prev.numeric_value > 0
-              AND (cur.numeric_value - prev.numeric_value) * 1.0 / prev.numeric_value >= ?
+            SELECT * FROM ordered
+            WHERE previous_value > 0
+              AND numeric_value > previous_value
+              AND (numeric_value - previous_value) * 1.0 / previous_value >= ?
             """,
             (threshold,),
         ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            self._write_signal(
-                signal_type="read_spike",
-                subject_type=row["subject_type"],
-                subject_id=row["subject_id"],
-                signal_date=signal_date,
-                value=row["cur_value"],
-                baseline=row["prev_value"],
-                severity=self._severity_from_delta(row["cur_value"], row["prev_value"]),
-                details={
+            current_date = _date(row["observed_at"])
+            if signal_date and current_date != signal_date:
+                continue
+            grouped[(row["subject_type"], row["subject_id"])].append(
+                {
                     "metric_key": row["metric_key"],
-                    "previous_at": row["prev_at"],
-                    "current_at": row["cur_at"],
-                },
+                    "value": row["numeric_value"],
+                    "baseline_value": row["previous_value"],
+                    "current_at": row["observed_at"],
+                    "previous_at": row["previous_at"],
+                    "observation_id": row["observation_id"],
+                    "previous_observation_id": row["previous_observation_id"],
+                    "source_ref": row["source_ref"],
+                }
             )
-        return len(rows)
+        return self._write_grouped(
+            "read_spike",
+            grouped,
+            lambda subject_type, subject_id, changes: {
+                "value": max(item["value"] for item in changes),
+                "baseline": min(item["baseline_value"] for item in changes),
+                "severity": max(
+                    self._severity_from_delta(item["value"], item["baseline_value"])
+                    for item in changes
+                ),
+            },
+        )
 
-    def detect_new_keyword_entries(self, signal_date: str) -> int:
+    def detect_new_keyword_entries(self, signal_date: str | None) -> int:
+        return self._detect_new_keyword_entries_stats(signal_date)["candidates"]
+
+    def _detect_new_keyword_entries_stats(self, signal_date: str | None) -> dict[str, int]:
         rows = self._conn.execute(
             """
-            SELECT s.platform, s.keyword, h.content_id, MIN(s.captured_at) AS first_at
-            FROM search_hits h JOIN search_snapshots s ON s.snapshot_id = h.snapshot_id
-            WHERE h.content_id IS NOT NULL
-              AND date(s.captured_at) = date(?)
-            GROUP BY s.platform, s.keyword, h.content_id
-            HAVING first_at = MIN(s.captured_at)
-            """,
-            (signal_date,),
-        ).fetchall()
-        for row in rows:
-            self._write_signal(
-                signal_type="new_keyword_entry",
-                subject_type="content",
-                subject_id=row["content_id"],
-                signal_date=signal_date,
-                value=1.0,
-                severity=0.3,
-                details={"platform": row["platform"], "keyword": row["keyword"], "first_at": row["first_at"]},
-            )
-        return len(rows)
-
-    def detect_rank_changes(self, signal_date: str) -> int:
-        rows = self._conn.execute(
-            """
-            WITH latest AS (
-                SELECT h.content_id, s.platform, s.keyword, h.rank,
-                       s.captured_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY h.content_id, s.platform, s.keyword
-                           ORDER BY s.captured_at DESC
-                       ) AS rn
-                FROM search_hits h JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id
+            WITH first_seen AS (
+                SELECT h.content_id, s.platform, s.keyword, s.snapshot_id,
+                       s.captured_at, h.rank, h.hit_id,
+                       MIN(s.captured_at) OVER (
+                           PARTITION BY s.platform, s.keyword, h.content_id
+                       ) AS first_at
+                FROM search_hits h
+                JOIN search_snapshots s ON s.snapshot_id = h.snapshot_id
                 WHERE h.content_id IS NOT NULL
             )
-            SELECT cur.content_id, cur.platform, cur.keyword,
-                   prev.rank AS prev_rank, cur.rank AS cur_rank
-            FROM latest cur JOIN latest prev
-              ON prev.content_id = cur.content_id
-             AND prev.platform = cur.platform
-             AND prev.keyword = cur.keyword
-             AND prev.rn = cur.rn + 1
-            WHERE cur.rn = 1
-              AND ABS(prev.rank - cur.rank) >= 5
-            """,
+            SELECT * FROM first_seen WHERE captured_at = first_at
+            ORDER BY captured_at, content_id, platform, keyword
+            """
         ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            delta = row["prev_rank"] - row["cur_rank"]
-            severity = min(1.0, abs(delta) / 20.0)
-            self._write_signal(
-                signal_type="rank_change",
-                subject_type="content",
-                subject_id=row["content_id"],
-                signal_date=signal_date,
-                value=row["cur_rank"],
-                baseline=row["prev_rank"],
-                severity=severity,
-                details={
+            current_date = _date(row["captured_at"])
+            if signal_date and current_date != signal_date:
+                continue
+            grouped[("content", row["content_id"])].append(
+                {
                     "platform": row["platform"],
                     "keyword": row["keyword"],
-                    "previous_rank": row["prev_rank"],
-                    "current_rank": row["cur_rank"],
-                },
+                    "captured_at": row["captured_at"],
+                    "snapshot_id": row["snapshot_id"],
+                    "hit_id": row["hit_id"],
+                    "rank": row["rank"],
+                }
             )
-        return len(rows)
+        return self._write_grouped(
+            "new_keyword_entry",
+            grouped,
+            lambda subject_type, subject_id, changes: {
+                "value": float(len(changes)),
+                "baseline": None,
+                "severity": 0.3,
+            },
+        )
 
-    def detect_new_creators(self, signal_date: str) -> int:
+    def detect_rank_changes(self, signal_date: str | None) -> int:
+        return self._detect_rank_changes_stats(signal_date)["candidates"]
+
+    def _detect_rank_changes_stats(self, signal_date: str | None) -> dict[str, int]:
         rows = self._conn.execute(
-            "SELECT creator_id, canonical_name, platform FROM creators "
-            "WHERE date(first_seen_at)=date(?)",
-            (signal_date,),
-        ).fetchall()
-        for row in rows:
-            self._write_signal(
-                signal_type="new_creator",
-                subject_type="creator",
-                subject_id=row["creator_id"],
-                signal_date=signal_date,
-                value=1.0,
-                severity=0.2,
-                details={"canonical_name": row["canonical_name"], "platform": row["platform"]},
+            """
+            WITH ordered AS (
+                SELECT h.hit_id, h.content_id, h.rank, s.platform, s.keyword,
+                       s.snapshot_id, s.captured_at,
+                       LAG(h.rank) OVER (
+                           PARTITION BY h.content_id, s.platform, s.keyword
+                           ORDER BY s.captured_at, s.snapshot_id
+                       ) AS previous_rank,
+                       LAG(s.snapshot_id) OVER (
+                           PARTITION BY h.content_id, s.platform, s.keyword
+                           ORDER BY s.captured_at, s.snapshot_id
+                       ) AS previous_snapshot_id
+                FROM search_hits h
+                JOIN search_snapshots s ON s.snapshot_id = h.snapshot_id
+                WHERE h.content_id IS NOT NULL
             )
-        return len(rows)
+            SELECT * FROM ordered
+            WHERE previous_rank IS NOT NULL
+              AND ABS(previous_rank - rank) >= 5
+            ORDER BY captured_at, content_id, platform, keyword
+            """
+        ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            current_date = _date(row["captured_at"])
+            if signal_date and current_date != signal_date:
+                continue
+            grouped[("content", row["content_id"])].append(
+                {
+                    "platform": row["platform"],
+                    "keyword": row["keyword"],
+                    "previous_rank": row["previous_rank"],
+                    "current_rank": row["rank"],
+                    "snapshot_id": row["snapshot_id"],
+                    "previous_snapshot_id": row["previous_snapshot_id"],
+                    "hit_id": row["hit_id"],
+                    "captured_at": row["captured_at"],
+                }
+            )
+        return self._write_grouped(
+            "rank_change",
+            grouped,
+            lambda subject_type, subject_id, changes: {
+                "value": float(changes[-1]["current_rank"]),
+                "baseline": float(changes[-1]["previous_rank"]),
+                "severity": min(
+                    1.0,
+                    max(abs(item["previous_rank"] - item["current_rank"]) for item in changes) / 20.0,
+                ),
+            },
+        )
 
-    def detect_comment_anomalies(self, signal_date: str) -> int:
+    def detect_new_creators(self, signal_date: str | None) -> int:
+        return self._detect_new_creators_stats(signal_date)["candidates"]
+
+    def _detect_new_creators_stats(self, signal_date: str | None) -> dict[str, int]:
         rows = self._conn.execute(
-            "SELECT comment_id, event_type, current_state FROM comment_events "
-            "WHERE date(observed_at)=date(?) AND event_type IN ('missing','deleted_confirmed','hidden_suspected')",
-            (signal_date,),
+            """
+            SELECT creator_id, canonical_name, platform, first_seen_at
+            FROM creators
+            WHERE first_seen_at IS NOT NULL
+            """
         ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            self._write_signal(
-                signal_type="comment_anomaly",
-                subject_type="comment",
-                subject_id=row["comment_id"],
-                signal_date=signal_date,
-                value=1.0,
-                severity=0.7,
-                details={"event_type": row["event_type"], "current_state": row["current_state"]},
+            if signal_date and _date(row["first_seen_at"]) != signal_date:
+                continue
+            grouped[("creator", row["creator_id"])].append(
+                {
+                    "canonical_name": row["canonical_name"],
+                    "platform": row["platform"],
+                    "first_seen_at": row["first_seen_at"],
+                    "creator_id": row["creator_id"],
+                }
             )
-        return len(rows)
+        return self._write_grouped(
+            "new_creator",
+            grouped,
+            lambda subject_type, subject_id, changes: {
+                "value": 1.0,
+                "baseline": None,
+                "severity": 0.2,
+            },
+        )
 
-    # ── 列表接口 ─────────────────────────────────────────────
+    def detect_comment_anomalies(self, signal_date: str | None) -> int:
+        return self._detect_comment_anomalies_stats(signal_date)["candidates"]
+
+    def _detect_comment_anomalies_stats(self, signal_date: str | None) -> dict[str, int]:
+        rows = self._conn.execute(
+            """
+            SELECT comment_id, event_type, current_state, observed_at
+            FROM comment_events
+            WHERE event_type IN ('missing', 'deleted_confirmed', 'hidden_suspected')
+            """
+        ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            if signal_date and _date(row["observed_at"]) != signal_date:
+                continue
+            grouped[("comment", row["comment_id"])].append(dict(row))
+        return self._write_grouped(
+            "comment_anomaly",
+            grouped,
+            lambda subject_type, subject_id, changes: {
+                "value": float(len(changes)),
+                "baseline": None,
+                "severity": 0.7,
+            },
+        )
+
+    def _write_grouped(
+        self,
+        signal_type: str,
+        grouped: dict[tuple[str, str], list[dict[str, Any]]],
+        values: Any,
+    ) -> dict[str, int]:
+        counts = Counter()
+        for (subject_type, subject_id), changes in grouped.items():
+            # 一个 subject 可能跨多日；按证据日期拆开，保持 signal_date 事实准确。
+            by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for item in changes:
+                item_date = _date(
+                    item.get("captured_at")
+                    or item.get("observed_at")
+                    or item.get("current_at")
+                    or item.get("first_seen_at")
+                )
+                if item_date:
+                    by_date[item_date].append(item)
+            for item_date, dated_changes in by_date.items():
+                computed = values(subject_type, subject_id, dated_changes)
+                outcome = self._write_signal(
+                    signal_type=signal_type,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    signal_date=item_date,
+                    value=computed["value"],
+                    baseline=computed["baseline"],
+                    severity=computed["severity"],
+                    details={
+                        "model_version": SIGNAL_MODEL,
+                        "evidence_count": len(dated_changes),
+                        "evidence": dated_changes,
+                    },
+                )
+                counts[outcome] += 1
+        return {
+            "signal_type": signal_type,
+            "candidates": sum(len(items) for items in grouped.values()),
+            "inserted": counts["inserted"],
+            "updated": counts["updated"],
+            "unchanged": counts["unchanged"],
+        }
+
+    # ── 查询与持久化 ────────────────────────────────────────
 
     def list_signals(
         self,
@@ -210,9 +649,8 @@ class SignalsService:
             ).fetchall()
         ]
 
-    # ── 内部 ────────────────────────────────────────────────
-
-    def _severity_from_delta(self, current: float, previous: float) -> float:
+    @staticmethod
+    def _severity_from_delta(current: float, previous: float) -> float:
         if previous <= 0:
             return 0.5
         delta = (current - previous) / previous
@@ -226,30 +664,60 @@ class SignalsService:
         subject_id: str,
         signal_date: str,
         value: float,
-        baseline: float | None = None,
+        baseline: float | None,
         severity: float,
         details: dict[str, Any],
-    ) -> None:
-        import json as _json
+    ) -> str:
+        details_json = _json(details)
+        row = self._conn.execute(
+            """
+            SELECT signal_id, severity, value, baseline_value, details_json
+            FROM signals
+            WHERE signal_type = ? AND subject_type = ? AND subject_id = ?
+              AND signal_date = ? AND COALESCE(model_version, 'no-model') = ?
+            """,
+            (signal_type, subject_type, subject_id, signal_date, SIGNAL_MODEL),
+        ).fetchone()
+        if row is None:
+            signal_id = f"sig_{_fingerprint(signal_type, subject_type, subject_id, signal_date, SIGNAL_MODEL)}"
+            self._conn.execute(
+                """
+                INSERT INTO signals(
+                    signal_id, signal_type, subject_type, subject_id, detected_at,
+                    signal_date, severity, value, baseline_value, model_version,
+                    status, details_json, consumed_by_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, '[]')
+                """,
+                (
+                    signal_id,
+                    signal_type,
+                    subject_type,
+                    subject_id,
+                    utc_now_iso(),
+                    signal_date,
+                    severity,
+                    value,
+                    baseline,
+                    SIGNAL_MODEL,
+                    details_json,
+                ),
+            )
+            return "inserted"
+        changed = (
+            row["severity"] != severity
+            or row["value"] != value
+            or row["baseline_value"] != baseline
+            or row["details_json"] != details_json
+        )
+        if not changed:
+            return "unchanged"
+        # 状态和消费关系是业务状态，不因重算清除；只更新事实计算字段。
         self._conn.execute(
             """
-            INSERT INTO signals(
-                signal_id, signal_type, subject_type, subject_id, detected_at,
-                signal_date, severity, value, baseline_value, model_version,
-                status, details_json, consumed_by_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, '[]')
+            UPDATE signals
+            SET severity = ?, value = ?, baseline_value = ?, details_json = ?
+            WHERE signal_id = ?
             """,
-            (
-                generate_ulid_like("sig"),
-                signal_type,
-                subject_type,
-                subject_id,
-                utc_now_iso(),
-                signal_date,
-                severity,
-                value,
-                baseline,
-                SIGNAL_MODEL,
-                _json.dumps(details, ensure_ascii=False, sort_keys=True),
-            ),
+            (severity, value, baseline, details_json, row["signal_id"]),
         )
+        return "updated"

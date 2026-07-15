@@ -85,5 +85,8 @@ def migrate(settings: Settings) -> list[int]:
                     )
                 if version == 7:
                     backfill_existing_manifests(connection, settings)
+                    # 回填函数写入 source manifest/audit 事实；提交后才能开始
+                    # 下一条迁移的 BEGIN IMMEDIATE。
+                    connection.commit()
                 applied_now.append(version)
     return applied_now

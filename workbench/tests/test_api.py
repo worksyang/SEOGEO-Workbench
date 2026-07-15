@@ -49,7 +49,7 @@ def test_system_status_reports_real_contract(settings) -> None:
         assert data["database"]["status"] == "healthy"
         # The API field is retained for compatibility, but its value is the
         # SQLite migration level, not the v3.3 architecture revision.
-        assert data["database"]["schema_version"] == 7
+        assert data["database"]["schema_version"] == 8
         assert len(data["connections"]) == 7
         assert {item["status"] for item in data["connections"]} == {"unknown"}
         assert all(isinstance(item["capabilities"], list) for item in data["connections"])
