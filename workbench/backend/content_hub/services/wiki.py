@@ -146,6 +146,7 @@ class WikiService:
             )
             text = frontmatter + text
         bytes_payload = text.encode("utf-8")
+        snapshot_path = self._create_snapshot(safe_path, content_id)
         self._atomic_write(safe_path, bytes_payload)
         new_hash = hashlib.sha256(bytes_payload).hexdigest()
         content_only = text.split("---", 2)[-1].strip()
@@ -155,7 +156,12 @@ class WikiService:
             (new_hash, utc_now_iso(), content_hash, content_id),
         )
         self._record_audit(operator, "wiki.save", content_id, {"path": str(safe_path)})
-        return {"content_id": content_id, "md_path": str(safe_path), "file_hash": new_hash}
+        return {
+            "content_id": content_id,
+            "md_path": str(safe_path),
+            "file_hash": new_hash,
+            "snapshot_path": str(snapshot_path),
+        }
 
     def list_buckets(self) -> list[str]:
         return sorted({node["bucket"] for node in self.tree()})
@@ -168,6 +174,24 @@ class WikiService:
             os.fsync(tmp.fileno())
             tmp_path = Path(tmp.name)
         os.replace(tmp_path, path)
+
+    def _create_snapshot(self, source_path: Path, content_id: str) -> Path:
+        """在写入前创建唯一快照；快照目录只允许追加，不覆盖既有文件。"""
+        snapshot_root = resolve_within(
+            self._asset_root / "wiki" / ".snapshots",
+            [self._asset_root],
+        )
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        original = source_path.read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        candidate = snapshot_root / f"{content_id}_{stamp}_{digest[:16]}.md"
+        safe_snapshot = resolve_within(candidate, [snapshot_root])
+        with safe_snapshot.open("xb") as snapshot:
+            snapshot.write(original)
+            snapshot.flush()
+            os.fsync(snapshot.fileno())
+        return safe_snapshot
 
     def _record_audit(self, operator: str, action: str, subject_id: str, details: dict[str, Any]) -> None:
         self._conn.execute(

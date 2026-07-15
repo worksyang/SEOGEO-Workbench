@@ -49,6 +49,16 @@ def _number(value: Any) -> int | float | None:
         return None
 
 
+def _active(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "active"}
+
+
 def _trusted_url(value: Any) -> str | None:
     raw = _clean_url(value)
     if not raw:
@@ -150,7 +160,7 @@ class XhsService:
         records, manifest = self._records(persist_error=not dry_run)
         manifest_id = self.adapter.manifest_id(manifest)
         batch_id = _id("batch", f"xhs:{manifest_id}:full")
-        report: dict[str, Any] = {"manifest": manifest, "manifest_id": manifest_id, "rejected": [], "metric_collisions": []}
+        report: dict[str, Any] = {"manifest": manifest, "manifest_id": manifest_id, "rejected": [], "warnings": [], "metric_collisions": []}
         if dry_run:
             return {"dry_run": True, "source": "legacy_normalized", "counts": self._counts(records), "batch_id": batch_id, "audit": report}
         now = _now()
@@ -167,7 +177,13 @@ class XhsService:
             "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at",
             (batch_id, "xiaohongshu", "history", "running", now, str(self.adapter.root), _json(report)),
         )
-        settings_rows = {str(row.get("keyword_id")): row for row in records.get("_settings", [])}
+        settings_records = records.get("_settings", [])
+        settings_rows = {str(row.get("keyword_id")): row for row in settings_records}
+        if not settings_rows and records.get("keywords"):
+            report["warnings"].append({
+                "kind": "settings_db_empty",
+                "message": "小红书 settings DB 为空，关键词 active 状态遵循 normalized.is_active",
+            })
         keyword_map: dict[str, str] = {}
         accepted_keywords: dict[str, dict[str, Any]] = {}
         account_map: dict[str, str] = {}
@@ -191,7 +207,7 @@ class XhsService:
             setting = settings_rows.get(kid) or settings_rows.get(str(row.get("keyword_id")))
             topic = setting.get("topic") if setting else None
             bucket = setting.get("keyword_bucket") if setting else None
-            is_active = bool(setting["is_active"]) if setting and "is_active" in setting else bool(row.get("is_active", True))
+            is_active = _active(setting["is_active"]) if setting and "is_active" in setting else _active(row.get("is_active"), default=False)
             payload = _scrub_payload({**row, "source_keyword_id": kid, "settings": setting or {}})
             con.execute(
                 """INSERT INTO keywords(keyword_id,platform,keyword,status,topic,keyword_bucket,first_seen_at,updated_at,payload_json)
@@ -419,7 +435,10 @@ class XhsService:
                 raise XhsSourceError(f"小红书 bootstrap HTTP {response.status}", kind="remote_http", status=response.status, payload=response.payload)
             self._connection("healthy")
             payload = response.payload
-            allowed = _scrub_payload({key: payload.get(key) for key in ("keywords", "accounts", "snapshots", "ranking_hits", "articles", "snapshot_terms") if key in payload})
+            fact_keys = ("keywords", "accounts", "snapshots", "ranking_hits", "articles")
+            if any(not isinstance(payload.get(key), list) for key in fact_keys):
+                raise XhsSourceError("小红书 live bootstrap 缺少事实层数组", kind="invalid_source_payload", status=response.status, payload=payload)
+            allowed = _scrub_payload({key: payload.get(key) for key in (*fact_keys, "snapshot_terms") if key in payload})
             allowed["snapshot_terms"] = allowed.get("snapshot_terms") if isinstance(allowed.get("snapshot_terms"), list) else []
             counts = payload.get("counts")
             allowed["counts"] = counts if isinstance(counts, dict) else self._hub_counts()
@@ -572,7 +591,7 @@ class XhsService:
             if not 200 <= response.status < 300:
                 raise XhsSourceError(f"小红书 account HTTP {response.status}", kind="remote_http", status=response.status, payload=response.payload)
             self._connection("healthy")
-            return {"source_status": {"status": "healthy", "source": "legacy_http"}, "account": _scrub_payload(response.payload)}
+            return {"source_status": {"status": "healthy", "source": "legacy_http"}, "account": self._normalize_live_account(response.payload)}
         except XhsSourceError as exc:
             remote_error = str(exc)
             self._connection("degraded", error=remote_error)
@@ -583,6 +602,18 @@ class XhsService:
             account = dict(row)
             account["payload"] = json.loads(account.pop("payload_json") or "{}")
             return {"source_status": {"status": "degraded", "source": "hub_db", "error": remote_error}, "account": account}
+
+    @staticmethod
+    def _normalize_live_account(payload: dict[str, Any]) -> dict[str, Any]:
+        raw = _scrub_payload(payload)
+        account = dict(raw)
+        name = next((str(raw[key]).strip() for key in ("name", "canonical_name", "accountNickname", "nickname") if raw.get(key) not in (None, "")), None)
+        account["name"] = name
+        account["canonical_name"] = name
+        score = _number(next((raw[key] for key in ("score", "account_score", "accountScore") if raw.get(key) is not None), None))
+        account["score"] = score
+        account["raw_evidence"] = raw
+        return account
 
     def articles(self, limit: int = 100) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
@@ -623,18 +654,26 @@ class XhsService:
         if confirm is not True:
             raise ValidationAppError("刷新必须明确传入 confirm=true。")
         remote_id = keyword_id
+        keyword_text = None
         with connect(self.settings, readonly=True) as con:
-            row = con.execute("SELECT payload_json FROM keywords WHERE keyword_id=? AND platform='xiaohongshu'", (keyword_id,)).fetchone()
+            row = con.execute("SELECT keyword,payload_json FROM keywords WHERE keyword_id=? AND platform='xiaohongshu'", (keyword_id,)).fetchone()
             if row:
-                remote_id = str(json.loads(row["payload_json"] or "{}").get("source_keyword_id") or keyword_id)
+                payload = json.loads(row["payload_json"] or "{}")
+                remote_id = str(payload.get("source_keyword_id") or keyword_id)
+                keyword_text = str(row["keyword"] or payload.get("keyword_text") or "").strip()
+        if not keyword_text:
+            raise NotFoundError("小红书关键词", keyword_id)
         try:
-            response = self.adapter.refresh(remote_id)
+            response = self.adapter.refresh(remote_id, keyword_text)
             self._connection("healthy" if response.status < 400 else "degraded")
-            return {"http_status": response.status, "source_status": {"status": "healthy" if response.status < 400 else "degraded", "source": "legacy_http"}, "result": _scrub_payload(response.payload)}
+            result = _scrub_payload(response.payload)
+            job_id = result.get("job_id") if isinstance(result, dict) else None
+            return {"http_status": response.status, "source_status": {"status": "healthy" if response.status < 400 else "degraded", "source": "legacy_http"}, "job_id": job_id, "result": result}
         except XhsSourceError as exc:
             self._connection("degraded" if exc.status else "offline", error=str(exc))
             if exc.status in {202, 409}:
-                return {"http_status": exc.status, "source_status": {"status": "degraded", "source": "legacy_http"}, "result": _scrub_payload(exc.payload)}
+                result = _scrub_payload(exc.payload)
+                return {"http_status": exc.status, "source_status": {"status": "degraded", "source": "legacy_http"}, "job_id": result.get("job_id") if isinstance(result, dict) else None, "result": result}
             raise ConflictError(f"{exc.kind}: {exc}") from exc
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:

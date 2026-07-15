@@ -202,6 +202,17 @@ export interface XhsApiEnvelope<T> {
 }
 
 export type GeoSourceStatus = 'healthy' | 'ready' | 'online' | 'degraded' | 'partial' | 'offline' | 'unavailable' | 'unknown' | string
+export type GeoHubImportStatus = 'healthy' | 'degraded' | 'offline' | 'not_checked' | string
+
+export interface GeoHubImportState {
+  status: GeoHubImportStatus
+  last_checked_at?: string | null
+  records_seen?: number
+  records_written?: number
+  records_failed?: number
+  message?: string | null
+  [key: string]: unknown
+}
 
 export interface GeoSnapshot {
   id: string
@@ -230,6 +241,7 @@ export interface GeoQuestion {
 
 export interface GeoBootstrapData {
   source_status?: GeoSourceStatus | {status?: GeoSourceStatus; message?: string; [key: string]: unknown} | null
+  hub_import_status?: GeoHubImportState | null
   counts?: Record<string, number>
   hub?: Record<string, unknown> | null
   redfox?: Record<string, unknown> | null

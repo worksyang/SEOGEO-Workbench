@@ -47,7 +47,9 @@ def test_system_status_reports_real_contract(settings) -> None:
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["database"]["status"] == "healthy"
-        assert data["database"]["schema_version"] == 3
+        # The API field is retained for compatibility, but its value is the
+        # SQLite migration level, not the v3.2 architecture revision.
+        assert data["database"]["schema_version"] == 4
         assert len(data["connections"]) == 7
         assert {item["status"] for item in data["connections"]} == {"unknown"}
         assert data["service"]["frontend_built"] is False

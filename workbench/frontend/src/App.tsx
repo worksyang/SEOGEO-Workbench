@@ -88,6 +88,11 @@ export default function App() {
     governance: status?.database.integrity === 'ok' ? 'healthy' : status?.database.integrity ? 'degraded' : undefined,
   }
   const dataState = overview?.data_state ?? 'unknown'
+  const migrationLabel = status?.database.schema_version !== undefined
+    ? `架构 v3.2 · 迁移 v${status.database.schema_version}`
+    : loading
+      ? '架构 v3.2 · 迁移检查中'
+      : '架构 v3.2 · 迁移等待回执'
 
   return (
     <div className="app-shell">
@@ -129,7 +134,7 @@ export default function App() {
             <small>从这里进入原来的每一套系统</small>
           </div>
           <div className="topbar-actions">
-            <span className="schema-pill">Schema v{status?.database.schema_version ?? '—'}</span>
+            <span className="schema-pill">{migrationLabel}</span>
             <button className="secondary-button primary" type="button" onClick={reload}>重新检查</button>
           </div>
         </header>

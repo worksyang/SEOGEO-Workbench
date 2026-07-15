@@ -10,11 +10,12 @@ from pathlib import Path
 import pytest
 import httpx
 
-from content_hub.adapters.xhs import XhsAdapter, XhsSourceError
+from content_hub.adapters.xhs import XhsAdapter, XhsSourceError, RemoteResponse
 from content_hub.app import create_app
 from content_hub.config import Settings
 from content_hub.db.connection import connect
 from content_hub.features.xhs.service import XhsService
+from content_hub.errors import ConflictError
 
 
 def _source(tmp_path: Path, *, changed: bool = False) -> Path:
@@ -262,25 +263,100 @@ def test_xhs_source_change_and_root_security(settings, tmp_path):
 
 def test_xhs_live_202_409_and_empty_terms(settings, tmp_path, monkeypatch):
     service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    with connect(service.settings) as con:
+        con.execute(
+            "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
+            ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
+        )
     class Response:
         def __init__(self, status, payload):
             self.status, self.payload = status, payload
-    monkeypatch.setattr(service.adapter, "refresh", lambda _: Response(202, {"status": "queued", "token": "secret"}))
-    queued = service.refresh("kw_1", True)
+    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(202, {"status": "queued", "job_id": "job-1", "token": "secret"}))
+    queued = service.refresh("xhs_keyword_1", True)
     assert queued["http_status"] == 202
     assert queued["source_status"]["status"] == "healthy"
-    monkeypatch.setattr(service.adapter, "refresh", lambda _: Response(200, {"status": "done"}))
-    assert service.refresh("kw_1", True)["source_status"]["status"] == "healthy"
-    monkeypatch.setattr(service.adapter, "refresh", lambda _: Response(409, {"status": "busy"}))
-    busy = service.refresh("kw_1", True)
+    assert queued["job_id"] == "job-1"
+    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(200, {"status": "done"}))
+    assert service.refresh("xhs_keyword_1", True)["source_status"]["status"] == "healthy"
+    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(409, {"status": "busy"}))
+    busy = service.refresh("xhs_keyword_1", True)
     assert busy["http_status"] == 409 and busy["source_status"]["status"] == "degraded"
     monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, {"keywords": [], "snapshot_terms": None, "token": "secret"}))
-    result = service.bootstrap()
-    assert result["snapshot_terms"] == []
-    assert result["counts"] == {"keywords": 0, "accounts": 0, "snapshots": 0, "ranking_hits": 0, "articles": 0, "snapshot_terms": 0}
-    assert "token" not in result
-    monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, {"keywords": [], "accounts": [], "snapshot_terms": [], "counts": {"keywords": 9}}))
+    degraded = service.bootstrap()
+    assert degraded["source_status"]["source"] == "hub_db"
+    assert degraded["counts"]["keywords"] == 1
+    payload = {"keywords": [], "accounts": [], "snapshots": [], "ranking_hits": [], "articles": [], "snapshot_terms": [], "counts": {"keywords": 9}}
+    monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, payload))
     assert service.bootstrap()["counts"] == {"keywords": 9}
+
+
+def test_xhs_refresh_sends_keyword_text_and_confirm(settings, tmp_path, monkeypatch):
+    service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    with connect(service.settings) as con:
+        con.execute(
+            "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
+            ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
+        )
+    seen = {}
+    monkeypatch.setattr(service.adapter, "refresh", lambda keyword_id, keyword_text: seen.update(keyword_id=keyword_id, keyword_text=keyword_text) or RemoteResponse({"job_id": "job-42"}, 202))
+    result = service.refresh("xhs_keyword_1", True)
+    assert seen == {"keyword_id": "kw_1", "keyword_text": "香港保险"}
+    assert result["job_id"] == "job-42"
+
+
+def test_xhs_adapter_refresh_payload_contains_keyword_and_confirm(settings, tmp_path, monkeypatch):
+    adapter = XhsAdapter(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    seen = {}
+    monkeypatch.setattr(
+        adapter,
+        "_request",
+        lambda path, *, method, payload, allowed_error_statuses: seen.update(
+            path=path, method=method, payload=payload, allowed_error_statuses=allowed_error_statuses
+        ) or RemoteResponse({}, 202),
+    )
+    response = adapter.refresh("kw/1", " 香港保险 ")
+    assert response.status == 202
+    assert seen == {
+        "path": "/api/keywords/kw%2F1/refresh",
+        "method": "POST",
+        "payload": {"keyword": "香港保险", "confirm": True},
+        "allowed_error_statuses": {409},
+    }
+
+
+def test_xhs_live_account_normalizes_name_and_score_preserving_raw(settings, tmp_path, monkeypatch):
+    service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    monkeypatch.setattr(service.adapter, "account", lambda _: RemoteResponse({"accountNickname": "  作者 ", "accountScore": "98.5", "token": "secret"}, 200))
+    result = service.account("acct-1")
+    account = result["account"]
+    assert account["name"] == "作者"
+    assert account["canonical_name"] == "作者"
+    assert account["score"] == 98.5
+    assert account["raw_evidence"]["accountNickname"] == "  作者 "
+    assert account["raw_evidence"]["token"] == "[REDACTED]"
+
+
+def test_xhs_empty_settings_uses_normalized_active_and_audits_warning(xhs_settings):
+    root = xhs_settings.xhs_normalized_root
+    keywords = json.loads((root / "keywords.json").read_text())
+    keywords[0]["is_active"] = False
+    (root / "keywords.json").write_text(json.dumps(keywords), encoding="utf-8")
+    result = XhsService(xhs_settings).import_history(dry_run=False)
+    assert result["audit"]["warnings"][0]["kind"] == "settings_db_empty"
+    with connect(xhs_settings, readonly=True) as con:
+        assert con.execute("SELECT status FROM keywords WHERE platform='xiaohongshu'").fetchone()[0] == "paused"
+
+
+def test_xhs_refresh_upstream_failure_is_not_success(settings, tmp_path, monkeypatch):
+    service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    with connect(service.settings) as con:
+        con.execute(
+            "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
+            ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
+        )
+    monkeypatch.setattr(service.adapter, "refresh", lambda *_: (_ for _ in ()).throw(XhsSourceError("upstream down", kind="source_unavailable")))
+    with pytest.raises(ConflictError, match="source_unavailable"):
+        service.refresh("xhs_keyword_1", True)
 
 
 def test_xhs_live_account_proxy_and_hub_fallback(xhs_settings, monkeypatch):
@@ -462,7 +538,7 @@ def test_xhs_adapter_http_errors_and_secret_scrub(settings, tmp_path, monkeypatc
     class Fake409(FakeResponse):
         status = 409
     monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: Fake409())
-    response = adapter.refresh("kw_1")
+    response = adapter.refresh("kw_1", "香港保险")
     assert response.status == 409
 
 

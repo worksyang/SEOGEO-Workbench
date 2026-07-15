@@ -87,7 +87,7 @@ export default function SystemsPage() {
         <strong className="module-logo">系统状态 · 七套连接</strong>
         <span className="sep" />
         <span className="module-meta">
-          数据库 <b>{data?.database.status ?? '—'}</b> · Schema <b>{data?.database.schema_version ?? '—'}</b>
+          数据库 <b>{data?.database.status ?? '—'}</b> · SQLite migration <b>{data?.database.schema_version ?? '—'}</b>
         </span>
         <span className="module-right">{data?.service.bind || '127.0.0.1:8799'}</span>
       </header>
@@ -103,9 +103,14 @@ export default function SystemsPage() {
         <>
           <section className="systems-summary">
             <article>
-              <span>数据底座</span>
-              <b>{data.database.integrity === 'ok' ? '完整' : '异常'}</b>
-              <small>integrity: {data.database.integrity}</small>
+              <span>v3.2 架构</span>
+              <b>已对齐</b>
+              <small>14 张业务核心表 · Markdown + SQLite</small>
+            </article>
+            <article>
+              <span>SQLite migration</span>
+              <b>v{data.database.schema_version}</b>
+              <small>数据库完整性：{data.database.integrity}</small>
             </article>
             <article>
               <span>信号累计</span>

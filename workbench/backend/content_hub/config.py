@@ -1,13 +1,19 @@
 from __future__ import annotations
-import os as _os_for_paths
-_WIKI_DEFAULT_ROOTS = (
-    "/Users/works14/Documents/output_md",
-    "/Users/works14/Documents/zkcode",
-)
-
 import os
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+_WIKI_DEFAULT_ROOTS = ("/Users/works14/Documents/output_md",)
+_DEMO_PUBLISH_ACCOUNT = {
+    "account_id": "demo",
+    "display_name": "演示账号（不可发布）",
+    "profile_dir": "",
+    "cookie_file": "",
+    "token_file": "",
+    "enabled": False,
+    "publishable": False,
+}
 
 _MP_ALLOWED_CATEGORIES = (
     "热门产品", "z产品对比", "z香港vs内地", "港险优惠", "美联储降息", "保司盘点",
@@ -24,6 +30,45 @@ def _split_csv(raw: str | None) -> tuple[str, ...]:
     if not raw:
         return ()
     return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _parse_publish_accounts(raw: str | None) -> tuple[dict, ...]:
+    """解析发布账号配置；缺失配置必须落到明确不可发布的 demo 账号。"""
+    if not raw or not raw.strip():
+        return (dict(_DEMO_PUBLISH_ACCOUNT),)
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("HUB_PUBLISH_ACCOUNTS 必须是合法 JSON 数组。") from exc
+    if not isinstance(decoded, list):
+        raise ValueError("HUB_PUBLISH_ACCOUNTS 必须是 JSON 数组。")
+    accounts: list[dict] = []
+    for index, item in enumerate(decoded):
+        if not isinstance(item, dict):
+            raise ValueError(f"HUB_PUBLISH_ACCOUNTS[{index}] 必须是 JSON 对象。")
+        account_id = item.get("account_id", item.get("id"))
+        display_name = item.get("display_name", item.get("name"))
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError(f"HUB_PUBLISH_ACCOUNTS[{index}].account_id 不能为空。")
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise ValueError(f"HUB_PUBLISH_ACCOUNTS[{index}].display_name 不能为空。")
+        account = {
+            "account_id": account_id.strip(),
+            "display_name": display_name.strip(),
+            "profile_dir": item.get("profile_dir", ""),
+            "cookie_file": item.get("cookie_file", ""),
+            "token_file": item.get("token_file", ""),
+            "enabled": bool(item.get("enabled", False)),
+            "publishable": bool(item.get("publishable", False)),
+        }
+        if not isinstance(item.get("enabled", False), bool) or not isinstance(
+            item.get("publishable", False), bool
+        ):
+            raise ValueError(f"HUB_PUBLISH_ACCOUNTS[{index}] 的 enabled/publishable 必须是布尔值。")
+        if any(not isinstance(account[key], str) for key in ("profile_dir", "cookie_file", "token_file")):
+            raise ValueError(f"HUB_PUBLISH_ACCOUNTS[{index}] 的路径字段必须是字符串。")
+        accounts.append(account)
+    return tuple(accounts) or (dict(_DEMO_PUBLISH_ACCOUNT),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +133,7 @@ class Settings:
             "http://127.0.0.1:5174",
             "http://localhost:5174",
         )
-        _asset_store_path_local = Path(_os_for_paths.getenv("HUB_ASSET_STORE_PATH", project_root / "asset_store")).resolve()
+        _asset_store_path_local = Path(os.getenv("HUB_ASSET_STORE_PATH", project_root / "asset_store")).resolve()
         _wiki_roots = tuple(Path(p).resolve() for p in _WIKI_DEFAULT_ROOTS if Path(p).exists()) + (_asset_store_path_local,)
         settings = cls(
             project_root=project_root,
@@ -157,7 +202,7 @@ class Settings:
             geo_redfox_api_key_configured=bool(os.getenv("HUB_GEO_REDFOX_API_KEY", "").strip()),
             asset_store_path=_asset_store_path_local,
             wiki_allowed_roots=_wiki_roots,
-
+            publish_accounts=_parse_publish_accounts(os.getenv("HUB_PUBLISH_ACCOUNTS")),
         )
         settings.ensure_directories()
         return settings

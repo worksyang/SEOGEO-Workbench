@@ -73,6 +73,23 @@ def _file_manifest(
         return {"path": path, "error": type(exc).__name__}
 
 
+def _relative_source_path(value: Any, root: Any) -> str | None:
+    """将外部 Markdown 路径收敛为相对 source_ref；越界绝不写入本地绝对路径。"""
+    if value is None or value == "":
+        return None
+    raw = os.fspath(value)
+    if raw.startswith("~/") or raw.startswith("~\\"):
+        return None
+    root_path = Path(root).resolve()
+    path = Path(raw)
+    if path.is_absolute():
+        try:
+            return path.resolve(strict=False).relative_to(root_path).as_posix()
+        except ValueError:
+            return None
+    return Path(raw).as_posix()
+
+
 def _validate_limit(limit: Any) -> int | None:
     if limit is None:
         return None
@@ -155,6 +172,55 @@ class GeoService:
             "refresh": {**self._refresh_state(), "batch": False},
         }
 
+    @staticmethod
+    def _hub_import_status(con: sqlite3.Connection) -> dict[str, Any]:
+        """只返回 Hub 导入事实，不把 SQLite 原始来源可读误报为导入健康。"""
+        connection = con.execute(
+            "SELECT status,last_checked_at FROM system_connections WHERE system_key='geo'"
+        ).fetchone()
+        batch = con.execute(
+            """
+            SELECT status,started_at,finished_at,records_seen,records_written,records_failed
+            FROM ingestion_batches
+            WHERE adapter_key='geopromax-sqlite'
+            ORDER BY COALESCE(finished_at,started_at,created_at) DESC, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if batch is None:
+            return {
+                "status": "not_checked",
+                "last_checked_at": None,
+                "records_seen": 0,
+                "records_written": 0,
+                "records_failed": 0,
+                "message": "尚未检查 GEO 历史导入。",
+            }
+
+        batch_status = str(batch["status"] or "").lower()
+        status = {
+            "succeeded": "healthy",
+            "partial_failed": "degraded",
+            "queued": "degraded",
+            "running": "degraded",
+            "failed": "offline",
+            "cancelled": "offline",
+        }.get(batch_status, "degraded")
+        checked_at = batch["finished_at"] or batch["started_at"] or (connection["last_checked_at"] if connection else None)
+        message = {
+            "healthy": "GEO 历史数据已导入 Hub。",
+            "degraded": "GEO 历史数据已部分导入，存在失败记录。",
+            "offline": "GEO 历史导入失败，Hub 数据不可视为完整。",
+        }[status]
+        return {
+            "status": status,
+            "last_checked_at": checked_at,
+            "records_seen": int(batch["records_seen"] or 0),
+            "records_written": int(batch["records_written"] or 0),
+            "records_failed": int(batch["records_failed"] or 0),
+            "message": message,
+        }
+
     def status(self) -> dict[str, Any]:
         try:
             snap = self.adapter.snapshot(limit=5)
@@ -165,11 +231,13 @@ class GeoService:
         with connect(self.settings, readonly=True) as con:
             imported = con.execute("SELECT COUNT(*) FROM geo_answers WHERE source_ref LIKE 'geopromax:%'").fetchone()[0]
             redfox_imported = con.execute("SELECT COUNT(*) FROM geo_answers WHERE source_ref LIKE 'redfox:%'").fetchone()[0]
+            hub_import_status = self._hub_import_status(con)
         return {
             "source_status": source,
             "source": snap,
             "redfox": self._redfox_summary(),
             "hub": {"sqlite_answers": imported, "redfox_answers": redfox_imported},
+            "hub_import_status": hub_import_status,
         }
 
     def bootstrap(self) -> dict[str, Any]:
@@ -777,6 +845,7 @@ class GeoService:
         missing, bad, answer_rejects = [], [], []
         answer_reject_by_id: dict[int, dict[str, Any]] = {}
         for answer in data["answers"]:
+            answer["markdown_path"] = _relative_source_path(answer.get("markdown_path"), self.settings.geo_source_root)
             markdown = read_markdown(answer.get("markdown_path"))
             if not markdown["exists"]:
                 missing.append({"kind": "answer", "id": answer["id"], "path": answer.get("markdown_path"), "error": markdown["error"]})
@@ -790,10 +859,14 @@ class GeoService:
                 answer_reject_by_id.setdefault(answer["id"], {"kind": "answer", "id": answer["id"], "reason": "invalid_timestamp", "raw_value": raw_time})
         answer_rejects = list(answer_reject_by_id.values())
         for source in data["sources"]:
+            source["markdown_path"] = _relative_source_path(source.get("markdown_path"), self.settings.geo_source_root)
             if source.get("markdown_path"):
                 read_markdown(source["markdown_path"])
         for source in data["sources"]:
             source["identity_expected"] = source_by_id[source["id"]]["identity_expected"]
+        for batch in data["batches"]:
+            for key in ("raw_file", "input_file", "output_file"):
+                batch[key] = _relative_source_path(batch.get(key), self.settings.geo_source_root)
         file_manifest = [
             _file_manifest(self.settings.geo_database_path, trusted=True),
             _file_manifest(self.settings.geo_platforms_path, trusted=True),
@@ -991,7 +1064,7 @@ class GeoService:
                 with transaction(con):
                     con.execute(
                         "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,records_seen,records_written,records_failed,source_ref,error_json,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        (batch_id, self.adapter.adapter_key, manifest_id, "running", now, len(data["answers"]), 0, 0, str(self.settings.geo_database_path), _json(preview["rejected"]), _json(preview)),
+                        (batch_id, self.adapter.adapter_key, manifest_id, "running", now, len(data["answers"]), 0, 0, f"geopromax:{manifest_id}", _json(preview["rejected"]), _json(preview)),
                     )
                 try:
                     with transaction(con):
@@ -1124,7 +1197,7 @@ class GeoService:
                             "INSERT INTO system_connections(system_key,display_name,base_url,status,last_checked_at,capabilities_json,details_json) VALUES('geo','GEOProMax',NULL,?,?,?,?) ON CONFLICT(system_key) DO UPDATE SET status=excluded.status,last_checked_at=excluded.last_checked_at,capabilities_json=excluded.capabilities_json,details_json=excluded.details_json",
                             ("healthy" if status == "succeeded" else "degraded", now, _json(["read", "dry_run", "history_import"]), _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "redfox": self._redfox_summary()})),
                         )
-                        con.execute("INSERT INTO audit_log(audit_id,occurred_at,actor_type,action,subject_type,subject_id,outcome,details_json) VALUES(?,?,?,?,?,?,?,?)", (_id("audit", batch_id), now, "workbench", "geo_import", "ingestion_batch", batch_id, "failed" if status != "succeeded" else "succeeded", _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "status": status, "conflicts": conflicts, "deduplications": deduplications})))
+                        con.execute("INSERT INTO audit_log(audit_id,occurred_at,actor_type,action,subject_type,subject_id,outcome,details_json) VALUES(?,?,?,?,?,?,?,?)", (_id("audit", batch_id), now, "workbench", "geo_import", "ingestion_batch", batch_id, "failed" if status != "succeeded" else "succeeded", _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "status": status, "rejected": preview["rejected"], "conflicts": conflicts, "deduplications": deduplications})))
                 except Exception as exc:
                     failed_at = _now()
                     error = {"type": type(exc).__name__, "message": str(exc)}

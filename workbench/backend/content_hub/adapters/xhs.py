@@ -196,11 +196,14 @@ class XhsAdapter:
     def keyword(self, keyword_id: str) -> RemoteResponse:
         return self._request("/api/monitor-data/keyword/" + urllib.parse.quote(keyword_id, safe=""))
 
-    def refresh(self, keyword_id: str) -> RemoteResponse:
+    def refresh(self, keyword_id: str, keyword_text: str) -> RemoteResponse:
+        keyword = str(keyword_text or "").strip()
+        if not keyword:
+            raise XhsSourceError("小红书刷新缺少 keyword 文本", kind="invalid_request")
         return self._request(
             "/api/keywords/" + urllib.parse.quote(keyword_id, safe="") + "/refresh",
             method="POST",
-            payload={"confirm": True},
+            payload={"keyword": keyword, "confirm": True},
             allowed_error_statuses={409},
         )
 

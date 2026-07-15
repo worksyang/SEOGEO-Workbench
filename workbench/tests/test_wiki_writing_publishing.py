@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -81,6 +82,12 @@ def test_t148_wiki_save_atomic_replaces_file(hub):
     result = svc.save(cid, body=new_body, operator="test")
     assert result["content_id"] == cid
     assert "新内容" in target.read_text(encoding="utf-8")
+    snapshot = Path(result["snapshot_path"])
+    assert snapshot.parent == (asset_root / "wiki" / ".snapshots").resolve()
+    assert snapshot.read_text(encoding="utf-8").endswith("旧文本\n")
+    second = svc.save(cid, body=new_body.replace("新内容", "再次保存"), operator="test")
+    assert Path(second["snapshot_path"]).exists()
+    assert second["snapshot_path"] != result["snapshot_path"]
 
 
 def test_t149_wiki_save_validation_blocks_external_path(hub):
@@ -97,6 +104,77 @@ def test_t150_wiki_rejects_path_traversal(hub):
     from content_hub.validation.paths import resolve_within
     with pytest.raises(Exception):
         resolve_within(Path("/etc/passwd"), [tmp_path])
+
+
+def test_t153_wiki_snapshot_rejects_symlinked_snapshot_root(hub):
+    conn, _settings, tmp_path = hub
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    target = wiki / "测试.md"
+    target.write_text("# 测试\n\n旧文本\n", encoding="utf-8")
+    asset_root = tmp_path / "asset"
+    (asset_root / "wiki").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (asset_root / "wiki" / ".snapshots").symlink_to(outside, target_is_directory=True)
+    svc = WikiService(connection=conn, asset_root=asset_root, source_roots=[tmp_path])
+    cid = svc.collect()[0]["content_id"]
+    with pytest.raises(Exception):
+        svc.save(cid, body="# 测试\n\n新文本\n", operator="test")
+    assert not list(outside.iterdir())
+
+
+def test_t151_settings_default_wiki_roots_exclude_zkcode_source(hub):
+    _conn, settings, _tmp_path = hub
+    roots = {path.resolve() for path in settings.wiki_allowed_roots}
+    assert Path("/Users/works14/Documents/output_md").resolve() in roots
+    assert settings.asset_store_path.resolve() in roots
+    assert Path("/Users/works14/Documents/zkcode").resolve() not in roots
+    assert all("source" not in str(path).split("/") for path in roots)
+
+
+def test_t152_settings_publish_accounts_safe_json_and_demo_fallback(monkeypatch, tmp_path):
+    monkeypatch.delenv("HUB_PUBLISH_ACCOUNTS", raising=False)
+    monkeypatch.setenv("HUB_DATABASE_PATH", str(tmp_path / "hub.sqlite"))
+    fallback = Settings.load().publish_accounts
+    assert fallback == (
+        {
+            "account_id": "demo",
+            "display_name": "演示账号（不可发布）",
+            "profile_dir": "",
+            "cookie_file": "",
+            "token_file": "",
+            "enabled": False,
+            "publishable": False,
+        },
+    )
+
+    monkeypatch.setenv(
+        "HUB_PUBLISH_ACCOUNTS",
+        json.dumps(
+            [
+                {
+                    "account_id": "real",
+                    "display_name": "公开名称",
+                    "profile_dir": "/private/profile",
+                    "cookie_file": "/private/cookie",
+                    "token_file": "/private/token",
+                    "enabled": True,
+                    "publishable": True,
+                }
+            ]
+        ),
+    )
+    parsed = Settings.load().publish_accounts
+    assert parsed[0]["account_id"] == "real"
+    assert parsed[0]["publishable"] is True
+
+    monkeypatch.setenv("HUB_PUBLISH_ACCOUNTS", '{"not": "an array"}')
+    with pytest.raises(ValueError, match="JSON 数组"):
+        Settings.load()
+    monkeypatch.setenv("HUB_PUBLISH_ACCOUNTS", '[{"account_id": "x", "display_name": "x", "enabled": "yes"}]')
+    with pytest.raises(ValueError, match="布尔值"):
+        Settings.load()
 
 
 # ── Writing ─────────────────────────────────────────
@@ -184,14 +262,20 @@ def test_t160_publishing_does_not_leak_cookie(hub):
         token_file="/tokens/SECRET",
         enabled=True,
     )
-    # 字段集合应该只有 6 项
-    expected = {"account_id", "display_name", "profile_dir", "cookie_file", "token_file", "enabled"}
+    # 内部对象保留配置字段，但服务输出不得泄露路径。
+    expected = {
+        "account_id", "display_name", "profile_dir", "cookie_file",
+        "token_file", "enabled", "publishable",
+    }
     assert set(asdict(acct).keys()) == expected, f"PublishAccount 字段集合变化：{set(asdict(acct).keys())}"
     dumped = str(acct.to_dict())
-    # 文件路径允许暴露，但 cookie 文件路径如果含 SECRET（视为类似敏感哨兵值），
-    # 仅在 `to_dict` 标注的字段中可见，不被自动展开读取
-    assert "cookie_file" in dumped
-    assert "token_file" in dumped
+    assert "SECRET" not in dumped
+    assert "cookie_file" not in dumped
+    assert "token_file" not in dumped
+    assert set(acct.to_dict()) == {
+        "account_id", "display_name", "enabled", "publishable",
+        "cookie_exists", "token_exists", "status",
+    }
     # 不应有 cookie 内容读取的方法
     assert not hasattr(acct, "read_cookie")
     assert not hasattr(acct, "load_cookie_blob")
@@ -236,4 +320,5 @@ def test_t165_publishing_real_requires_confirm(hub):
     result_no_confirm = svc.publish(account_id="acc", content_id="c", body="x")
     assert result_no_confirm["status"] == "needs_confirmation"
     result_with_confirm = svc.publish(account_id="acc", content_id="c", body="x", confirm=True)
-    assert result_with_confirm["status"] == "succeeded"
+    assert result_with_confirm["status"] == "blocked"
+    assert "未执行真实发布" in result_with_confirm["reason"]

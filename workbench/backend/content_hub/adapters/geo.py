@@ -12,6 +12,16 @@ SENSITIVE = re.compile(
     r"(token|api[_-]?key|secret|password|cookie|session|authorization|credential)",
     re.I,
 )
+LOCAL_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:~|/(?:Users|private|var|tmp|etc|opt|Volumes|Library|System|Applications|home|root|srv|mnt)(?:/[^\s\"'`,;)\]}]+)*)"
+)
+
+
+def _scrub_local_paths(value: str) -> str:
+    """遮蔽常见绝对本机路径，但不触碰相对 source_ref 或 URL。"""
+    if value.startswith("~/") or value.startswith("~\\"):
+        return "[REDACTED_PATH]"
+    return LOCAL_PATH.sub("[REDACTED_PATH]", value)
 
 
 def _scrub_url(value: str) -> str:
@@ -38,7 +48,9 @@ def scrub(value: Any) -> Any:
     if isinstance(value, tuple):
         return [scrub(item) for item in value]
     if isinstance(value, str):
-        return _scrub_url(value) if "://" in value else value
+        if "://" in value:
+            return _scrub_local_paths(_scrub_url(value))
+        return _scrub_local_paths(value)
     return value
 
 

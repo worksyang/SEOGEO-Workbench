@@ -66,14 +66,24 @@ def test_mp_complex_filename_recovers_only_filename_mp_and_not_publish_time(sett
 def test_mp_dry_run_has_no_hub_writes(settings, tmp_path):
     configured = _configured(settings, tmp_path)
     service = MpService(configured)
-    with connect(configured, readonly=True) as con:
-        before_connection = con.execute("SELECT COUNT(*) FROM system_connections WHERE system_key='wechat-mp'").fetchone()[0]
+
+    def snapshot(table: str) -> list[tuple[object, ...]]:
+        with connect(configured, readonly=True) as con:
+            return [tuple(row) for row in con.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()]
+
+    before = {
+        "audit_log": snapshot("audit_log"),
+        "system_connections": snapshot("system_connections"),
+        "contents": snapshot("contents"),
+    }
     result = service.import_history(dry_run=True, limit=None)
     assert result["dry_run"] is True
-    with connect(configured, readonly=True) as con:
-        assert con.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == 0
-        assert con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
-        assert con.execute("SELECT COUNT(*) FROM system_connections WHERE system_key='wechat-mp'").fetchone()[0] == before_connection
+    after = {
+        "audit_log": snapshot("audit_log"),
+        "system_connections": snapshot("system_connections"),
+        "contents": snapshot("contents"),
+    }
+    assert after == before
 
 
 def test_mp_import_is_idempotent_and_rejected_not_content(settings, tmp_path, monkeypatch):

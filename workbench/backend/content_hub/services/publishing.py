@@ -27,15 +27,21 @@ class PublishAccount:
     cookie_file: str
     token_file: str
     enabled: bool
+    publishable: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        cookie_exists = bool(self.cookie_file) and Path(self.cookie_file).expanduser().is_file()
+        token_exists = bool(self.token_file) and Path(self.token_file).expanduser().is_file()
         return {
             "account_id": self.account_id,
             "display_name": self.display_name,
-            "profile_dir": self.profile_dir,
-            "cookie_file": self.cookie_file,
-            "token_file": self.token_file,
             "enabled": self.enabled,
+            "publishable": self.publishable,
+            "cookie_exists": cookie_exists,
+            "token_exists": token_exists,
+            "status": "ready"
+            if self.enabled and self.publishable and cookie_exists and token_exists
+            else "unavailable",
         }
 
 
@@ -79,13 +85,17 @@ class PublishingService:
         if not acct:
             return {"account_id": account_id, "status": "unknown", "enabled": False}
         cookie_path = Path(acct.cookie_file).expanduser()
-        cookie_exists = cookie_path.exists()
+        cookie_exists = cookie_path.is_file() if acct.cookie_file else False
+        token_path = Path(acct.token_file).expanduser()
+        token_exists = token_path.is_file() if acct.token_file else False
         return {
             "account_id": account_id,
             "display_name": acct.display_name,
             "enabled": acct.enabled,
+            "publishable": acct.publishable,
             "cookie_exists": cookie_exists,
-            "status": "ready" if cookie_exists else "needs_login",
+            "token_exists": token_exists,
+            "status": "ready" if acct.enabled and acct.publishable and cookie_exists and token_exists else "unavailable",
         }
 
     def preview(
@@ -178,7 +188,9 @@ class PublishingService:
             return {"status": "needs_confirmation", "reason": "真发布要求传入 confirm=True 二次确认。"}
         acct = self._accounts[account_id]
         if not acct.enabled:
-            return {"status": "blocked", "reason": "账号未启用"}
+            return {"status": "blocked", "reason": "账号未启用，当前仅允许演示、草稿或 dry-run。"}
+        if not acct.publishable:
+            return {"status": "blocked", "reason": "真实发布适配器未配置，未执行真实发布。"}
         preview = self.preview(content_id=content_id, body=body)
         would_dir = self._publish_root / account_id / "would_publish"
         would_dir.mkdir(parents=True, exist_ok=True)
@@ -191,10 +203,10 @@ class PublishingService:
             details={"operator": operator, "sensitive_count": len(preview.sensitive_matches)},
         )
         return {
-            "status": "succeeded",
+            "status": "blocked",
             "attempt_id": attempt_id,
             "account": acct.display_name,
-            "note": "前端未接真实 cookie 前，会回执 would_publish 标记；审计链路完整。",
+            "note": "仅记录 would_publish 审计，不代表真实发布成功。",
         }
 
     def _ensure_known_account(self, account_id: str) -> None:

@@ -276,10 +276,11 @@ def test_geo_source_author_domain_and_five_metrics(settings, tmp_path):
 def test_geo_dry_run_has_no_hub_write_and_reports_mapping(settings, tmp_path):
     service = GeoService(configured(settings, tmp_path))
     before = service.status()["hub"]
+    assert service.bootstrap()["hub_import_status"]["status"] == "not_checked"
     result = service.preview(limit=2)
     assert result["dry_run"] is True
     assert result["writes"] is False
-    assert result["source"]["database"] == str(REAL_DB)
+    assert result["source"]["database"] == "[REDACTED_PATH]"
     assert result["importable"]["answers"] == 2
     assert service.status()["hub"] == before
 
@@ -296,6 +297,86 @@ def test_geo_confirm_gate_idempotent_and_sensitive_filter(settings, tmp_path):
     assert filtered["token"] == "[REDACTED]"
     assert filtered["nested"]["api_key"] == "[REDACTED]"
     assert scrub({"next": "https://example.test/x?token=abc&ok=1"})["next"] == "https://example.test/x?token=%5BREDACTED%5D&ok=1"
+
+
+def test_geo_scrub_masks_absolute_local_paths_but_preserves_relative_source_refs():
+    value = scrub({
+        "absolute": "/Users/alice/Documents/GEOProMax/data/answer.md",
+        "private": "/private/var/folders/x/cache.json",
+        "home": "~/Library/Application Support/geopromax.sqlite",
+        "source_ref": "geopromax:123",
+        "url": "https://example.test/a?secret=abc&ok=1",
+    })
+    assert value["absolute"] == "[REDACTED_PATH]"
+    assert value["private"] == "[REDACTED_PATH]"
+    assert value["home"] == "[REDACTED_PATH]"
+    assert value["source_ref"] == "geopromax:123"
+    assert value["url"] == "https://example.test/a?secret=%5BREDACTED%5D&ok=1"
+
+
+def test_geo_import_persists_no_absolute_paths_and_uses_canonical_connection(settings, tmp_path):
+    configured_settings = configured(settings, tmp_path)
+    service = GeoService(configured_settings)
+    with connect(configured_settings) as con:
+        migration = con.execute(
+            """
+            SELECT details_json
+            FROM audit_log
+            WHERE audit_id='audit_migration_0004_geo_connection'
+            """
+        ).fetchone()
+        assert migration is not None
+        assert con.execute("SELECT 1 FROM system_connections WHERE system_key='geopromax'").fetchone() is None
+        geo = con.execute(
+            "SELECT details_json FROM system_connections WHERE system_key='geo'"
+        ).fetchone()
+        assert json.loads(geo["details_json"]) == {
+            "source_kind": "canonical_registry",
+            "migrated_from": "geopromax",
+        }
+        assert "/Users/" not in migration["details_json"]
+        assert "/private/" not in migration["details_json"]
+        con.commit()
+    result = service.import_history(confirm=True, limit=1)
+    assert result["status"] == "succeeded"
+    with connect(configured_settings, readonly=True) as con:
+        assert con.execute("SELECT 1 FROM system_connections WHERE system_key='geopromax'").fetchone() is None
+        assert con.execute("SELECT status FROM system_connections WHERE system_key='geo'").fetchone()[0] == "healthy"
+        rows = con.execute(
+            "SELECT source_ref,error_json,payload_json FROM ingestion_batches "
+            "UNION ALL SELECT source_ref,'',payload_json FROM geo_answers"
+        ).fetchall()
+        assert rows
+        audit = con.execute(
+            "SELECT details_json FROM audit_log WHERE action='geo_import' ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+        texts = [row["source_ref"] + row["error_json"] + row["payload_json"] for row in rows]
+        texts.append(audit["details_json"])
+        assert all("/Users/" not in text and "/private/" not in text for text in texts)
+        assert "legacy_connection_migrated" not in audit["details_json"]
+
+
+def test_geo_missing_markdown_is_partial_failed_and_not_healthy(settings, tmp_path, monkeypatch):
+    service = GeoService(configured(settings, tmp_path))
+    original = service.adapter.records
+
+    def missing_markdown(*, limit=None):
+        data = original(limit=limit)
+        data["answers"][0]["markdown_path"] = "missing-from-import.md"
+        return data
+
+    monkeypatch.setattr(service.adapter, "records", missing_markdown)
+    result = service.import_history(confirm=True, limit=1)
+    assert result["status"] == "partial_failed"
+    assert service.bootstrap()["hub_import_status"]["status"] == "degraded"
+    assert service.status()["hub_import_status"]["records_failed"] >= 1
+    with connect(service.settings, readonly=True) as con:
+        assert con.execute("SELECT status FROM system_connections WHERE system_key='geo'").fetchone()[0] == "degraded"
+        audit = con.execute(
+            "SELECT outcome,details_json FROM audit_log WHERE action='geo_import' ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit["outcome"] == "failed"
+        assert "missing_answer_markdown" in audit["details_json"] or "missing_markdown" in audit["details_json"]
 
 
 def test_geo_manifest_changes_create_new_batch_even_when_counts_match(settings, tmp_path, monkeypatch):

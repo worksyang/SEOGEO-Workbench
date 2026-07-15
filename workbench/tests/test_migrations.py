@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+import shutil
+from dataclasses import replace
+from pathlib import Path
+
 from content_hub.db.connection import connect
 from content_hub.db.migrations import migrate
+from content_hub.config import Settings
 
 
 def test_migrations_are_idempotent(settings) -> None:
@@ -14,4 +20,149 @@ def test_migrations_are_idempotent(settings) -> None:
         (1, "initial"),
         (2, "views"),
         (3, "system_registry"),
+        (4, "canonicalize_geo_connection"),
     ]
+
+
+def _settings_for_migration_state(
+    base: Settings, tmp_path: Path, *, initial_only: bool
+) -> Settings:
+    migration_dir = tmp_path / ("initial-migrations" if initial_only else "all-migrations")
+    migration_dir.mkdir()
+    source_dir = base.migration_dir
+    names = ["0001_initial.sql", "0002_views.sql", "0003_system_registry.sql"]
+    if not initial_only:
+        names.append("0004_canonicalize_geo_connection.sql")
+    for name in names:
+        shutil.copy2(source_dir / name, migration_dir / name)
+    return replace(
+        base,
+        database_path=tmp_path / "state.sqlite",
+        migration_dir=migration_dir,
+    )
+
+
+def _apply_initial_schema(base: Settings, tmp_path: Path) -> Settings:
+    settings = _settings_for_migration_state(base, tmp_path, initial_only=True)
+    assert migrate(settings) == [1, 2, 3]
+    return settings
+
+
+def _run_canonicalization(
+    base: Settings,
+    tmp_path: Path,
+    *,
+    with_geo: bool,
+) -> Settings:
+    initial = _apply_initial_schema(base, tmp_path)
+    with connect(initial) as connection:
+        connection.execute("DELETE FROM system_connections")
+        connection.execute(
+            """
+            INSERT INTO system_connections(
+                system_key, display_name, base_url, status,
+                capabilities_json, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "geopromax",
+                "legacy GEOProMax",
+                "http://127.0.0.1:8790",
+                "unknown",
+                '["read"]',
+                '{"absolute_path":"/Users/secret/geopromax.sqlite","api_key":"do-not-copy"}',
+            ),
+        )
+        if with_geo:
+            connection.execute(
+                """
+                INSERT INTO system_connections(
+                    system_key, display_name, base_url, status,
+                    capabilities_json, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "geo",
+                    "GEOProMax",
+                    None,
+                    "healthy",
+                    '["read","json_import"]',
+                    '{"source_kind":"current"}',
+                ),
+            )
+        connection.commit()
+
+    full = _settings_for_migration_state(base, tmp_path, initial_only=False)
+    assert full.database_path == initial.database_path
+    assert migrate(full) == [4]
+    return full
+
+
+def _assert_canonicalized(settings: Settings) -> None:
+    with connect(settings, readonly=True) as connection:
+        rows = connection.execute(
+            "SELECT system_key FROM system_connections ORDER BY system_key"
+        ).fetchall()
+        assert [row["system_key"] for row in rows] == [
+            "geo",
+        ]
+        audits = connection.execute(
+            """
+            SELECT action, details_json
+            FROM audit_log
+            WHERE audit_id = 'audit_migration_0004_geo_connection'
+            """
+        ).fetchall()
+        assert len(audits) == 1
+        assert audits[0]["action"] == "system_connection.canonicalize"
+        assert "/Users/secret" not in audits[0]["details_json"]
+        assert "do-not-copy" not in audits[0]["details_json"]
+        details = json.loads(audits[0]["details_json"])
+        assert "geo_created" not in details
+        assert details["legacy_found"] == 1
+        assert details["legacy_deleted"] == 1
+        assert details["canonical_geo_present"] == 1
+
+
+def test_legacy_only_connection_is_canonicalized_without_legacy_details(
+    settings, tmp_path
+) -> None:
+    migrated = _run_canonicalization(settings, tmp_path, with_geo=False)
+    _assert_canonicalized(migrated)
+
+
+def test_legacy_and_geo_connection_keep_geo_and_drop_legacy(tmp_path) -> None:
+    base = Settings.load()
+    migrated = _run_canonicalization(base, tmp_path, with_geo=True)
+    _assert_canonicalized(migrated)
+
+    with connect(migrated, readonly=True) as connection:
+        geo = connection.execute(
+            "SELECT status, details_json FROM system_connections WHERE system_key='geo'"
+        ).fetchone()
+        assert geo["status"] == "healthy"
+        assert geo["details_json"] == '{"source_kind":"current"}'
+
+
+def test_fresh_database_has_seven_connections_and_repeat_is_noop(settings) -> None:
+    with connect(settings, readonly=True) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM system_connections"
+        ).fetchone()[0] == 7
+        assert connection.execute(
+            "SELECT COUNT(*) FROM system_connections WHERE system_key='geo'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM system_connections WHERE system_key='geopromax'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE audit_id='audit_migration_0004_geo_connection'"
+        ).fetchone()[0] == 1
+
+    assert migrate(settings) == []
+    with connect(settings, readonly=True) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE audit_id='audit_migration_0004_geo_connection'"
+        ).fetchone()[0] == 1

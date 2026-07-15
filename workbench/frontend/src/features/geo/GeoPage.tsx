@@ -16,7 +16,7 @@ const STATUS_LABELS: Record<string, string> = {
   healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级',
   offline: '离线', unavailable: '离线', running: '运行中', completed: '已完成',
   failed: '失败', blocked: '受阻', pending: '等待中',
-  input_not_ready: '输入未就绪',
+  input_not_ready: '输入未就绪', not_checked: '未检查',
 }
 const SORT_LABELS: Record<string, string> = {recent: '最近', citations: '引用数', snapshots: '快照数'}
 const CITATION_LABELS: Record<string, string> = {
@@ -395,6 +395,7 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
       <strong className="module-logo">GEO 公域引用观察</strong>
       <span className="sep" />
       <span className="module-meta">真实来源 · <b>{statusLabel(bootstrap?.source_status)}</b></span>
+      <span className="module-meta">Hub 入库 · <b>{statusLabel(bootstrap?.hub_import_status)}</b></span>
       <div className="module-switch" role="tablist" aria-label="GEO视角"><button className={`pill ${view === 'questions' ? 'active' : ''}`} onClick={openQuestions} type="button" role="tab" aria-selected={view === 'questions'}>问题观察</button><button className={`pill ${view === 'sources' ? 'active' : ''}`} onClick={openSources} type="button" role="tab" aria-selected={view === 'sources'}>引用源透视</button></div>
       <span className="module-right">{formatNumber(questions.length)} 个真实问题</span>
     </header>
