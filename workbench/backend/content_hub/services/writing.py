@@ -21,6 +21,7 @@ from ..ingestion.markdown_store import MarkdownStore
 from ..validation.timestamps import utc_now_iso
 from .audit import AuditService
 from .jobs import JobsService
+from .safety import public_asset_ref, scrub_public_payload
 
 
 @dataclass(slots=True)
@@ -252,17 +253,20 @@ class WritingService:
             published_at=utc_now_iso(),
             extra_frontmatter={"mode": "mother_forge", "purpose": job.payload.get("purpose", ""), "demo_only": True},
         )
+        asset_ref = self._asset_ref(result.md_path)
         self._record_content(
-            result.md_path,
+            asset_ref,
             title,
             "demo_mother_article",
             result.file_hash,
             result.content_hash,
         )
-        self._record_event(job.job_id, "mother_forge.written", {"md_path": result.md_path})
+        content_id = self._last_content_id(asset_ref)
+        self._record_event(job.job_id, "mother_forge.written", {"asset_ref": asset_ref, "content_id": content_id})
         return {
-            "md_path": result.md_path,
-            "content_id": self._last_content_id(result.md_path),
+            "asset_ref": asset_ref,
+            "md_path": asset_ref,
+            "content_id": content_id,
             "demo_only": True,
         }
 
@@ -290,15 +294,20 @@ class WritingService:
                 published_at=utc_now_iso(),
                 extra_frontmatter={"mode": "batch", "keyword": keyword, "demo_only": True},
             )
-            outputs.append(result.md_path)
+            asset_ref = self._asset_ref(result.md_path)
+            outputs.append(asset_ref)
             self._record_content(
-                result.md_path,
+                asset_ref,
                 prompt,
                 "demo_generated_article",
                 result.file_hash,
                 result.content_hash,
             )
-            self._record_event(job.job_id, f"batch.article.{index + 1}", {"md_path": result.md_path})
+            self._record_event(
+                job.job_id,
+                f"batch.article.{index + 1}",
+                {"asset_ref": asset_ref, "content_id": self._last_content_id(asset_ref)},
+            )
         return {"outputs": outputs, "count": len(outputs), "demo_only": True}
 
     def list_jobs(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -316,7 +325,14 @@ class WritingService:
         ]
 
     def detail(self, job_id: str) -> dict[str, Any] | None:
-        return self._jobs.detail(job_id)
+        detail = self._jobs.detail(job_id)
+        return scrub_public_payload(detail, asset_root=self._markdown.root) if detail else None
+
+    def _asset_ref(self, path: str) -> str:
+        ref = public_asset_ref(path, self._markdown.root)
+        if not ref:
+            raise ValueError("生成的 Markdown 路径不在受控 asset_store 内")
+        return ref
 
     def _fetch(self, job_id: str) -> WritingJob | None:
         row = self._conn.execute(
@@ -365,7 +381,11 @@ class WritingService:
                 utc_now_iso(),
                 event,
                 None,
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                json.dumps(
+                    scrub_public_payload(payload, asset_root=self._markdown.root),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             ),
         )
 

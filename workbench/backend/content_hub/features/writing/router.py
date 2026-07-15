@@ -33,6 +33,7 @@ def list_jobs(request: Request, limit: int = 30) -> dict:
 @router.post("/jobs")
 def create_job(request: Request, payload: dict) -> dict:
     svc = _service(request)
+    settings = request.app.state.settings
     mode = payload.get("mode") or "batch_production"
     if mode == "mother_forge":
         job = svc.create_mother_forge(

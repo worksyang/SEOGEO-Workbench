@@ -453,9 +453,21 @@ def test_t157_writing_run_mother_forge_writes_artifact(hub):
     assert result["status"] == "demo_only"
     assert result["demo"] is True
     assert result["reason_code"] == "writing.demo_provider"
-    assert Path(result["md_path"]).exists()
+    assert result["asset_ref"] == result["md_path"]
+    assert not Path(result["md_path"]).is_absolute()
+    artifact = settings.asset_store_path / result["asset_ref"]
+    assert artifact.exists()
     assert conn.execute("SELECT status FROM production_jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == "blocked"
-    assert "demo_mother_article" in Path(result["md_path"]).read_text(encoding="utf-8")
+    assert "demo_mother_article" in artifact.read_text(encoding="utf-8")
+    event = conn.execute(
+        "SELECT payload_json FROM job_events WHERE job_id=? AND event_type='mother_forge.written'",
+        (job.job_id,),
+    ).fetchone()[0]
+    audit = conn.execute(
+        "SELECT details_json FROM audit_log WHERE action='writing.run' ORDER BY occurred_at DESC LIMIT 1"
+    ).fetchone()[0]
+    assert str(settings.asset_store_path) not in event
+    assert str(settings.asset_store_path) not in audit
 
 
 def test_t158_writing_run_batch_emits_outputs(hub):
@@ -529,8 +541,10 @@ def test_t163_publishing_dry_run_no_publish(hub):
     )
     result = svc.dry_run(account_id="acc", content_id="c", body="# body")
     assert result["status"] == "dry_run_only"
-    assert "preview_path" in result
-    assert Path(result["preview_path"]).exists()
+    assert result["preview_only"] is True
+    assert "preview_path" not in result
+    assert not Path(result["preview_ref"]).is_absolute()
+    assert (tmp_path / result["preview_ref"]).exists()
 
 
 def test_t164_publishing_idempotency_blocks_duplicate(hub):
@@ -607,3 +621,78 @@ def test_t182_publishing_confirm_is_blocked_without_bridge_and_never_succeeds(hu
     audit = conn.execute("SELECT details_json FROM audit_log WHERE action='publishing.publish'").fetchone()[0]
     assert "publish.bridge_unavailable" in audit
     assert "SECRET" not in audit and "/" not in audit
+
+
+def test_t183_publishing_refs_and_historical_attempt_api_are_safe(hub):
+    conn, settings, tmp_path = hub
+    asset = tmp_path / "asset_store"
+    svc = PublishingService(
+        connection=conn,
+        publish_root=asset / "publish",
+        accounts=[PublishAccount("acc", "演示账号", "", "", "", False)],
+    )
+    draft = svc.save_draft(account_id="acc", content_id="c183", body="# draft body")
+    assert draft["status"] == "draft_only"
+    assert draft["draft_only"] is True
+    assert not Path(draft["draft_ref"]).is_absolute()
+    assert (asset / draft["draft_ref"]).exists()
+    payload = conn.execute(
+        "SELECT payload_json FROM publish_attempts WHERE attempt_id=?",
+        (draft["attempt_id"],),
+    ).fetchone()[0]
+    assert str(asset) not in payload
+    assert "draft body" not in payload
+
+    conn.execute(
+        """INSERT INTO production_jobs(
+            job_id, job_type, status, input_signal_ids_json,
+            source_content_ids_json, created_at, updated_at, payload_json
+        ) VALUES (?, ?, ?, '[]', '[]', ?, ?, '{}')""",
+        (
+            "job_legacy183",
+            "publish_draft",
+            "blocked",
+            "2026-07-15T00:00:00+08:00",
+            "2026-07-15T00:00:00+08:00",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO publish_attempts(
+            attempt_id, job_id, account_key, idempotency_key, mode, status,
+            attempted_at, payload_json, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "pub_legacy183",
+            "job_legacy183",
+            "acc",
+            "legacy183",
+            "draft",
+            "blocked",
+            "2026-07-15T00:00:00+08:00",
+            json.dumps({
+                "draft_path": str(asset / "publish" / "acc" / "drafts" / "legacy.md"),
+                "cookie_file": "/secret/cookie",
+                "body": "不应出现在 API",
+            }, ensure_ascii=False),
+            str(asset / "publish" / "error.log"),
+        ),
+    )
+    conn.commit()
+    from dataclasses import replace
+    app = create_app(replace(settings, asset_store_path=asset))
+
+    async def read_attempts() -> dict:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/api/v1/publishing/attempts")
+            assert response.status_code == 200
+            return response.json()
+
+    data = asyncio.run(read_attempts())
+    dumped = json.dumps(data, ensure_ascii=False)
+    assert str(asset) not in dumped
+    assert "cookie" not in dumped.lower()
+    assert "不应出现在 API" not in dumped
+    assert "asset_ref" in dumped

@@ -7,6 +7,7 @@ from typing import Any
 
 from ..ingestion.markdown_store import MarkdownStore
 from .helpers import parse_json_field, rows_to_dicts
+from .safety import public_asset_ref, scrub_public_payload
 
 
 class ContentService:
@@ -59,7 +60,14 @@ class ContentService:
         record = dict(row)
         record["entities"] = parse_json_field(record.pop("entities_json"), [])
         record["intents"] = parse_json_field(record.pop("intents_json"), [])
-        record["payload"] = parse_json_field(record.pop("payload_json"), {})
+        record["payload"] = scrub_public_payload(
+            parse_json_field(record.pop("payload_json"), {}),
+            asset_root=self._markdown.root,
+        )
+        if record.get("md_path"):
+            record["md_path"] = public_asset_ref(record["md_path"], self._markdown.root)
+            if not record["md_path"]:
+                record.pop("md_path", None)
         return record
 
     def context(self, content_id: str) -> dict[str, Any] | None:
@@ -139,12 +147,13 @@ class ContentService:
                 "content_id": content_id,
                 "available": False,
                 "reason": "Markdown 文件丢失，可能被外部清理，等待对账补回。",
-                "md_path": md_path,
+                "asset_ref": md_path,
             }
         text = self._markdown.read(md_path)
         return {
             "content_id": content_id,
             "available": True,
+            "asset_ref": md_path,
             "md_path": md_path,
             "body": text,
         }

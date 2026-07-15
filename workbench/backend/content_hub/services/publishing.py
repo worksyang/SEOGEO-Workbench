@@ -18,6 +18,7 @@ from typing import Any, Iterable
 from ..domain.ids import generate_ulid_like
 from ..validation.timestamps import utc_now_iso
 from .audit import AuditService
+from .safety import public_asset_ref, scrub_public_payload
 
 
 @dataclass(slots=True)
@@ -141,13 +142,13 @@ class PublishingService:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{content_id}_{digest}.md"
         target.write_text(body, encoding="utf-8")
+        draft_ref = self._publish_ref(target)
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path="",
             idem_key=digest,
             status="succeeded",
             outcome="draft_saved",
-            details={"content_id": content_id, "operator": operator},
+            details={"content_id": content_id, "operator": operator, "asset_ref": draft_ref},
         )
         # 仅在 Publishing 自身需要时新建 job；下面调用 _record_attempt 时已经包含 job_id 备用
         self._audit.record(
@@ -157,7 +158,13 @@ class PublishingService:
             outcome="succeeded",
             details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status, "reason_code": "publish.draft_only"},
         )
-        return {"attempt_id": attempt_id, "draft_path": str(target), "content_id": content_id, "status": "draft_only"}
+        return {
+            "attempt_id": attempt_id,
+            "draft_ref": draft_ref,
+            "content_id": content_id,
+            "status": "draft_only",
+            "draft_only": True,
+        }
 
     def dry_run(self, *, account_id: str, content_id: str, body: str) -> dict[str, Any]:
         self._ensure_known_account(account_id)
@@ -166,13 +173,18 @@ class PublishingService:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{content_id}_preview.html"
         target.write_text(preview.html, encoding="utf-8")
+        preview_ref = self._publish_ref(target)
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path="",
             idem_key=hashlib.sha256((preview.html or "").encode("utf-8")).hexdigest()[:16],
             status="succeeded",
             outcome="dry_run",
-            details={"sensitive_matches": preview.sensitive_matches, "warnings": preview.warnings},
+            details={
+                "content_id": content_id,
+                "sensitive_matches": preview.sensitive_matches,
+                "warnings": preview.warnings,
+                "asset_ref": preview_ref,
+            },
         )
         self._audit.record(
             action="publishing.dry_run",
@@ -184,10 +196,11 @@ class PublishingService:
         return {
             "attempt_id": attempt_id,
             "preview_html": preview.html,
-            "preview_path": str(target),
+            "preview_ref": preview_ref,
             "sensitive_matches": preview.sensitive_matches,
             "warnings": preview.warnings,
             "status": "dry_run_only",
+            "preview_only": True,
         }
 
     def publish(
@@ -214,7 +227,6 @@ class PublishingService:
             return result
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path="",
             idem_key=hashlib.sha256(f"{account_id}::{content_id}".encode("utf-8")).hexdigest()[:16],
             status="blocked",
             outcome="blocked",
@@ -237,17 +249,25 @@ class PublishingService:
         if account_id not in self._accounts:
             raise ValueError(f"未知账号：{account_id}")
 
+    def _publish_ref(self, target: Path) -> str:
+        ref = public_asset_ref(target, self._publish_root.parent)
+        if not ref:
+            raise ValueError("发布产物路径不在受控 asset_store 内")
+        return ref
+
     def _record_attempt(
         self,
         *,
         account_id: str,
-        content_md_path: str,
         idem_key: str,
         status: str,
         outcome: str,
         details: dict[str, Any],
     ) -> str:
-        payload = {"automated": False, "outcome": outcome, **details}
+        payload = scrub_public_payload(
+            {"automated": False, "outcome": outcome, **details},
+            asset_root=self._publish_root.parent,
+        )
         if "dry" in outcome:
             mode = "dry_run"
         elif "draft" in outcome:

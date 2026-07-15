@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from content_hub.db.connection import connect
 from content_hub.services.publishing import PublishAccount, PublishingService
+from content_hub.services.safety import scrub_public_payload
 
 router = APIRouter(prefix="/api/v1/publishing", tags=["publishing"])
 
@@ -171,8 +172,17 @@ def attempts(request: Request, account_id: str | None = None, limit: int = 50) -
             except Exception:
                 item["payload"] = {}
             # 历史记录也不把路径、profile 或任何潜在 secret 字段回显到 API。
-            for unsafe_key in ("content_md_path", "md_path", "profile_dir", "cookie_file", "token_file",
-                               "cookie_blob", "token_blob", "raw_cookie", "raw_token"):
-                item["payload"].pop(unsafe_key, None)
+            item["payload"] = scrub_public_payload(
+                item["payload"],
+                asset_root=Path(settings.asset_store_path),
+            )
+            item["error"] = scrub_public_payload(
+                item.get("error"),
+                asset_root=Path(settings.asset_store_path),
+            )
+            item["remote_receipt"] = scrub_public_payload(
+                item.get("remote_receipt"),
+                asset_root=Path(settings.asset_store_path),
+            )
             rows.append(item)
     return {"ok": True, "data": {"items": rows}}

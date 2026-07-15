@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from content_hub.db.connection import connect
 from content_hub.services.jobs import JobsService
+from content_hub.services.safety import scrub_public_payload
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
@@ -24,7 +25,10 @@ def detail(request: Request, job_id: str) -> dict:
     data = _service(request).detail(job_id)
     if not data:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return {"ok": True, "data": data}
+    return {
+        "ok": True,
+        "data": scrub_public_payload(data, asset_root=request.app.state.settings.asset_store_path),
+    }
 
 
 @router.post("/{job_id}/cancel")

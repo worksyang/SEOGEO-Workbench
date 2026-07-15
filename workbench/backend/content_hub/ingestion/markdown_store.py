@@ -35,6 +35,10 @@ class MarkdownStore:
         self._root = Path(asset_root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def root(self) -> Path:
+        return self._root
+
     def path_for(
         self,
         *,
