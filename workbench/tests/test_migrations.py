@@ -22,6 +22,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (3, "system_registry"),
         (4, "canonicalize_geo_connection"),
         (5, "v33_runtime_layers"),
+        (6, "writing_runtime_receipts"),
     ]
 
 
@@ -36,6 +37,7 @@ def _settings_for_migration_state(
         names.extend([
             "0004_canonicalize_geo_connection.sql",
             "0005_v33_runtime_layers.sql",
+            "0006_writing_runtime_receipts.sql",
         ])
     for name in names:
         shutil.copy2(source_dir / name, migration_dir / name)
@@ -98,7 +100,7 @@ def _run_canonicalization(
 
     full = _settings_for_migration_state(base, tmp_path, initial_only=False)
     assert full.database_path == initial.database_path
-    assert migrate(full) == [4, 5]
+    assert migrate(full) == [4, 5, 6]
     return full
 
 

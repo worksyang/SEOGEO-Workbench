@@ -97,6 +97,118 @@ class WritingService:
         self._jobs = JobsService(connection)
         self._audit = AuditService(connection)
 
+    def _record_write_receipt(
+        self,
+        *,
+        operation: str,
+        job_id: str,
+        operator: str,
+        source_ref: str,
+        manifest: dict[str, Any],
+        legacy_status: str = "not_written",
+        hub_status: str = "succeeded",
+        reconcile_status: str = "matched",
+    ) -> None:
+        """记录真实 Hub 写入回执，并明确本模块不反向双写 legacy UI。"""
+        manifest_payload = {
+            "module": "writing",
+            "operation": operation,
+            "job_id": job_id,
+            "source_ref": source_ref,
+            **manifest,
+        }
+        manifest_hash = hashlib.sha256(
+            json.dumps(
+                manifest_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        manifest_id = f"sm_writing_{manifest_hash[:24]}"
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO source_manifests(
+                manifest_id, system_key, source_kind, root_fingerprint,
+                manifest_hash, entry_count, captured_at, immutable, payload_json
+            ) VALUES (?, 'writing-money', 'runtime-write', 'writing-runtime', ?, ?, ?, 1, ?)
+            """,
+            (
+                manifest_id,
+                manifest_hash,
+                len(manifest_payload.get("runtime_tables") or []),
+                now,
+                json.dumps(manifest_payload, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO source_manifest_entries(
+                manifest_id, relative_path, content_hash, size_bytes, observed_at, payload_json
+            ) VALUES (?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                manifest_id,
+                source_ref[:800],
+                manifest_hash,
+                now,
+                json.dumps({"source_ref": source_ref, "operator": operator}, ensure_ascii=False),
+            ),
+        )
+        idempotency_key = f"{operation}:{job_id}:{manifest_hash}"
+        command_id = _runtime_deterministic_id("cmd", "writing", idempotency_key)
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO command_runs(
+                command_id, module_key, command_type, idempotency_key, actor_id,
+                status, input_json, output_json, created_at, updated_at
+            ) VALUES (?, 'writing', ?, ?, ?, 'succeeded', ?, ?, ?, ?)
+            """,
+            (
+                command_id,
+                operation,
+                idempotency_key,
+                operator,
+                json.dumps({"source_ref": source_ref, "manifest_id": manifest_id}, ensure_ascii=False),
+                json.dumps({"hub_status": hub_status}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        details = {
+            "operation": operation,
+            "operator": operator,
+            "legacy_dual_write": False,
+            "legacy_status": legacy_status,
+            "hub_status": hub_status,
+            "source_ref": source_ref,
+            "manifest_id": manifest_id,
+            "manifest": manifest_payload,
+        }
+        self._conn.execute(
+            """
+            INSERT INTO dual_write_receipts(
+                receipt_id, module_key, command_id, idempotency_key,
+                legacy_status, hub_status, reconcile_status, details_json, created_at
+            ) VALUES (?, 'writing', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(module_key, idempotency_key) DO UPDATE SET
+                details_json=excluded.details_json,
+                hub_status=excluded.hub_status,
+                reconcile_status=excluded.reconcile_status
+            """,
+            (
+                _runtime_deterministic_id("dwr", "writing", idempotency_key),
+                command_id,
+                idempotency_key,
+                legacy_status,
+                hub_status,
+                reconcile_status,
+                json.dumps(details, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
+        )
+
     def create_mother_forge(
         self,
         *,
@@ -128,6 +240,13 @@ class WritingService:
             payload=payload,
         )
         self._create_runtime_project(job_id, topic=topic, purpose=purpose, operator=operator)
+        self._record_write_receipt(
+            operation="create_mother_forge",
+            job_id=job_id,
+            operator=operator,
+            source_ref=f"writing/job/{job_id}",
+            manifest={"runtime_tables": ["wm_projects", "wm_project_events"]},
+        )
         self._audit.record(
             action="writing.create",
             subject_type="writing_job",
@@ -197,6 +316,13 @@ class WritingService:
             state=payload["batch_state"],
             operator=operator,
         )
+        self._record_write_receipt(
+            operation="create_batch",
+            job_id=job_id,
+            operator=operator,
+            source_ref=f"writing/job/{job_id}",
+            manifest={"runtime_tables": ["wm_batches", "wm_batch_keywords", "wm_batch_queue_items"]},
+        )
         self._audit.record(
             action="writing.create",
             subject_type="writing_job",
@@ -225,6 +351,19 @@ class WritingService:
                 reason_code="writing.provider_unconfigured",
             )
             self._jobs.complete(job_id, status="blocked")
+            self._sync_runtime_status(job_id, "blocked")
+            self._record_write_receipt(
+                operation="run_blocked",
+                job_id=job_id,
+                operator=operator,
+                source_ref=f"writing/job/{job_id}",
+                manifest={
+                    "runtime_tables": ["wm_projects", "wm_batches"],
+                    "reason_code": "writing.provider_unconfigured",
+                },
+                hub_status="blocked",
+                reconcile_status="blocked",
+            )
             self._record_event(job_id, "blocked", details)
             self._audit.record(
                 action="writing.run",
@@ -259,6 +398,19 @@ class WritingService:
                 operator=operator,
             )
             self._jobs.complete(job_id, output_content_id=written.get("content_id", ""), status="blocked")
+            self._sync_runtime_status(job_id, "completed")
+            self._record_write_receipt(
+                operation="run_demo_only",
+                job_id=job_id,
+                operator=operator,
+                source_ref=f"writing/job/{job_id}",
+                manifest={
+                    "runtime_tables": ["wm_drafts", "wm_projects", "wm_batches"],
+                    "outputs": written.get("outputs") or [written.get("asset_ref")],
+                },
+                hub_status="blocked",
+                reconcile_status="blocked",
+            )
             details = self._safe_provider_details(
                 mode=job.job_type,
                 reason_code="writing.demo_provider",
@@ -276,6 +428,19 @@ class WritingService:
             return {"status": "demo_only", "job_id": job_id, "blocked": False, **details, **written}
         except Exception as exc:  # noqa: BLE001
             self._jobs.complete(job_id, status="failed")
+            self._sync_runtime_status(job_id, "failed")
+            self._record_write_receipt(
+                operation="run_failed",
+                job_id=job_id,
+                operator=operator,
+                source_ref=f"writing/job/{job_id}",
+                manifest={
+                    "runtime_tables": ["wm_projects", "wm_batches"],
+                    "error_type": exc.__class__.__name__,
+                },
+                hub_status="failed",
+                reconcile_status="blocked",
+            )
             details = self._safe_provider_details(
                 mode=job.job_type,
                 reason_code="writing.provider_error",
@@ -408,20 +573,35 @@ class WritingService:
         state["queue"] = queue
         state["stage"] = "batch-done"
         state["status"] = "done"
+        updated_payload = dict(job.payload)
+        updated_payload.update(
+            {
+                "batch_state": state,
+                "keywords": [item.get("keyword", "") for item in state.get("keywords", [])],
+            }
+        )
         self._update_payload(
             job.job_id,
-            {"batch_state": state, "keywords": [item.get("keyword", "") for item in state.get("keywords", [])]},
+            {
+                "batch_state": state,
+                "keywords": [item.get("keyword", "") for item in state.get("keywords", [])],
+            },
             event_type="writing.batch_queue_completed",
             operator="system",
+        )
+        self._sync_runtime_from_payload(
+            job,
+            updated_payload,
+            operator="system",
+            event_type="writing.batch_queue_completed",
         )
         return {"outputs": outputs, "count": len(outputs), "demo_only": True}
 
     def list_jobs(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        rows = self._jobs.list_recent(limit=limit)
+        rows = self._runtime_job_rows(limit=limit)
         items: list[dict[str, Any]] = []
         for row in rows:
-            detail = self._jobs.detail(row["job_id"]) or {}
-            payload = detail.get("payload") if isinstance(detail.get("payload"), dict) else {}
+            payload = self._runtime_payload(row["job_id"], row.get("job_type"))
             items.append(
                 {
                     "job_id": row["job_id"],
@@ -439,8 +619,21 @@ class WritingService:
         return items
 
     def detail(self, job_id: str) -> dict[str, Any] | None:
-        detail = self._jobs.detail(job_id)
-        return scrub_public_payload(detail, asset_root=self._markdown.root) if detail else None
+        runtime = self._runtime_job_row(job_id)
+        legacy = self._jobs.detail(job_id)
+        if not runtime and not legacy:
+            return None
+        if not runtime:
+            return scrub_public_payload(legacy, asset_root=self._markdown.root)
+        if not legacy:
+            legacy = {"job_id": job_id, "events": [], "payload": {}}
+        detail = dict(legacy)
+        detail["job_type"] = runtime["job_type"]
+        detail["status"] = runtime["status"]
+        detail["payload"] = self._runtime_payload(job_id, runtime["job_type"])
+        detail["wm_project_id"] = runtime.get("wm_project_id")
+        detail["wm_batch_id"] = runtime.get("wm_batch_id")
+        return scrub_public_payload(detail, asset_root=self._markdown.root)
 
     def mutate(
         self,
@@ -621,6 +814,20 @@ class WritingService:
 
         self._update_payload(job_id, payload, event_type=f"writing.{action}", operator=operator)
         self._sync_runtime_from_payload(job, payload, operator=operator, event_type=f"writing.{action}")
+        self._record_write_receipt(
+            operation=f"mutate_{action}",
+            job_id=job_id,
+            operator=operator,
+            source_ref=f"writing/job/{job_id}/{action}",
+            manifest={
+                "runtime_tables": (
+                    ["wm_projects", "wm_materials", "wm_project_materials"]
+                    if job.job_type == "mother_forge"
+                    else ["wm_batches", "wm_batch_keywords", "wm_batch_mother_links", "wm_batch_queue_items"]
+                ),
+                "action": action,
+            },
+        )
         self._audit.record(
             action=f"writing.{action}",
             subject_type="writing_job",
@@ -682,6 +889,10 @@ class WritingService:
             "UPDATE production_jobs SET wm_project_id=? WHERE job_id=?",
             (project_id, job_id),
         )
+        self._conn.execute(
+            "UPDATE wm_projects SET legacy_job_id=? WHERE wm_project_id=?",
+            (job_id, project_id),
+        )
         self._runtime_event(project_id, "project.created", operator, {"job_id": job_id})
         return project_id
 
@@ -719,10 +930,25 @@ class WritingService:
             "UPDATE production_jobs SET wm_batch_id=? WHERE job_id=?",
             (batch_id, job_id),
         )
+        self._conn.execute(
+            "UPDATE wm_batches SET legacy_job_id=? WHERE wm_batch_id=?",
+            (job_id, batch_id),
+        )
         self._sync_batch_keywords(batch_id, state)
+        self._sync_batch_queue(batch_id, state)
         return batch_id
 
     def _runtime_ids(self, job_id: str) -> tuple[str | None, str | None]:
+        row = self._conn.execute(
+            """
+            SELECT
+                (SELECT wm_project_id FROM wm_projects WHERE legacy_job_id=? LIMIT 1) AS wm_project_id,
+                (SELECT wm_batch_id FROM wm_batches WHERE legacy_job_id=? LIMIT 1) AS wm_batch_id
+            """,
+            (job_id, job_id),
+        ).fetchone()
+        if row and (row["wm_project_id"] or row["wm_batch_id"]):
+            return row["wm_project_id"], row["wm_batch_id"]
         row = self._conn.execute(
             "SELECT wm_project_id, wm_batch_id FROM production_jobs WHERE job_id=?",
             (job_id,),
@@ -803,6 +1029,7 @@ class WritingService:
                 ),
             )
             self._sync_batch_keywords(batch_id, state)
+            self._sync_batch_queue(batch_id, state)
 
     def _sync_project_materials(
         self,
@@ -926,6 +1153,43 @@ class WritingService:
                         str(match.get("role") or "")[:1000], now,
                     ),
                 )
+
+    def _sync_batch_queue(self, batch_id: str, state: dict[str, Any]) -> None:
+        self._conn.execute("DELETE FROM wm_batch_queue_items WHERE wm_batch_id=?", (batch_id,))
+        keyword_ids: dict[str, str] = {}
+        for row in self._conn.execute(
+            "SELECT wm_batch_keyword_id, keyword_text, metadata_json FROM wm_batch_keywords WHERE wm_batch_id=?",
+            (batch_id,),
+        ).fetchall():
+            keyword_ids[row["keyword_text"]] = row["wm_batch_keyword_id"]
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if metadata.get("legacy_id"):
+                keyword_ids[str(metadata["legacy_id"])] = row["wm_batch_keyword_id"]
+        now = utc_now_iso()
+        allowed = {"waiting", "running", "done", "rework", "failed", "cancelled"}
+        for ordinal, raw in enumerate(state.get("queue") or []):
+            if not isinstance(raw, dict):
+                continue
+            status = str(raw.get("status") or "waiting")
+            self._conn.execute(
+                """
+                INSERT INTO wm_batch_queue_items(
+                    wm_batch_queue_item_id, wm_batch_id, wm_batch_keyword_id, ordinal,
+                    title, status, output_ref, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _runtime_deterministic_id("wmq", batch_id, str(raw.get("id") or ordinal)),
+                    batch_id,
+                    keyword_ids.get(str(raw.get("keywordId") or "")),
+                    ordinal,
+                    str(raw.get("title") or "")[:400],
+                    status if status in allowed else "waiting",
+                    str(raw.get("outputFile") or "")[:800],
+                    now,
+                    now,
+                ),
+            )
 
     def _record_runtime_draft(
         self,
@@ -1060,6 +1324,15 @@ class WritingService:
         return ref
 
     def _fetch(self, job_id: str) -> WritingJob | None:
+        runtime = self._runtime_job_row(job_id)
+        if runtime:
+            return WritingJob(
+                job_id=job_id,
+                job_type=runtime["job_type"],
+                topic=runtime["topic"],
+                status=runtime["status"],
+                payload=self._runtime_payload(job_id, runtime["job_type"]),
+            )
         row = self._conn.execute(
             "SELECT * FROM production_jobs WHERE job_id=?",
             (job_id,),
@@ -1067,6 +1340,198 @@ class WritingService:
         if not row:
             return None
         return WritingJob.from_row(row)
+
+    def _runtime_job_row(self, job_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT wm_project_id, NULL AS wm_batch_id, title AS topic, 'mother_forge' AS job_type,
+                   CASE status
+                       WHEN 'active' THEN 'queued'
+                       WHEN 'completed' THEN 'blocked'
+                       ELSE status
+                   END AS status
+            FROM wm_projects WHERE legacy_job_id=?
+            UNION ALL
+            SELECT NULL, wm_batch_id, title, 'batch_production',
+                   CASE status
+                       WHEN 'draft' THEN 'queued'
+                       WHEN 'ready' THEN 'queued'
+                       WHEN 'completed' THEN 'blocked'
+                       ELSE status
+                   END
+            FROM wm_batches WHERE legacy_job_id=?
+            LIMIT 1
+            """,
+            (job_id, job_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _runtime_job_rows(self, *, limit: int) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM (
+                SELECT p.legacy_job_id AS job_id, p.wm_project_id, NULL AS wm_batch_id,
+                       p.title AS topic, 'mother_forge' AS job_type,
+                       CASE p.status WHEN 'active' THEN 'queued' WHEN 'completed' THEN 'blocked' ELSE p.status END AS status,
+                       p.created_at, p.updated_at, NULL AS scheduled_at
+                FROM wm_projects p
+                WHERE p.legacy_job_id IS NOT NULL
+                UNION ALL
+                SELECT b.legacy_job_id, NULL, b.wm_batch_id, b.title, 'batch_production',
+                       CASE b.status WHEN 'draft' THEN 'queued' WHEN 'ready' THEN 'queued'
+                            WHEN 'completed' THEN 'blocked' ELSE b.status END,
+                       b.created_at, b.updated_at, NULL
+                FROM wm_batches b
+                WHERE b.legacy_job_id IS NOT NULL
+            ) ORDER BY updated_at DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        if len(rows) < limit:
+            legacy = self._conn.execute(
+                """
+                SELECT job_id, job_type, status, created_at, updated_at, scheduled_at
+                FROM production_jobs
+                WHERE job_type IN ('mother_forge', 'batch_production')
+                  AND job_id NOT IN (SELECT legacy_job_id FROM wm_projects WHERE legacy_job_id IS NOT NULL)
+                  AND job_id NOT IN (SELECT legacy_job_id FROM wm_batches WHERE legacy_job_id IS NOT NULL)
+                ORDER BY updated_at DESC LIMIT ?
+                """,
+                (limit - len(rows),),
+            ).fetchall()
+            rows.extend(legacy)
+        return [dict(row) for row in rows]
+
+    def _runtime_payload(self, job_id: str, job_type: str | None) -> dict[str, Any]:
+        legacy_row = self._conn.execute(
+            "SELECT payload_json FROM production_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        payload = json.loads(legacy_row["payload_json"] or "{}") if legacy_row else {}
+        if job_type == "mother_forge":
+            row = self._conn.execute(
+                """
+                SELECT wm_project_id, title, purpose, stage, status, workspace_ref
+                FROM wm_projects WHERE legacy_job_id=?
+                """,
+                (job_id,),
+            ).fetchone()
+            if not row:
+                return payload
+            payload.update(
+                {
+                    "topic": row["title"],
+                    "purpose": row["purpose"],
+                    "stage": row["stage"],
+                    "runtime": {
+                        "wm_project_id": row["wm_project_id"],
+                        "status": row["status"],
+                        "workspace_ref": row["workspace_ref"],
+                    },
+                    "materials": self._runtime_materials(row["wm_project_id"]),
+                }
+            )
+        elif job_type == "batch_production":
+            row = self._conn.execute(
+                """
+                SELECT wm_batch_id, title, source, status, requirements_json, workspace_ref
+                FROM wm_batches WHERE legacy_job_id=?
+                """,
+                (job_id,),
+            ).fetchone()
+            if not row:
+                return payload
+            requirements = json.loads(row["requirements_json"] or "{}")
+            keywords = self._runtime_keywords(row["wm_batch_id"])
+            queue = [
+                dict(item)
+                for item in self._conn.execute(
+                    """
+                    SELECT wm_batch_queue_item_id AS id, title, status,
+                           output_ref AS outputFile
+                    FROM wm_batch_queue_items
+                    WHERE wm_batch_id=? ORDER BY ordinal
+                    """,
+                    (row["wm_batch_id"],),
+                ).fetchall()
+            ]
+            state = self._batch_state(payload)
+            state.update(
+                {
+                    "name": row["title"],
+                    "source": row["source"],
+                    "brief": requirements.get("brief", ""),
+                    "keywords": keywords,
+                    "queue": queue,
+                    "status": row["status"],
+                }
+            )
+            payload.update(
+                {
+                    "topic": row["title"],
+                    "source": row["source"],
+                    "requirements": requirements,
+                    "batch_state": state,
+                    "keywords": [item["keyword"] for item in keywords],
+                    "runtime": {
+                        "wm_batch_id": row["wm_batch_id"],
+                        "status": row["status"],
+                        "workspace_ref": row["workspace_ref"],
+                    },
+                }
+            )
+        return payload
+
+    def _runtime_materials(self, project_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT m.wm_material_id AS id, m.material_kind AS type, m.title,
+                   m.source_ref AS path, m.url, m.parse_status AS parseStatus,
+                   pm.usage_state AS usage, pm.note AS reason
+            FROM wm_project_materials pm
+            JOIN wm_materials m ON m.wm_material_id=pm.wm_material_id
+            WHERE pm.wm_project_id=? ORDER BY m.created_at
+            """,
+            (project_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _runtime_keywords(self, batch_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT wm_batch_keyword_id AS id, keyword_text AS keyword, purpose,
+                   target_article_count AS count, readiness_status AS readiness
+            FROM wm_batch_keywords WHERE wm_batch_id=? ORDER BY ordinal
+            """,
+            (batch_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["readiness"] = "ready" if item["readiness"] == "ready" else "needs-mother"
+            item["motherMatches"] = []
+            result.append(item)
+        return result
+
+    def _sync_runtime_status(self, job_id: str, status: str) -> None:
+        project_id, batch_id = self._runtime_ids(job_id)
+        if project_id:
+            mapped = "completed" if status == "completed" else "blocked" if status == "blocked" else "active"
+            self._conn.execute(
+                "UPDATE wm_projects SET status=?, updated_at=? WHERE wm_project_id=?",
+                (mapped, utc_now_iso(), project_id),
+            )
+        if batch_id:
+            mapped = (
+                "completed" if status == "completed"
+                else "blocked" if status == "blocked"
+                else "running" if status == "running"
+                else "draft"
+            )
+            self._conn.execute(
+                "UPDATE wm_batches SET status=?, updated_at=? WHERE wm_batch_id=?",
+                (mapped, utc_now_iso(), batch_id),
+            )
 
     def _record_content(
         self,
@@ -1181,6 +1646,19 @@ def backfill_writing_runtime(
             job.payload,
             operator="v33-runtime-backfill",
             event_type="writing.runtime_backfilled",
+        )
+        service._record_write_receipt(
+            operation="runtime_backfill",
+            job_id=job.job_id,
+            operator="v33-runtime-backfill",
+            source_ref=f"writing/job/{job.job_id}/runtime-backfill",
+            manifest={
+                "runtime_tables": (
+                    ["wm_projects", "wm_project_events"]
+                    if job.job_type == "mother_forge"
+                    else ["wm_batches", "wm_batch_keywords", "wm_batch_queue_items"]
+                ),
+            },
         )
     return len(rows)
 

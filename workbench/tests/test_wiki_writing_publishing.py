@@ -542,6 +542,86 @@ def test_t156b_writing_runtime_backfill_is_idempotent(hub):
     ).fetchone()[0]
 
 
+def test_t156c_writing_reads_runtime_tables_and_records_write_evidence(hub):
+    conn, settings, _ = hub
+    svc = WritingService(
+        connection=conn,
+        markdown_store=MarkdownStore(settings.asset_store_path),
+        provider=FakeProvider(latency_ms=0),
+    )
+    job = svc.create_batch(
+        topic="运行表事实",
+        source="manual",
+        requirements={"brief": "规范表优先"},
+        keywords=["规范关键词"],
+        target_article_count=1,
+        operator="test",
+    )
+    conn.execute(
+        "UPDATE production_jobs SET payload_json=? WHERE job_id=?",
+        (json.dumps({"topic": "旧快照错误", "batch_state": {"name": "旧快照错误"}}), job.job_id),
+    )
+    detail = svc.detail(job.job_id)
+    assert detail["payload"]["topic"] == "运行表事实"
+    assert detail["payload"]["batch_state"]["name"] == "运行表事实"
+    assert detail["payload"]["batch_state"]["keywords"][0]["keyword"] == "规范关键词"
+    receipt = conn.execute(
+        """
+        SELECT legacy_status, hub_status, reconcile_status, details_json
+        FROM dual_write_receipts
+        WHERE module_key='writing' AND details_json LIKE '%create_batch%'
+        """
+    ).fetchone()
+    assert tuple(receipt[:3]) == ("not_written", "succeeded", "matched")
+    evidence = json.loads(receipt["details_json"])
+    assert evidence["legacy_dual_write"] is False
+    assert evidence["source_ref"] == f"writing/job/{job.job_id}"
+    assert evidence["manifest_id"].startswith("sm_writing_")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM source_manifests WHERE manifest_id=?",
+        (evidence["manifest_id"],),
+    ).fetchone()[0] == 1
+
+
+def test_t156d_batch_queue_is_runtime_fact_not_payload_snapshot(hub):
+    conn, settings, _ = hub
+    svc = WritingService(
+        connection=conn,
+        markdown_store=MarkdownStore(settings.asset_store_path),
+        provider=FakeProvider(latency_ms=0),
+    )
+    job = svc.create_batch(
+        topic="队列运行表",
+        source="manual",
+        requirements={},
+        keywords=["K1"],
+        target_article_count=1,
+    )
+    svc.mutate(
+        job.job_id,
+        action="batch_state",
+        value={
+            "state": {
+                "name": "队列运行表",
+                "source": "manual",
+                "stage": "batch-config",
+                "keywords": [{"id": "kw-0", "keyword": "K1", "count": 1, "readiness": "ready"}],
+                "queue": [{"id": "q-1", "keywordId": "kw-0", "title": "K1 第1篇", "status": "waiting"}],
+            }
+        },
+    )
+    conn.execute(
+        "UPDATE production_jobs SET payload_json=? WHERE job_id=?",
+        (json.dumps({"topic": "不可信快照"}), job.job_id),
+    )
+    detail = svc.detail(job.job_id)
+    assert detail["payload"]["batch_state"]["queue"][0]["title"] == "K1 第1篇"
+    assert conn.execute(
+        "SELECT status FROM wm_batch_queue_items WHERE wm_batch_id=(SELECT wm_batch_id FROM wm_batches WHERE legacy_job_id=?)",
+        (job.job_id,),
+    ).fetchone()[0] == "waiting"
+
+
 def test_t157_writing_run_mother_forge_writes_artifact(hub):
     conn, settings, _ = hub
     store = MarkdownStore(settings.asset_store_path)
