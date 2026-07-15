@@ -143,3 +143,29 @@ def test_t180_governance_reconcile_returns_total_count(client):
     assert "total" in data
     assert "results" in data
     assert isinstance(data["results"], list)
+
+
+def test_governance_backup_endpoints_show_verified_state_and_isolated_drill(client):
+    created = _post(client, "/api/v1/governance/backups", json={"label": "api"})
+    assert created.status_code == 200
+    backup = created.json()["data"]["backup"]
+    assert backup["verifiable"] is True
+
+    listed = _get(client, "/api/v1/governance/backups")
+    assert listed.status_code == 200
+    assert listed.json()["data"]["verifiable"] >= 1
+
+    drilled = _post(
+        client,
+        f"/api/v1/governance/backups/{backup['name']}/restore-drill",
+        json={"operator": "test"},
+    )
+    assert drilled.status_code == 200
+    data = drilled.json()["data"]
+    assert data["runtime_database_unchanged"] is True
+    assert data["integrity"] == "ok"
+
+
+def test_governance_backup_endpoint_rejects_path_traversal(client):
+    response = _post(client, "/api/v1/governance/backups/..%2Fhub.sqlite/restore-drill")
+    assert response.status_code in {404, 409}

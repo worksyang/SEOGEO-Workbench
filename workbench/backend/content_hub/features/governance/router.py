@@ -3,15 +3,65 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from content_hub.db.connection import connect
 from content_hub.ingestion.reconcile import ReconcileEngine
 from content_hub.services.audit import AuditService
+from content_hub.services.backup import BackupService
+from content_hub.services.safety import scrub_public_payload
 
 router = APIRouter(prefix="/api/v1/governance", tags=["governance"])
+
+
+def _backup_service(request: Request) -> BackupService:
+    return BackupService.from_settings(request.app.state.settings)
+
+
+@router.get("/backups")
+def backups(request: Request) -> dict:
+    records = _backup_service(request).list_backups()
+    return {
+        "ok": True,
+        "data": {
+            "items": [record.to_dict() for record in records],
+            "total": len(records),
+            "verifiable": sum(1 for record in records if record.verifiable),
+        },
+    }
+
+
+@router.post("/backups")
+def create_online_backup(request: Request, payload: dict | None = None) -> dict:
+    body = payload or {}
+    service = _backup_service(request)
+    before = {record.name for record in service.list_backups()}
+    try:
+        record = service.snapshot(
+            label=str(body.get("label") or "online"),
+            reuse=body.get("reuse", True) is not False,
+            actor_id=str(body.get("operator") or "user"),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="备份创建或验证失败，请查看本机日志。") from exc
+    return {"ok": True, "data": {"backup": record.to_dict(), "reused": record.name in before}}
+
+
+@router.post("/backups/{backup_name:path}/restore-drill")
+def restore_drill(request: Request, backup_name: str, payload: dict | None = None) -> dict:
+    body = payload or {}
+    try:
+        result = _backup_service(request).restore_drill(
+            backup_name,
+            actor_id=str(body.get("operator") or "user"),
+        )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=409, detail="恢复演练失败，请查看本机日志。") from exc
+    return {"ok": True, "data": result}
 
 
 @router.get("/identity")
@@ -105,6 +155,7 @@ def locks(request: Request) -> dict:
                 item["details"] = json.loads(item.pop("details_json") or "{}")
             except Exception:
                 item["details"] = {}
+            item["details"] = scrub_public_payload(item["details"], asset_root=Path(request.app.state.settings.asset_store_path))
             audit.append(item)
     return {"ok": True, "data": {"connections": connections, "audit": audit}}
 
@@ -116,7 +167,7 @@ def reconcile(request: Request) -> dict:
     with connect(settings, readonly=False) as connection:
         engine = ReconcileEngine(connection, allowed_roots)
         results = engine.run()
-        return {
+        payload = {
             "ok": True,
             "data": {
                 "results": [r.to_dict() for r in results],
@@ -125,3 +176,10 @@ def reconcile(request: Request) -> dict:
                 "warnings": sum(1 for r in results if r.severity == "warn"),
             },
         }
+    report_root = Path(settings.database_path.parent / "reports" / "reconcile").resolve()
+    report_root.mkdir(parents=True, exist_ok=True)
+    report_name = f"reconcile_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+    report_path = report_root / report_name
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["data"]["report"] = str(report_path.relative_to(settings.database_path.parent))
+    return payload

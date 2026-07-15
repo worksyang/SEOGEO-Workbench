@@ -3697,6 +3697,31 @@ a:focus-visible {
     gap: 8px;
     align-items: center;
 }
+.governance-page .governance-backup-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+.governance-page .governance-backup-head h3 { margin-bottom: 4px; }
+.governance-page .governance-backup-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.governance-page .backup-list { display: grid; gap: 8px; }
+.governance-page .backup-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #fafbfc;
+    font-size: 12px;
+}
+.governance-page .backup-card strong,
+.governance-page .backup-card small { display: block; }
+.governance-page .backup-card small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.governance-page .backup-card-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* Final demo-aligned shell: keep the React modules inside the same visual contract. */
 html,

@@ -11,18 +11,29 @@ from content_hub.db.writer_lock import writer_lock
 
 
 def verify_database(path: Path) -> str:
-    uri = f"file:{path.resolve()}?mode=ro"
+    requested = Path(path)
+    if requested.is_symlink():
+        raise ValueError("备份必须是普通文件，禁止使用软链接。")
+    resolved = requested.resolve()
+    if not resolved.is_file():
+        raise ValueError("备份必须是普通文件，禁止使用软链接。")
+    uri = f"file:{resolved}?mode=ro"
     with sqlite3.connect(uri, uri=True, timeout=5) as connection:
         return str(connection.execute("PRAGMA integrity_check").fetchone()[0])
 
 
 def create_backup(settings: Settings, destination: Path | None = None) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    final_path = (
-        destination.resolve()
+    requested_path = (
+        Path(destination)
         if destination is not None
         else (settings.database_path.parent / "backups" / f"content_hub_{timestamp}.sqlite")
     )
+    if requested_path.is_symlink():
+        raise ValueError("备份目标不能是软链接。")
+    final_path = requested_path.resolve()
+    if final_path == settings.database_path.resolve():
+        raise ValueError("备份目标不能是运行库。")
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = final_path.with_suffix(final_path.suffix + ".tmp")
     temporary_path.unlink(missing_ok=True)

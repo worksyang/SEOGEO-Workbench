@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react'
 import {apiGet, apiRequest, ApiError} from '../../api/client'
 
-type Tab = 'identity' | 'states' | 'lineage' | 'locks'
+type Tab = 'identity' | 'states' | 'lineage' | 'locks' | 'backups'
 
 function record(value: unknown, fallback: Record<string, unknown> = {}): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : fallback
@@ -20,6 +20,8 @@ export default function GovernancePage() {
   const [lineage, setLineage] = useState<{nodes: Array<Record<string, unknown>>; total: number}>({nodes: [], total: 0})
   const [locks, setLocks] = useState<{connections: Array<Record<string, unknown>>; audit: Array<Record<string, unknown>>}>({connections: [], audit: []})
   const [reconcile, setReconcile] = useState<{results: Array<Record<string, unknown>>; total: number; errors: number; warnings: number}>({results: [], total: 0, errors: 0, warnings: 0})
+  const [backups, setBackups] = useState<{items: Array<Record<string, unknown>>; total: number; verifiable: number}>({items: [], total: 0, verifiable: 0})
+  const [backupAction, setBackupAction] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -43,8 +45,33 @@ export default function GovernancePage() {
         setReconcile(res?.data || {results: [], total: 0, errors: 0, warnings: 0})
       })
       .catch(() => undefined)
+    apiGet<{ok: boolean; data: typeof backups}>('/api/v1/governance/backups', controller.signal)
+      .then((res) => setBackups(res?.data || {items: [], total: 0, verifiable: 0}))
+      .catch(() => undefined)
     return () => controller.abort()
   }, [])
+
+  async function createBackup() {
+    setBackupAction('正在创建并验证…')
+    try {
+      const response = await apiRequest<{ok: boolean; data: {backup: Record<string, unknown>; reused: boolean}}>('/api/v1/governance/backups', 'POST', {label: 'online'})
+      setBackupAction(response.data.reused ? '已复用现有可验证备份' : '已创建并验证在线备份')
+      const refreshed = await apiGet<{ok: boolean; data: typeof backups}>('/api/v1/governance/backups')
+      setBackups(refreshed.data)
+    } catch (err) {
+      setBackupAction(err instanceof Error ? err.message : '备份失败')
+    }
+  }
+
+  async function drillBackup(name: string) {
+    setBackupAction(`正在演练 ${name}…`)
+    try {
+      const response = await apiRequest<{ok: boolean; data: Record<string, unknown>}>(`/api/v1/governance/backups/${encodeURIComponent(name)}/restore-drill`, 'POST', {operator: 'user'})
+      setBackupAction(response.data.runtime_database_unchanged ? '恢复演练通过，运行库未被覆盖' : '恢复演练未确认运行库状态')
+    } catch (err) {
+      setBackupAction(err instanceof Error ? err.message : '恢复演练失败')
+    }
+  }
 
   return (
     <div className="module-frame demo-module-page governance-page">
@@ -66,6 +93,9 @@ export default function GovernancePage() {
           </button>
           <button className={`pill ${tab === 'locks' ? 'active' : ''}`} onClick={() => setTab('locks')}>
             资源锁与风控
+          </button>
+          <button className={`pill ${tab === 'backups' ? 'active' : ''}`} onClick={() => setTab('backups')}>
+            备份恢复
           </button>
         </div>
         <span className="module-right">
@@ -231,6 +261,37 @@ export default function GovernancePage() {
               </ul>
             )}
           </section>
+        </section>
+      )}
+
+      {tab === 'backups' && (
+        <section className="governance-section">
+          <div className="governance-backup-head">
+            <div>
+              <h3>备份 / 恢复演练</h3>
+              <p className="muted">仅操作工作台 SQLite；恢复演练始终写入隔离目录，不覆盖运行库。</p>
+            </div>
+            <button className="primary-button" onClick={createBackup}>创建在线备份</button>
+          </div>
+          {backupAction && <div className="module-placeholder"><span>{backupAction}</span></div>}
+          {backups.items.length === 0 ? (
+            <div className="module-empty">暂无可验证备份</div>
+          ) : (
+            <div className="backup-list">
+              {backups.items.map((item) => (
+                <article className="backup-card" key={text(item.name)}>
+                  <div>
+                    <strong>{text(item.name)}</strong>
+                    <small>{text(item.modified_at)} · {text(item.size_bytes)} bytes · SHA-256 {text(item.sha256).slice(0, 12)}…</small>
+                  </div>
+                  <div className="backup-card-actions">
+                    <span className={`tag ${item.verifiable ? 'green' : 'red'}`}>{item.verifiable ? '可验证' : '不可用'}</span>
+                    {Boolean(item.verifiable) && <button className="secondary-button" onClick={() => drillBackup(text(item.name))}>恢复演练</button>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       )}
     </div>
