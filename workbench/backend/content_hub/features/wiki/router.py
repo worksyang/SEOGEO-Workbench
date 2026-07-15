@@ -40,6 +40,41 @@ def search(request: Request, query: str = Query(""), limit: int = Query(50, ge=1
     return {"ok": True, "data": {"items": items, "total": len(items)}}
 
 
+@router.get("/source")
+def read_source(request: Request, source_ref: str = Query(..., min_length=1)) -> dict:
+    detail = _service(request).read_source_ref(source_ref)
+    if not detail:
+        raise HTTPException(status_code=404, detail="母文章不存在")
+    return {"ok": True, "data": detail}
+
+
+@router.put("/source")
+def save_source(request: Request, payload: dict) -> dict:
+    source_ref = payload.get("source_ref")
+    body = payload.get("body")
+    if not isinstance(source_ref, str) or not source_ref.strip():
+        raise HTTPException(status_code=400, detail="source_ref 不能为空")
+    if not isinstance(body, str) or not body.strip():
+        raise HTTPException(status_code=400, detail="正文不能为空")
+    base_version_id = payload.get("base_version_id")
+    if base_version_id is not None and not isinstance(base_version_id, str):
+        raise HTTPException(status_code=400, detail="base_version_id 必须是字符串")
+    try:
+        result = _service(request, readonly=False).save_source_ref(
+            source_ref,
+            body=body,
+            operator=str(payload.get("operator") or "legacy-wiki-ui"),
+            base_version_id=base_version_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AppError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="母文章路径不安全或不可读取")
+    return {"ok": True, "data": result}
+
+
 @router.post("/import")
 def import_wiki(request: Request, payload: dict | None = None) -> dict:
     payload = payload or {}
@@ -74,10 +109,20 @@ def save(request: Request, content_id: str, payload: dict) -> dict:
     if not body.strip():
         raise HTTPException(status_code=400, detail="正文不能为空")
     operator = str(payload.get("operator") or "user")
+    base_version_id = payload.get("base_version_id")
+    if base_version_id is not None and not isinstance(base_version_id, str):
+        raise HTTPException(status_code=400, detail="base_version_id 必须是字符串")
     try:
-        result = _service(request, readonly=False).save(content_id, body=body, operator=operator)
+        result = _service(request, readonly=False).save(
+            content_id,
+            body=body,
+            operator=operator,
+            base_version_id=base_version_id,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (OSError, ValueError, AppError):
+    except AppError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="母文章路径不安全或不可读取")
     return {"ok": True, "data": result}

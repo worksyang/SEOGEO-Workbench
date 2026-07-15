@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from content_hub import __version__
 from content_hub.config import Settings
 from content_hub.db.migrations import migrate
+from content_hub.db.connection import connect
+from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import AppError
 from content_hub.features.overview.router import router as overview_router
 from content_hub.features.system.router import router as system_router
@@ -36,6 +38,7 @@ from content_hub.legacy_proxy import (
 )
 
 from content_hub.logging import configure_logging
+from content_hub.services.writing import backfill_writing_runtime
 
 logger = logging.getLogger("content_hub.http")
 
@@ -47,6 +50,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         migrate(resolved_settings)
+        with writer_lock(resolved_settings.lock_path):
+            with connect(resolved_settings, readonly=False) as connection:
+                backfilled = backfill_writing_runtime(
+                    connection,
+                    asset_root=Path(resolved_settings.asset_store_path),
+                )
+                connection.commit()
+        if backfilled:
+            logger.info("WritingMoney v3.3 运行层回填完成", extra={"count": backfilled})
         logger.info("全域内容工作台启动")
         yield
         logger.info("全域内容工作台停止")

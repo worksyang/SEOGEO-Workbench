@@ -151,6 +151,46 @@ def _audit_xhs_legacy_write(settings: Any, *, method: str, path: str) -> None:
             )
 
 
+def _audit_legacy_write_blocked(
+    settings: Any,
+    *,
+    legacy_system: str,
+    method: str,
+    path: str,
+) -> None:
+    """所有原版 iframe 写请求必须止于工作台，不能绕过新运行层。"""
+    with writer_lock(settings.lock_path):
+        with connect(settings) as connection:
+            connection.execute(
+                """
+                INSERT INTO audit_log(
+                    audit_id, occurred_at, actor_type, actor_id, action,
+                    subject_type, subject_id, outcome, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"audit_{uuid.uuid4().hex[:16]}",
+                    utc_now_iso(),
+                    "legacy_proxy",
+                    f"legacy-{legacy_system}",
+                    f"{legacy_system}.legacy_write_blocked",
+                    "legacy_endpoint",
+                    path,
+                    "blocked",
+                    json.dumps(
+                        {
+                            "method": method,
+                            "path": path,
+                            "upstream_called": False,
+                            "reason_code": "legacy_write_requires_hub_command",
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            )
+
+
 def _wiki_root(settings: Any):
     candidates = [
         root for root in settings.wiki_allowed_roots
@@ -308,7 +348,11 @@ async def proxy_legacy_wiki_api(
     path: str,
     request: Request,
 ) -> Response:
-    """兼容原 Wiki UI 的旧 API，但数据读写走允许根、快照和 Hub 审计。"""
+    """兼容原 Wiki UI 的只读 API。
+
+    原始 Markdown 是永久只读事实源；旧前端的写接口必须迁到 Hub 工作副本命令，
+    不能由 iframe 直接覆盖原库。
+    """
     settings = request.app.state.settings
     root = _wiki_root(settings)
     if root is None:
@@ -316,6 +360,25 @@ async def proxy_legacy_wiki_api(
 
     body = await request.body()
     query = urllib.parse.parse_qs(str(request.url.query))
+    if path in {"save", "bulk-delete-image"} and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        _audit_legacy_write_blocked(
+            settings,
+            legacy_system="wiki",
+            method=request.method,
+            path=path,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "blocked": True,
+                "upstream_called": False,
+                "error": {
+                    "code": "LEGACY_WIKI_WRITE_BLOCKED",
+                    "message": "原始 Wiki 目录只读；请使用 Hub 工作副本与版本化保存接口。",
+                },
+            },
+        )
     if path == "list" and request.method == "GET":
         relative = urllib.parse.unquote(query.get("path", [""])[0])
         data = _wiki_list_dir(root, relative)
@@ -491,12 +554,12 @@ async def proxy_legacy_wechat_api(
     else:
         source_url = settings.wechat_source_url
         timeout_seconds = settings.wechat_source_timeout_seconds
-    if is_xhs and request.method not in {"GET", "HEAD", "OPTIONS"}:
-        _audit_xhs_legacy_write(
-            settings,
-            method=request.method,
-            path=path,
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        legacy_system = "xhs" if is_xhs else "mp" if is_mp else "geo" if is_geo else "wechat"
+        _audit_legacy_write_blocked(
+            settings, legacy_system=legacy_system, method=request.method, path=path
         )
+        code = "LEGACY_XHS_WRITE_BLOCKED" if is_xhs else "LEGACY_WRITE_BLOCKED"
         return JSONResponse(
             status_code=409,
             content={
@@ -504,8 +567,8 @@ async def proxy_legacy_wechat_api(
                 "blocked": True,
                 "upstream_called": False,
                 "error": {
-                    "code": "LEGACY_XHS_WRITE_BLOCKED",
-                    "message": "小红书旧系统写操作已被工作台阻断；当前版本只读旧事实源，未向旧系统发送请求。",
+                    "code": code,
+                    "message": "原版业务岛屿写操作已被工作台阻断；请经对应 Hub 命令接口执行，旧系统不会收到请求。",
                 },
             },
         )

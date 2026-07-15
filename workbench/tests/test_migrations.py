@@ -21,6 +21,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (2, "views"),
         (3, "system_registry"),
         (4, "canonicalize_geo_connection"),
+        (5, "v33_runtime_layers"),
     ]
 
 
@@ -32,7 +33,10 @@ def _settings_for_migration_state(
     source_dir = base.migration_dir
     names = ["0001_initial.sql", "0002_views.sql", "0003_system_registry.sql"]
     if not initial_only:
-        names.append("0004_canonicalize_geo_connection.sql")
+        names.extend([
+            "0004_canonicalize_geo_connection.sql",
+            "0005_v33_runtime_layers.sql",
+        ])
     for name in names:
         shutil.copy2(source_dir / name, migration_dir / name)
     return replace(
@@ -94,7 +98,7 @@ def _run_canonicalization(
 
     full = _settings_for_migration_state(base, tmp_path, initial_only=False)
     assert full.database_path == initial.database_path
-    assert migrate(full) == [4]
+    assert migrate(full) == [4, 5]
     return full
 
 
@@ -159,10 +163,42 @@ def test_fresh_database_has_seven_connections_and_repeat_is_noop(settings) -> No
             "SELECT COUNT(*) FROM audit_log "
             "WHERE audit_id='audit_migration_0004_geo_connection'"
         ).fetchone()[0] == 1
-
     assert migrate(settings) == []
     with connect(settings, readonly=True) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM audit_log "
             "WHERE audit_id='audit_migration_0004_geo_connection'"
         ).fetchone()[0] == 1
+
+
+def test_v33_runtime_control_planes_and_module_tables_exist(settings) -> None:
+    """v3.3 的跨系统核心表不承载运行状态；运行状态必须有独立表。"""
+    expected = {
+        "source_manifests", "source_manifest_entries", "migration_switches",
+        "contract_comparisons", "dual_write_receipts", "command_runs",
+        "search_keyword_groups", "search_keyword_settings", "search_refresh_jobs",
+        "search_refresh_items", "search_scheduler_state",
+        "mp_accounts_runtime", "mp_categories", "mp_account_flags",
+        "mp_collection_jobs", "mp_collection_events", "mp_runtime_settings",
+        "wiki_edit_sessions", "wiki_file_versions", "wiki_image_index",
+        "wiki_image_jobs", "wiki_ocr_records",
+        "wm_projects", "wm_project_events", "wm_materials",
+        "wm_project_materials", "wm_templates", "wm_project_templates",
+        "wm_plans", "wm_packages", "wm_batches", "wm_batch_keywords",
+        "wm_batch_mother_links", "wm_drafts",
+        "publish_accounts_runtime", "publish_queues", "publish_queue_items",
+        "publish_events",
+    }
+    with connect(settings, readonly=True) as connection:
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert expected <= tables
+        production_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(production_jobs)").fetchall()
+        }
+    assert {"wm_project_id", "wm_batch_id"} <= production_columns

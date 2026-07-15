@@ -55,7 +55,7 @@ def test_legacy_wiki_mirror_and_read_contract(settings) -> None:
     _run(scenario())
 
 
-def test_legacy_wiki_save_uses_hub_snapshot_and_audit(settings, tmp_path: Path) -> None:
+def test_legacy_wiki_save_is_blocked_until_old_ui_uses_hub_command(settings, tmp_path: Path) -> None:
     source_root = tmp_path / "output_md"
     source_root.joinpath("wiki").mkdir(parents=True)
     source_file = source_root / "wiki" / "sample.md"
@@ -77,11 +77,11 @@ def test_legacy_wiki_save_uses_hub_snapshot_and_audit(settings, tmp_path: Path) 
                     "/api/save",
                     json={"path": "wiki/sample.md", "content": "# 新标题\n\n新正文"},
                 )
-                assert saved.status_code == 200
-                data = saved.json()["data"]
-                assert data["source_ref"] == "wiki/sample.md"
-                assert data["snapshot_ref"].startswith("wiki/.snapshots/")
-                assert source_file.read_text(encoding="utf-8") == "# 新标题\n\n新正文\n"
+                assert saved.status_code == 409
+                data = saved.json()
+                assert data["blocked"] is True
+                assert data["upstream_called"] is False
+                assert source_file.read_text(encoding="utf-8") == "# 原标题\n\n旧正文\n"
 
                 async with httpx.AsyncClient(
                     transport=transport, base_url="http://testserver"
@@ -97,14 +97,9 @@ def test_legacy_wiki_save_uses_hub_snapshot_and_audit(settings, tmp_path: Path) 
 
     connection = sqlite3.connect(test_settings.database_path)
     try:
-        row = connection.execute(
-            "SELECT title, md_path FROM contents WHERE md_path=?",
-            ("wiki/sample.md",),
-        ).fetchone()
-        assert row == ("新标题", "wiki/sample.md")
         audit = connection.execute(
-            "SELECT action, outcome FROM audit_log WHERE action='wiki.save' ORDER BY occurred_at DESC LIMIT 1"
+            "SELECT action, outcome FROM audit_log WHERE action='wiki.legacy_write_blocked' ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
-        assert audit == ("wiki.save", "succeeded")
+        assert audit == ("wiki.legacy_write_blocked", "blocked")
     finally:
         connection.close()

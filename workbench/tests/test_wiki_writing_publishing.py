@@ -18,7 +18,7 @@ from content_hub.db.migrations import migrate
 from content_hub.config import Settings
 from content_hub.ingestion.markdown_store import MarkdownStore
 from content_hub.services.wiki import WikiService
-from content_hub.services.writing import WritingService, FakeProvider
+from content_hub.services.writing import WritingService, FakeProvider, backfill_writing_runtime
 from content_hub.services.publishing import PublishingService, PublishAccount
 from content_hub.adapters.wiki import scan_directory
 
@@ -71,7 +71,7 @@ def test_t147_wiki_search_finds_file(hub):
     assert any(item["title"].startswith("友邦") for item in results)
 
 
-def test_t148_wiki_save_atomic_replaces_file(hub):
+def test_t148_wiki_save_writes_versioned_workspace_not_original(hub):
     conn, _settings, tmp_path = hub
     wiki = tmp_path / "wiki"
     wiki.mkdir(parents=True)
@@ -85,13 +85,17 @@ def test_t148_wiki_save_atomic_replaces_file(hub):
     new_body = "---\nschema_version: content-md/1.1\ncontent_id: cnt_wiki00000001\n---\n\n# 测试\n\n新内容\n"
     result = svc.save(cid, body=new_body, operator="test")
     assert result["content_id"] == cid
-    assert "新内容" in target.read_text(encoding="utf-8")
-    snapshot = asset_root / result["snapshot_ref"]
-    assert snapshot.parent == (asset_root / "wiki" / ".snapshots").resolve()
-    assert snapshot.read_text(encoding="utf-8").endswith("旧文本\n")
+    assert "旧文本" in target.read_text(encoding="utf-8")
+    workspace = asset_root / result["workspace_ref"]
+    assert workspace.read_text(encoding="utf-8").endswith("新内容\n")
+    assert result["original_written"] is False
+    assert conn.execute(
+        "SELECT COUNT(*) FROM wiki_file_versions WHERE content_id=?",
+        (cid,),
+    ).fetchone()[0] == 2
     second = svc.save(cid, body=new_body.replace("新内容", "再次保存"), operator="test")
-    assert (asset_root / second["snapshot_ref"]).exists()
-    assert second["snapshot_ref"] != result["snapshot_ref"]
+    assert second["version_id"] != result["version_id"]
+    assert workspace.read_text(encoding="utf-8").endswith("再次保存\n")
     assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 
 
@@ -100,6 +104,49 @@ def test_t149_wiki_save_validation_blocks_external_path(hub):
     svc = WikiService(connection=conn, asset_root=tmp_path, source_roots=[tmp_path])
     with pytest.raises(FileNotFoundError):
         svc.save("cnt_never00000001", body="body", operator="test")
+
+
+def test_t149b_wiki_source_read_and_save_keep_version_lock(hub):
+    conn, settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "wiki").mkdir(parents=True)
+    original = root / "wiki" / "规则.md"
+    original.write_text("# 规则\n\n原文\n", encoding="utf-8")
+    asset = tmp_path / "asset"
+    asset.mkdir()
+    from dataclasses import replace
+    app_settings = replace(settings, wiki_allowed_roots=(root,), asset_store_path=asset)
+
+    async def scenario():
+        app = create_app(app_settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                loaded = await client.get("/api/v1/wiki/source", params={"source_ref": "wiki/规则.md"})
+                assert loaded.status_code == 200
+                assert loaded.json()["data"]["body"].endswith("原文\n")
+                assert loaded.json()["data"]["version_id"] is None
+                saved = await client.put(
+                    "/api/v1/wiki/source",
+                    json={"source_ref": "wiki/规则.md", "body": "# 规则\n\n工作副本\n"},
+                )
+                assert saved.status_code == 200
+                version_id = saved.json()["data"]["version_id"]
+                reread = await client.get("/api/v1/wiki/source", params={"source_ref": "wiki/规则.md"})
+                assert reread.json()["data"]["body"].endswith("工作副本\n")
+                assert reread.json()["data"]["version_id"] == version_id
+                conflict = await client.put(
+                    "/api/v1/wiki/source",
+                    json={
+                        "source_ref": "wiki/规则.md",
+                        "body": "# 规则\n\n冲突内容\n",
+                        "base_version_id": "wfv_not_current",
+                    },
+                )
+                assert conflict.status_code == 409
+
+    asyncio.run(scenario())
+    assert original.read_text(encoding="utf-8").endswith("原文\n")
 
 
 def test_t150_wiki_rejects_path_traversal(hub):
@@ -111,17 +158,17 @@ def test_t150_wiki_rejects_path_traversal(hub):
         resolve_within(Path("/etc/passwd"), [tmp_path])
 
 
-def test_t153_wiki_snapshot_rejects_symlinked_snapshot_root(hub):
+def test_t153_wiki_workspace_rejects_symlink_escape(hub):
     conn, _settings, tmp_path = hub
     wiki = tmp_path / "wiki"
     wiki.mkdir()
     target = wiki / "测试.md"
     target.write_text("# 测试\n\n旧文本\n", encoding="utf-8")
     asset_root = tmp_path / "asset"
-    (asset_root / "wiki").mkdir(parents=True)
+    (asset_root / "wiki-workspace").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (asset_root / "wiki" / ".snapshots").symlink_to(outside, target_is_directory=True)
+    (asset_root / "wiki-workspace" / "files").symlink_to(outside, target_is_directory=True)
     svc = WikiService(connection=conn, asset_root=asset_root, source_roots=[tmp_path])
     cid = svc.collect()[0]["content_id"]
     with pytest.raises(Exception):
@@ -197,8 +244,9 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     assert str(asset) not in public_data
 
     saved = svc.save(mother["content_id"], body="# 母文章\n\n编辑后的正文", operator="test")
-    assert "编辑后的正文" in (root / "其他" / "母文章.md").read_text(encoding="utf-8")
-    assert (asset / saved["snapshot_ref"]).exists()
+    assert "正文" in (root / "其他" / "母文章.md").read_text(encoding="utf-8")
+    assert (asset / saved["workspace_ref"]).read_text(encoding="utf-8").endswith("编辑后的正文\n")
+    assert saved["original_written"] is False
     row = conn.execute(
         "SELECT content_id, content_hash FROM contents WHERE content_id=?",
         (mother["content_id"],),
@@ -206,7 +254,7 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     assert row["content_id"] == mother["content_id"]
     assert row["content_hash"]
     save_audit = conn.execute(
-        "SELECT details_json FROM audit_log WHERE action='wiki.save' ORDER BY occurred_at DESC LIMIT 1"
+        "SELECT details_json FROM audit_log WHERE action='wiki.workspace_save' ORDER BY occurred_at DESC LIMIT 1"
     ).fetchone()[0]
     assert str(root) not in save_audit
     assert "其他/母文章.md" in save_audit
@@ -427,6 +475,19 @@ def test_t155_writing_create_mother_forge_returns_job(hub):
     assert job.job_type == "mother_forge"
     assert job.job_id.startswith("job_")
     assert job.topic == "测试选题"
+    project_id = conn.execute(
+        "SELECT wm_project_id FROM production_jobs WHERE job_id=?",
+        (job.job_id,),
+    ).fetchone()[0]
+    project = conn.execute(
+        "SELECT title, purpose, stage, status FROM wm_projects WHERE wm_project_id=?",
+        (project_id,),
+    ).fetchone()
+    assert tuple(project) == ("测试选题", "为测试而创建的母文章", "decision", "active")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM wm_project_events WHERE wm_project_id=?",
+        (project_id,),
+    ).fetchone()[0] == 1
 
 
 def test_t156_writing_create_batch_returns_job(hub):
@@ -442,6 +503,43 @@ def test_t156_writing_create_batch_returns_job(hub):
     )
     assert job.job_type == "batch_production"
     assert "keywords" in job.payload
+    batch_id = conn.execute(
+        "SELECT wm_batch_id FROM production_jobs WHERE job_id=?",
+        (job.job_id,),
+    ).fetchone()[0]
+    assert tuple(conn.execute(
+        "SELECT title, source FROM wm_batches WHERE wm_batch_id=?",
+        (batch_id,),
+    ).fetchone()) == ("香港储蓄险", "manual")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM wm_batch_keywords WHERE wm_batch_id=?",
+        (batch_id,),
+    ).fetchone()[0] == 3
+
+
+def test_t156b_writing_runtime_backfill_is_idempotent(hub):
+    conn, settings, _ = hub
+    store = MarkdownStore(settings.asset_store_path)
+    legacy = WritingService(connection=conn, markdown_store=store, provider=FakeProvider(latency_ms=0))
+    job = legacy.create_batch(
+        topic="待回填批次",
+        source="manual",
+        requirements={"brief": "历史任务"},
+        keywords=["历史关键词"],
+        target_article_count=1,
+    )
+    conn.execute(
+        "UPDATE production_jobs SET wm_batch_id=NULL WHERE job_id=?",
+        (job.job_id,),
+    )
+    conn.execute("DELETE FROM wm_batch_keywords")
+    conn.execute("DELETE FROM wm_batches")
+    assert backfill_writing_runtime(conn, asset_root=settings.asset_store_path) == 1
+    assert backfill_writing_runtime(conn, asset_root=settings.asset_store_path) == 0
+    assert conn.execute(
+        "SELECT wm_batch_id FROM production_jobs WHERE job_id=?",
+        (job.job_id,),
+    ).fetchone()[0]
 
 
 def test_t157_writing_run_mother_forge_writes_artifact(hub):
@@ -458,6 +556,10 @@ def test_t157_writing_run_mother_forge_writes_artifact(hub):
     artifact = settings.asset_store_path / result["asset_ref"]
     assert artifact.exists()
     assert conn.execute("SELECT status FROM production_jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == "blocked"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM wm_drafts WHERE wm_project_id=(SELECT wm_project_id FROM production_jobs WHERE job_id=?)",
+        (job.job_id,),
+    ).fetchone()[0] == 1
     assert "demo_mother_article" in artifact.read_text(encoding="utf-8")
     event = conn.execute(
         "SELECT payload_json FROM job_events WHERE job_id=? AND event_type='mother_forge.written'",

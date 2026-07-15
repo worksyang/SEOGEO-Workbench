@@ -1,7 +1,8 @@
 """WritingMoney 服务：安全的配置状态、演示 Provider 与任务恢复。
 
-dev-plan §5.6 协议：
-- 项目 / 批次全部落到 production_jobs 表；
+v3.3 协议：
+- 项目 / 批次 / 素材 / 草稿落到 wm_* 运行表；
+- production_jobs 仅保留旧业务岛屿兼容任务壳和恢复事件，不能再作为领域事实源；
 - 素材必用 / 参考 / 不用 = payload_json 内部分；
 - 默认不配置任何真实 Provider；FakeProvider 只能由调用方显式注入并始终标记为 demo_only。
 - 输出 Markdown 写到 asset_store/generated，并登记为 content。
@@ -126,6 +127,7 @@ class WritingService:
             job_type="mother_forge",
             payload=payload,
         )
+        self._create_runtime_project(job_id, topic=topic, purpose=purpose, operator=operator)
         self._audit.record(
             action="writing.create",
             subject_type="writing_job",
@@ -186,6 +188,14 @@ class WritingService:
         job_id = self._jobs.create(
             job_type="batch_production",
             payload=payload,
+        )
+        self._create_runtime_batch(
+            job_id,
+            topic=topic,
+            source=source,
+            requirements=requirements,
+            state=payload["batch_state"],
+            operator=operator,
         )
         self._audit.record(
             action="writing.create",
@@ -308,6 +318,13 @@ class WritingService:
             result.content_hash,
         )
         content_id = self._last_content_id(asset_ref)
+        self._record_runtime_draft(
+            job,
+            title=title,
+            artifact_ref=asset_ref,
+            content_id=content_id,
+            status="draft",
+        )
         self._record_event(job.job_id, "mother_forge.written", {"asset_ref": asset_ref, "content_id": content_id})
         return {
             "asset_ref": asset_ref,
@@ -363,6 +380,14 @@ class WritingService:
                 job.job_id,
                 f"batch.article.{index + 1}",
                 {"asset_ref": asset_ref, "content_id": self._last_content_id(asset_ref)},
+            )
+            self._record_runtime_draft(
+                job,
+                title=prompt,
+                artifact_ref=asset_ref,
+                content_id=self._last_content_id(asset_ref),
+                status="draft",
+                ordinal=index,
             )
         if not queue:
             for index, keyword in enumerate(keywords or [job.topic]):
@@ -595,6 +620,7 @@ class WritingService:
             raise ValueError(f"不支持的写作变更：{action}")
 
         self._update_payload(job_id, payload, event_type=f"writing.{action}", operator=operator)
+        self._sync_runtime_from_payload(job, payload, operator=operator, event_type=f"writing.{action}")
         self._audit.record(
             action=f"writing.{action}",
             subject_type="writing_job",
@@ -623,6 +649,314 @@ class WritingService:
             payload,
             event_type=event_type,
             actor=operator,
+        )
+
+    def _create_runtime_project(
+        self,
+        job_id: str,
+        *,
+        topic: str,
+        purpose: str,
+        operator: str,
+    ) -> str:
+        project_id = generate_ulid_like("wmp")
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO wm_projects(
+                wm_project_id, title, purpose, stage, status, workspace_ref,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, 'decision', 'active', ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                topic[:300] or "未命名母文章",
+                purpose[:4000],
+                f"writing/projects/{project_id}",
+                operator,
+                now,
+                now,
+            ),
+        )
+        self._conn.execute(
+            "UPDATE production_jobs SET wm_project_id=? WHERE job_id=?",
+            (project_id, job_id),
+        )
+        self._runtime_event(project_id, "project.created", operator, {"job_id": job_id})
+        return project_id
+
+    def _create_runtime_batch(
+        self,
+        job_id: str,
+        *,
+        topic: str,
+        source: str,
+        requirements: dict[str, Any],
+        state: dict[str, Any],
+        operator: str,
+    ) -> str:
+        batch_id = generate_ulid_like("wmb")
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO wm_batches(
+                wm_batch_id, title, source, status, requirements_json, workspace_ref,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                topic[:300] or "未命名批次",
+                source[:120] or "manual",
+                json.dumps(requirements, ensure_ascii=False, sort_keys=True),
+                f"writing/batches/{batch_id}",
+                operator,
+                now,
+                now,
+            ),
+        )
+        self._conn.execute(
+            "UPDATE production_jobs SET wm_batch_id=? WHERE job_id=?",
+            (batch_id, job_id),
+        )
+        self._sync_batch_keywords(batch_id, state)
+        return batch_id
+
+    def _runtime_ids(self, job_id: str) -> tuple[str | None, str | None]:
+        row = self._conn.execute(
+            "SELECT wm_project_id, wm_batch_id FROM production_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return None, None
+        return row["wm_project_id"], row["wm_batch_id"]
+
+    def _runtime_event(
+        self,
+        project_id: str,
+        event_type: str,
+        actor: str,
+        details: dict[str, Any],
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO wm_project_events(
+                wm_project_event_id, wm_project_id, event_type, actor_id, details_json, occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                generate_ulid_like("wme"),
+                project_id,
+                event_type,
+                actor,
+                json.dumps(details, ensure_ascii=False, sort_keys=True),
+                utc_now_iso(),
+            ),
+        )
+
+    def _sync_runtime_from_payload(
+        self,
+        job: WritingJob,
+        payload: dict[str, Any],
+        *,
+        operator: str,
+        event_type: str,
+    ) -> None:
+        """把旧 UI 兼容快照投影到 v3.3 运行表，领域查询不再依赖 payload_json。"""
+        project_id, batch_id = self._runtime_ids(job.job_id)
+        now = utc_now_iso()
+        if project_id:
+            stage = str(payload.get("stage") or "decision")
+            normalized_stage = stage if stage in {
+                "decision", "materials", "template", "plan", "package", "draft", "completed", "archived"
+            } else "decision"
+            self._conn.execute(
+                """
+                UPDATE wm_projects SET title=?, purpose=?, stage=?, updated_at=? WHERE wm_project_id=?
+                """,
+                (
+                    str(payload.get("topic") or job.topic)[:300],
+                    str(payload.get("purpose") or "")[:4000],
+                    normalized_stage,
+                    now,
+                    project_id,
+                ),
+            )
+            self._sync_project_materials(project_id, payload, operator)
+            self._runtime_event(project_id, event_type, operator, {"job_id": job.job_id})
+        if batch_id:
+            state = self._batch_state(payload)
+            status = "ready" if state.get("queue") else "draft"
+            self._conn.execute(
+                """
+                UPDATE wm_batches
+                SET title=?, source=?, status=?, requirements_json=?, updated_at=?
+                WHERE wm_batch_id=?
+                """,
+                (
+                    str(state.get("name") or job.topic)[:300],
+                    str(state.get("source") or "manual")[:120],
+                    status,
+                    json.dumps({"brief": str(state.get("brief") or "")[:4000]}, ensure_ascii=False),
+                    now,
+                    batch_id,
+                ),
+            )
+            self._sync_batch_keywords(batch_id, state)
+
+    def _sync_project_materials(
+        self,
+        project_id: str,
+        payload: dict[str, Any],
+        operator: str,
+    ) -> None:
+        for raw in [*list(payload.get("materials") or []), *list(payload.get("url_materials") or [])]:
+            if not isinstance(raw, dict):
+                continue
+            material_id = str(raw.get("id") or generate_ulid_like("wmm"))[:160]
+            kind = "url" if str(raw.get("type") or "") == "url" else "manual"
+            usage = {"must": "required", "reference": "reference", "skip": "excluded"}.get(
+                str(raw.get("usage") or "reference"), "reference"
+            )
+            now = utc_now_iso()
+            self._conn.execute(
+                """
+                INSERT INTO wm_materials(
+                    wm_material_id, material_kind, title, source_ref, url, parse_status,
+                    body_ref, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wm_material_id) DO UPDATE SET
+                    title=excluded.title, source_ref=excluded.source_ref, url=excluded.url,
+                    parse_status=excluded.parse_status, body_ref=excluded.body_ref,
+                    metadata_json=excluded.metadata_json, updated_at=excluded.updated_at
+                """,
+                (
+                    material_id, kind, str(raw.get("title") or "")[:300],
+                    str(raw.get("path") or "")[:800] or None,
+                    str(raw.get("url") or "")[:2000] or None,
+                    "parsed" if raw.get("parseStatus") == "parsed" else "received",
+                    str(raw.get("path") or "")[:800] or None,
+                    json.dumps({"legacy_job_material": True}, ensure_ascii=False),
+                    now, now,
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO wm_project_materials(
+                    wm_project_id, wm_material_id, usage_state, selected_by, selected_at, note
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wm_project_id, wm_material_id) DO UPDATE SET
+                    usage_state=excluded.usage_state, selected_by=excluded.selected_by,
+                    selected_at=excluded.selected_at, note=excluded.note
+                """,
+                (
+                    project_id, material_id, usage, operator, now,
+                    str(raw.get("reason") or "")[:4000],
+                ),
+            )
+
+    def _sync_batch_keywords(self, batch_id: str, state: dict[str, Any]) -> None:
+        """保留稳定的批次关键词 ID，并把母文章选择投影为显式关系。"""
+        # 旧页面允许把同一词以不同临时行 ID 重放回来。运行表要求
+        # (batch, keyword_text) 唯一，因此每次按最新快照重建关系并折叠重复词。
+        self._conn.execute(
+            """
+            DELETE FROM wm_batch_mother_links
+            WHERE wm_batch_keyword_id IN (
+                SELECT wm_batch_keyword_id FROM wm_batch_keywords WHERE wm_batch_id=?
+            )
+            """,
+            (batch_id,),
+        )
+        self._conn.execute("DELETE FROM wm_batch_keywords WHERE wm_batch_id=?", (batch_id,))
+        seen_keywords: set[str] = set()
+        for ordinal, raw in enumerate(state.get("keywords") or []):
+            if not isinstance(raw, dict):
+                continue
+            legacy_id = str(raw.get("id") or f"kw-{ordinal}")
+            keyword_text = str(raw.get("keyword") or "")[:200]
+            if not keyword_text or keyword_text in seen_keywords:
+                continue
+            seen_keywords.add(keyword_text)
+            keyword_id = _runtime_deterministic_id("wmk", batch_id, legacy_id)
+            now = utc_now_iso()
+            self._conn.execute(
+                """
+                INSERT INTO wm_batch_keywords(
+                    wm_batch_keyword_id, wm_batch_id, keyword_text, purpose,
+                    target_article_count, readiness_status, ordinal, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wm_batch_keyword_id) DO UPDATE SET
+                    keyword_text=excluded.keyword_text, purpose=excluded.purpose,
+                    target_article_count=excluded.target_article_count,
+                    readiness_status=excluded.readiness_status, ordinal=excluded.ordinal,
+                    metadata_json=excluded.metadata_json
+                """,
+                (
+                    keyword_id, batch_id, keyword_text,
+                    str(raw.get("purpose") or "")[:4000],
+                    max(1, min(100, int(raw.get("count") or 1))),
+                    "ready" if raw.get("readiness") == "ready" else "pending",
+                    ordinal,
+                    json.dumps({"legacy_id": legacy_id, "updated_at": now}, ensure_ascii=False),
+                ),
+            )
+            self._conn.execute(
+                "DELETE FROM wm_batch_mother_links WHERE wm_batch_keyword_id=?",
+                (keyword_id,),
+            )
+            for match in raw.get("motherMatches") or []:
+                if not isinstance(match, dict):
+                    continue
+                content_id = str(match.get("motherId") or "")
+                exists = self._conn.execute(
+                    "SELECT 1 FROM contents WHERE content_id=?",
+                    (content_id,),
+                ).fetchone()
+                if not exists:
+                    continue
+                self._conn.execute(
+                    """
+                    INSERT INTO wm_batch_mother_links(
+                        wm_batch_keyword_id, content_id, relation_type, confidence, reason, created_at
+                    ) VALUES (?, ?, 'selected', ?, ?, ?)
+                    """,
+                    (
+                        keyword_id, content_id, match.get("confidence"),
+                        str(match.get("role") or "")[:1000], now,
+                    ),
+                )
+
+    def _record_runtime_draft(
+        self,
+        job: WritingJob,
+        *,
+        title: str,
+        artifact_ref: str,
+        content_id: str,
+        status: str,
+        ordinal: int = 0,
+    ) -> None:
+        project_id, batch_id = self._runtime_ids(job.job_id)
+        if not project_id and not batch_id:
+            return
+        draft_id = _runtime_deterministic_id("wmd", job.job_id, str(ordinal), artifact_ref)
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO wm_drafts(
+                wm_draft_id, wm_project_id, wm_batch_id, content_id, status, title,
+                artifact_ref, input_hash, output_hash, provider_kind, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(wm_draft_id) DO UPDATE SET
+                status=excluded.status, title=excluded.title, artifact_ref=excluded.artifact_ref,
+                content_id=excluded.content_id, output_hash=excluded.output_hash, updated_at=excluded.updated_at
+            """,
+            (
+                draft_id, project_id, batch_id, content_id or None, status,
+                title[:400], artifact_ref, hashlib.sha256(job.job_id.encode()).hexdigest(),
+                hashlib.sha256(artifact_ref.encode()).hexdigest(), self._provider_kind, now, now,
+            ),
         )
 
     @staticmethod
@@ -797,6 +1131,66 @@ class WritingService:
         return row["content_id"] if row else ""
 
 
+def backfill_writing_runtime(
+    connection: sqlite3.Connection,
+    *,
+    asset_root: Path,
+) -> int:
+    """为 v3.3 前创建的兼容任务补齐 wm_* 外键和运行记录。
+
+    该过程幂等：只处理还没有 runtime 外键的任务；旧 payload 只作为一次性迁移
+    输入，后续领域状态由 wm_* 表承载。
+    """
+    service = WritingService(
+        connection=connection,
+        markdown_store=MarkdownStore(asset_root),
+        provider=None,
+    )
+    rows = connection.execute(
+        """
+        SELECT * FROM production_jobs
+        WHERE job_type IN ('mother_forge', 'batch_production')
+          AND ((job_type='mother_forge' AND wm_project_id IS NULL)
+            OR (job_type='batch_production' AND wm_batch_id IS NULL))
+        ORDER BY created_at, job_id
+        """
+    ).fetchall()
+    for row in rows:
+        job = WritingJob.from_row(row)
+        if job.job_type == "mother_forge":
+            service._create_runtime_project(
+                job.job_id,
+                topic=job.topic,
+                purpose=str(job.payload.get("purpose") or ""),
+                operator="v33-runtime-backfill",
+            )
+        else:
+            state = service._batch_state(job.payload)
+            service._create_runtime_batch(
+                job.job_id,
+                topic=job.topic,
+                source=str(job.payload.get("source") or state.get("source") or "legacy"),
+                requirements=job.payload.get("requirements")
+                if isinstance(job.payload.get("requirements"), dict)
+                else {"brief": str(state.get("brief") or "")},
+                state=state,
+                operator="v33-runtime-backfill",
+            )
+        service._sync_runtime_from_payload(
+            job,
+            job.payload,
+            operator="v33-runtime-backfill",
+            event_type="writing.runtime_backfilled",
+        )
+    return len(rows)
+
+
 def _deterministic_id(*parts: str) -> str:
     digest = hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:16]
     return f"cnt_{digest}"
+
+
+def _runtime_deterministic_id(prefix: str, *parts: str) -> str:
+    """稳定映射旧 UI 临时行 ID 到 v3.3 运行表主键。"""
+    digest = hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}_{digest}"

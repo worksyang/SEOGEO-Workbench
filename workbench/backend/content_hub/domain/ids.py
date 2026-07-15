@@ -33,13 +33,37 @@ ID_PREFIXES: Final[tuple[str, ...]] = (
     "job",  # production job
 )
 
-# 工程前缀：ingestion batch / correction_job / publish_attempt / job_event
+# 工程前缀：摄取、审计与各模块运行层的命令/版本/任务实体。
 OPS_PREFIXES: Final[tuple[str, ...]] = (
     "batch",
     "corr",
     "pub",
     "evt",
     "mat",
+    "wfv",  # wiki file version
+    "cmd",  # hub command run
+    "sw",   # migration switch
+    "cmp",  # contract comparison
+    "dwr",  # dual-write receipt
+    "srj",  # search refresh job
+    "sri",  # search refresh item
+    "mpj",  # mp collection job
+    "mpe",  # mp collection event
+    "wes",  # wiki edit session
+    "wij",  # wiki image job
+    "wic",  # wiki OCR record
+    "wmp",  # WritingMoney project
+    "wme",  # WritingMoney project event
+    "wmm",  # WritingMoney material
+    "wmt",  # WritingMoney template
+    "wpl",  # WritingMoney plan
+    "wpk",  # WritingMoney package
+    "wmb",  # WritingMoney batch
+    "wmk",  # WritingMoney batch keyword
+    "wmd",  # WritingMoney draft
+    "pqu",  # publish queue
+    "pqi",  # publish queue item
+    "pev",  # publish event
 )
 
 # 已注册的外部 ID 命名空间（v3.2 §十一 + dev-plan §5）。

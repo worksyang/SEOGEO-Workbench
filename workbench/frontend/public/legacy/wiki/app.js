@@ -1,5 +1,6 @@
 let currentFile = null;
 let currentContent = '';   // 当前文件的最新原始 markdown（每次从后端实时拉取）
+let currentVersionId = null; // Hub 工作副本的乐观锁版本，防止覆盖其他会话的编辑
 let totalCount = 0;        // 全库 md 文件总数
 let toastTimer = null;
 
@@ -41,20 +42,28 @@ async function apiSearch(q) {
   return d.files || [];
 }
 async function apiRead(path) {
-  const r = await fetch('/api/file?path=' + encodeURIComponent(path));
+  const r = await fetch('/api/v1/wiki/source?source_ref=' + encodeURIComponent(path));
   if (!r.ok) throw new Error('读取失败: ' + path);
   const d = await r.json();
-  return d.content;
+  if (!d.ok || !d.data) throw new Error('读取失败: ' + path);
+  currentVersionId = d.data.version_id || null;
+  return d.data.body;
 }
 async function apiSave(path, content) {
-  const r = await fetch('/api/save', {
-    method: 'POST',
+  const r = await fetch('/api/v1/wiki/source', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: path, content: content })
+    body: JSON.stringify({
+      source_ref: path,
+      body: content,
+      base_version_id: currentVersionId,
+      operator: 'legacy-wiki-ui'
+    })
   });
   const d = await r.json();
-  if (!d.ok) throw new Error(d.error || '保存失败');
-  return d;
+  if (!r.ok || !d.ok) throw new Error(d.detail || d.error || '保存失败');
+  currentVersionId = d.data && d.data.version_id || currentVersionId;
+  return d.data;
 }
 
 /* ===== 懒加载文件树 ===== */
