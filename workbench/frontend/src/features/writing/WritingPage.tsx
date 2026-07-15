@@ -30,11 +30,15 @@ const STATUS_LABELS: Record<string, string> = {
   blocked: '受阻',
 }
 
-export default function WritingPage() {
+type WritingPageProps = {
+  initialTab?: 'overview' | 'forge' | 'batch'
+}
+
+export default function WritingPage({initialTab = 'overview'}: WritingPageProps) {
   const [state, setState] = useState<PageState>('loading')
   const [error, setError] = useState('')
   const [jobs, setJobs] = useState<Job[]>([])
-  const [tab, setTab] = useState<'overview' | 'forge' | 'batch'>('overview')
+  const [tab, setTab] = useState<'overview' | 'forge' | 'batch'>(initialTab)
   const [forgeTopic, setForgeTopic] = useState('')
   const [forgePurpose, setForgePurpose] = useState('')
   const [batchTopic, setBatchTopic] = useState('')
@@ -63,6 +67,10 @@ export default function WritingPage() {
   useEffect(() => {
     refresh()
   }, [])
+
+  useEffect(() => {
+    setTab(initialTab)
+  }, [initialTab])
 
   const counts = useMemo(() => {
     const out: Record<string, number> = {}

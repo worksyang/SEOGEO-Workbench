@@ -28,6 +28,7 @@ from content_hub.features.contents.router import router as contents_router
 from content_hub.features.jobs.router import router as jobs_router
 from content_hub.features.signals.router import router as signals_router
 from content_hub.features.governance.router import router as governance_router
+from content_hub.legacy_proxy import proxy_legacy_wechat_api
 
 from content_hub.logging import configure_logging
 
@@ -74,12 +75,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data: https:; "
-            "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
-        )
+        if request.url.path.startswith("/legacy/wechat/"):
+            # 原系统页面含历史 inline handler 与 Chart.js/marked 依赖；
+            # 只对同源、只读镜像岛屿放宽，不影响统一工作台主页面。
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data: https:; "
+                "style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+                "connect-src 'self'; frame-ancestors 'self'"
+            )
+        else:
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data: https:; "
+                "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+            )
         logger.info(
             "请求完成",
             extra={
@@ -134,6 +146,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(signals_router)
     app.include_router(governance_router)
+    # 原微信关键词岛屿使用旧页面的原始 API 契约；先经工作台白名单代理，
+    # 后续再按接口逐条切换到 Hub，不改动旧系统本身。
+    app.add_api_route(
+        "/api/{path:path}",
+        proxy_legacy_wechat_api,
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
 
     _mount_frontend(app, resolved_settings.frontend_dist)
     return app
@@ -142,8 +162,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 def _mount_frontend(app: FastAPI, frontend_dist: Path) -> None:
     index_path = frontend_dist / "index.html"
     assets_path = frontend_dist / "assets"
+    legacy_path = frontend_dist / "legacy"
     if assets_path.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+    if legacy_path.is_dir():
+        app.mount("/legacy", StaticFiles(directory=legacy_path), name="legacy")
 
     @app.get("/{path:path}", include_in_schema=False)
     async def frontend(path: str):

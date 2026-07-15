@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>关键词监控系统</title>
+<link rel="icon" href="data:,">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+<link rel="stylesheet" href="/legacy/wechat/static/css/monitor.css">
+</head>
+<body>
+
+<div class="topbar">
+  <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="切换菜单">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <div class="logo">关键词监控系统</div>
+  <div class="sep"></div>
+  <span class="topbar-meta">监控关键词：<b id="kwCountTop" style="color:#111">3</b> 个 · 追踪账号：<b id="acctCountTop" style="color:#111">7</b> 个</span>
+  <div class="view-switch">
+    <button class="view-pill active" id="modeKeyword" onclick="setMode('keyword')">关键词视角</button>
+    <button class="view-pill" id="modeAccount" onclick="setMode('account')">账号透视</button>
+    <button class="view-pill" id="modeKeywordManage" onclick="setMode('keywordManage')">关键词管理</button>
+    <button class="view-pill" id="modeArticleList" onclick="setMode('articleList')">文章List</button>
+  </div>
+  <div class="topbar-right">默认入口：关键词 · 最近执行：2026-06-06 14:32 · 15天窗口</div>
+</div>
+
+<div class="layout">
+  <div class="col-left">
+    <div class="col-left-head">
+      <div class="acct-sort-tabs" id="acctSortTabs" style="display:none">
+        <button class="acct-sort-tab active has-tip" id="sortTabScore" onclick="setAccountSortMode('score')" data-tooltip="账号分看持续经营：历史与近期覆盖、经典文章、持续经营、内容矩阵、战场广度。100 是当前有效账号的 P99 基准线，多维同时超标时可以突破。">账号分</button>
+        <button class="acct-sort-tab has-tip" id="sortTabTimeliness" onclick="setAccountSortMode('timeliness')" data-tooltip="时效分看最近 3 天冲榜：Top3 规模与广度、新进 Top3、新文冲榜、连续冲榜、上升动能。100 是 P99 基准线，不是上限。">时效榜</button>
+        <button class="acct-sort-tab has-tip" id="sortTabToday" onclick="setAccountSortMode('today')" data-tooltip="当天分只回答今天谁最强：今日 Top3、关键词、文章、主题、排名质量、较昨日增长。分数下方保留今日上榜与历史上榜数量。">当天榜</button>
+      </div>
+      <div class="col-left-toolbar">
+        <input class="search-input" id="searchInput" placeholder="搜索关键词…" oninput="filterList(this.value)" />
+        <div class="keyword-refresh-slot" id="keywordRefreshSlot">
+          <button class="kw-refresh-trigger" id="kwRefreshTrigger" onclick="kmOpenRefreshModal()">刷新全部关键词</button>
+          <button class="kw-refresh-history-btn" id="kwRefreshHistoryBtn" onclick="kmOpenRefreshHistory()">刷新历史</button>
+          <div class="kw-inline-progress" id="kwInlineProgress">
+            <div class="kw-inline-progress-label" id="kwInlineProgressLabel">准备中…</div>
+            <div class="kw-inline-progress-shell">
+              <div class="kw-inline-progress-bar" id="kwInlineProgressBar"></div>
+            </div>
+            <div class="kw-inline-progress-meta" id="kwInlineProgressMeta">0 / 0</div>
+            <button class="kw-progress-cancel" id="kwProgressCancel" type="button" onclick="kmProgressCancel()">停止</button>
+            <button class="kw-progress-restart" id="kwProgressRestart" type="button" onclick="kmProgressAck()">知道了</button>
+          </div>
+        </div>
+      </div>
+      <!-- 关键词筛选栏单独成块，搜索/刷新与筛选解耦 -->
+    </div>
+    <!-- 关键词筛选栏：紧凑胶囊，避免打断关键词列表 -->
+    <div class="kw-filter-bar" id="kwFilterBar" style="display:none">
+      <div class="kw-filter-head">
+        <div class="kw-filter-summary" id="kwFilterSummary">已显示 0 / 0 个关键词</div>
+        <button class="kw-filter-reset" id="kwFilterReset" type="button" onclick="resetKeywordFilters()" hidden>清空筛选</button>
+      </div>
+      <div class="kw-filter-row kw-filter-row-groups">
+        <span class="kw-filter-label">分组</span>
+        <div class="kw-filter-pills kw-filter-pills-groups" id="kwGroupChips"></div>
+        <button class="kw-filter-more" id="kwGroupMoreBtn" type="button" onclick="toggleKwGroupPanel()" hidden>更多</button>
+      </div>
+      <div class="kw-filter-more-panel" id="kwGroupMorePanel" hidden></div>
+      <div class="kw-filter-row kw-filter-row-status">
+        <span class="kw-filter-label">状态</span>
+        <div class="kw-filter-pills" id="kwStatusChips"></div>
+      </div>
+      <div class="kw-filter-row kw-filter-row-sort">
+        <span class="kw-filter-label">排序</span>
+        <div class="kw-filter-pills" id="kwSortChips"></div>
+      </div>
+    </div>
+    <div class="acct-list" id="acctList"></div>
+  </div>
+  <div class="mobile-overlay" onclick="closeMobileSidebar()"></div>
+  <div class="col-right" id="colRight">
+    <div class="empty-hint">← 点击左侧关键词查看详情</div>
+  </div>
+</div>
+
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <h3 id="drawerTitle"></h3>
+    <span class="drawer-x" onclick="closeDrawer()">✕</span>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot" id="drawerFoot"></div>
+</div>
+
+<div class="km-view" id="keywordManageView">
+  <div class="km-shell">
+    <div class="km-page-head">
+      <div>
+        <div class="km-page-title">关键词管理</div>
+        <div class="km-page-desc">直接添加、备注、归档关键词；刷新全部按钮、进度条和刷新历史保持原来的位置不变。</div>
+        <div class="km-page-stats" id="kmStats"></div>
+      </div>
+    </div>
+    <div class="km-quick-add-card">
+      <div class="km-quick-add-main">
+        <div class="km-quick-add-title">批量添加关键词</div>
+        <div class="km-quick-add-desc">一行一个词，重复词会自动跳过。添加后可以选择马上刷新这些新词。</div>
+        <textarea id="kmBatchAddInput" class="km-batch-add-input" rows="5" placeholder="例：\n低空经济\n银发经济\n出海营销"></textarea>
+      </div>
+      <div class="km-quick-add-side">
+        <label class="km-quick-add-label" for="kmBatchAddGroup">添加到</label>
+        <select id="kmBatchAddGroup" class="km-batch-add-group"></select>
+        <button class="km-btn km-btn-primary" type="button" onclick="kmBatchAddKeywords(false)">添加</button>
+        <button class="km-btn km-btn-ghost" type="button" onclick="kmBatchAddKeywords(true)">添加并刷新</button>
+        <div class="km-quick-add-tip">刷新会走现有的单词刷新队列，不会打断正在跑的任务。</div>
+      </div>
+    </div>
+    <div class="km-groups-wrap" id="kmGroupsWrap">
+      <div class="km-loading">正在加载关键词库…</div>
+    </div>
+  </div>
+</div>
+
+<!-- 文章List Demo 视图 -->
+<div class="al-view" id="articleListView">
+  <div class="al-shell">
+    <div class="al-page-head">
+      <div>
+        <div class="al-page-title">文章列表 <span class="al-demo-badge">Demo</span></div>
+        <div class="al-page-desc">按阅读量、在榜天数、命中关键词数等维度浏览文章；只统计监控关键词搜索结果命中过的文章，不代表微信全量收录。</div>
+      </div>
+    </div>
+    <div class="al-toolbar">
+      <div class="al-toolbar-row">
+        <div class="al-filter-group">
+          <span class="al-filter-label">排序</span>
+          <div class="al-chip-row" id="alSortChips">
+            <button class="al-chip active" data-sort="reads">阅读量↓</button>
+            <button class="al-chip" data-sort="onRankDays">在榜天数↓</button>
+            <button class="al-chip" data-sort="hitCount">命中词数↓</button>
+            <button class="al-chip" data-sort="publishTime">发布时间↓</button>
+            <button class="al-chip" data-sort="likes">点赞数↓</button>
+            <button class="al-chip" data-sort="accountScore">账号分↓</button>
+            <button class="al-chip" data-sort="todayReads" title="从今天开始按发布日期逐日回溯，日内按阅读量排序，最多100篇">近期热文↓</button>
+            <span class="al-sort-hint" title="从今天开始按发布日期逐日回溯，日内按阅读量排序，最多100篇">从今天开始按发布日期逐日回溯，日内按阅读量排序，最多100篇</span>
+          </div>
+        </div>
+      </div>
+      <div class="al-toolbar-row">
+        <div class="al-filter-group">
+          <span class="al-filter-label">时间</span>
+          <div class="al-chip-row" id="alTimeChips">
+            <button class="al-chip" data-time="1">近24小时</button>
+            <button class="al-chip" data-time="3">近3天</button>
+            <button class="al-chip" data-time="7">近7天</button>
+            <button class="al-chip active" data-time="15">近15天</button>
+            <button class="al-chip" data-time="30">近30天</button>
+            <button class="al-chip" data-time="0">全部</button>
+          </div>
+        </div>
+        <div class="al-filter-group">
+          <span class="al-filter-label">命中词数</span>
+          <div class="al-chip-row" id="alHitChips">
+            <button class="al-chip active" data-hits="0">全部</button>
+            <button class="al-chip" data-hits="1">≥1</button>
+            <button class="al-chip" data-hits="2">≥2</button>
+            <button class="al-chip" data-hits="3">≥3</button>
+          </div>
+        </div>
+        <div class="al-filter-group al-filter-group-flex">
+          <span class="al-filter-label">账号</span>
+          <div class="al-acct-picker" id="alAcctPicker">
+            <button class="al-acct-trigger" id="alAcctTrigger" type="button">
+              <span class="al-acct-trigger-label" id="alAcctTriggerLabel">全部账号</span>
+              <span class="al-acct-trigger-count" id="alAcctTriggerCount"></span>
+              <svg class="al-acpt-trigger-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="al-acct-dropdown" id="alAcctDropdown">
+              <input class="al-acct-search" id="alAcctSearch" type="text" placeholder="搜索账号名…" />
+              <div class="al-acct-list" id="alAcctList"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="al-toolbar-row">
+        <input class="al-search" id="alSearch" type="text" placeholder="搜索文章标题…" />
+        <span class="al-result-count" id="alResultCount">— 篇文章</span>
+      </div>
+    </div>
+    <div class="al-table-wrap">
+      <table class="al-table" id="alTable">
+        <thead>
+          <tr>
+            <th class="al-col-rank">#</th>
+            <th class="al-col-title">文章标题</th>
+            <th class="al-col-acct">账号</th>
+            <th class="al-col-reads">阅读量</th>
+            <th class="al-col-onrank">在榜</th>
+            <th class="al-col-likes">点赞</th>
+            <th class="al-col-hits">命中词</th>
+            <th class="al-col-kws">命中关键词</th>
+            <th class="al-col-score">账号分</th>
+            <th class="al-col-date">发布时间</th>
+          </tr>
+        </thead>
+        <tbody id="alTableBody"></tbody>
+      </table>
+    </div>
+    <div class="al-pagination" id="alPagination"></div>
+  </div>
+</div>
+
+<div class="km-modal-mask" id="kmSettingsModal">
+  <div class="km-modal km-settings-modal">
+    <div class="km-settings-modal-head">
+      <div>
+        <h3 id="kmSettingsModalTitle">分类设置</h3>
+        <div class="km-settings-modal-desc" id="kmSettingsModalDesc">只管理当前分类。</div>
+      </div>
+      <button class="km-modal-close" onclick="kmCloseSettingsModal()" aria-label="关闭">✕</button>
+    </div>
+    <div class="km-settings-groups-wrap" id="kmSettingsGroupsWrap">
+      <div class="km-loading">正在加载关键词库…</div>
+    </div>
+  </div>
+</div>
+
+<div class="km-modal-mask" id="kmGroupModal">
+  <div class="km-modal">
+    <h3 id="kmModalTitle">新增分组</h3>
+    <label>分组名称</label>
+    <input id="kmModalInput" type="text" placeholder="例：传承架构词" onkeydown="if(event.key==='Enter')kmConfirmGroupModal()" />
+    <div class="km-modal-foot">
+      <button class="km-btn km-btn-ghost" onclick="kmCloseGroupModal()">取消</button>
+      <button class="km-btn km-btn-primary" onclick="kmConfirmGroupModal()">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="km-modal-mask" id="kmKeywordModal">
+  <div class="km-modal km-keyword-modal">
+    <div class="km-keyword-modal-head">
+      <div>
+        <h3 id="kmKeywordModalTitle">关键词详情</h3>
+        <div class="km-keyword-modal-meta" id="kmKeywordModalMeta"></div>
+      </div>
+      <button class="km-modal-close" onclick="kmCloseKeywordModal()" aria-label="关闭">✕</button>
+    </div>
+    <div class="km-keyword-modal-facts" id="kmKeywordModalFacts"></div>
+    <label for="kmKeywordModalName">关键词名称</label>
+    <input id="kmKeywordModalName" class="km-note-input km-keyword-modal-name-input" type="text" placeholder="输入关键词名称…" data-kid="" data-last-saved="" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" onblur="kmSaveKeywordText(this)" />
+    <div class="km-keyword-refresh-state" id="kmKeywordRefreshState"></div>
+    <div class="km-keyword-refresh-policy">
+      <label for="kmKeywordRefreshPolicy">自动刷新周期</label>
+      <select id="kmKeywordRefreshPolicy" onchange="kmSaveRefreshPolicy(this)">
+        <option value="auto">自动分档</option>
+        <option value="1">人工：每天</option>
+        <option value="3">人工：每 3 天</option>
+        <option value="7">人工：每 7 天</option>
+        <option value="15">人工：每 15 天</option>
+      </select>
+      <div class="km-keyword-refresh-reason" id="kmKeywordRefreshReason"></div>
+    </div>
+    <div class="km-keyword-modal-refresh-actions">
+      <button class="km-btn km-btn-primary km-btn-sm" id="kmKeywordModalRefresh" data-kid="" data-text="" onclick="startKeywordRefresh(event, this.dataset.kid, this.dataset.text)">立即刷新</button>
+    </div>
+    <label for="kmKeywordModalNote">备注</label>
+    <input id="kmKeywordModalNote" class="km-note-input" type="text" placeholder="写点识别信息、测试备注…" oninput="kmMarkNoteDirty(this)" onblur="kmSaveNote(this)" />
+    <div class="km-note-status" id="kmKeywordModalStatus"></div>
+    <div class="km-modal-foot">
+      <button class="km-btn km-btn-danger" id="kmKeywordModalDelete" data-kid="" data-text="" onclick="kmDeleteKeyword(this, this.dataset.text)">归档关键词</button>
+      <button class="km-btn km-btn-ghost" onclick="kmCloseKeywordModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="km-toast" id="kmToast"></div>
+
+<!-- 刷新全部关键词：确认选择弹窗 -->
+<div class="km-modal-mask" id="kmRefreshModal">
+  <div class="km-modal" style="max-width: 720px; width: 90vw;">
+    <div class="km-settings-modal-head">
+      <div>
+        <h3 id="kmRefreshModalTitle">选择要刷新的关键词</h3>
+        <div class="km-settings-modal-desc">默认按上次勾选状态打开，取消勾选可跳过不刷新的词</div>
+      </div>
+      <div class="km-batch-actions">
+        <button class="km-batch-btn" id="kmBatchSelectAll" onclick="kmBatchSelectAll()">全选</button>
+        <button class="km-batch-btn" id="kmBatchSelectNone" onclick="kmBatchSelectNone()">全不选</button>
+        <button class="km-batch-btn" id="kmBatchSelectInvert" onclick="kmBatchSelectInvert()">反选</button>
+        <button class="km-modal-close" onclick="kmCloseRefreshModal()" aria-label="关闭">✕</button>
+      </div>
+    </div>
+    <div class="km-refresh-keyword-list" id="kmRefreshKeywordList"></div>
+    <div class="km-modal-foot">
+      <span id="kmRefreshSelectedCount" class="km-batch-summary"></span>
+      <button class="km-btn km-btn-ghost" onclick="kmCloseRefreshModal()">取消</button>
+      <button class="km-btn km-btn-primary" id="kmRefreshConfirmBtn" onclick="kmConfirmRefresh()">确认刷新</button>
+    </div>
+  </div>
+</div>
+
+<div class="km-modal-mask" id="kmRefreshHistoryModal">
+  <div class="km-modal" style="max-width: 600px; width: 90vw;">
+    <div class="km-settings-modal-head">
+      <div>
+        <h3>刷新历史</h3>
+        <div class="km-settings-modal-desc">最近的批量刷新记录</div>
+      </div>
+      <button class="km-modal-close" onclick="kmCloseRefreshHistory()" aria-label="关闭">✕</button>
+    </div>
+    <div class="km-refresh-history-list" id="kmRefreshHistoryList"></div>
+  </div>
+</div>
+
+<div class="km-modal-mask" id="kmCancelConfirmModal">
+  <div class="km-modal" style="max-width: 420px; width: 90vw;">
+    <div class="km-settings-modal-head" style="border-bottom:1px solid #eef2f6;">
+      <div>
+        <h3>确认停止批量刷新？</h3>
+        <div class="km-settings-modal-desc">
+          点确定后，当前正在跑的词会跑完，然后整个刷新就停了。已经跑完的词不会丢。
+          进度条会停在当前位置，你可以稍后点「知道了」回到初始状态。
+        </div>
+      </div>
+    </div>
+    <div class="km-modal-foot" style="padding:16px 0 0;">
+      <button class="km-btn km-btn-ghost" onclick="kmCloseCancelConfirm()">再想想</button>
+      <button class="km-btn km-btn-danger-solid" id="kmCancelConfirmBtn" onclick="kmConfirmCancelAndClose()">确定停止</button>
+    </div>
+  </div>
+</div>
+
+<datalist id="topicSuggestions"></datalist>
+<datalist id="bucketSuggestions"></datalist>
+
+<div class="km-modal-mask" id="signalTermModal">
+  <div class="km-modal" style="max-width:440px;width:90vw;">
+    <div class="km-settings-modal-head">
+      <h3 id="signalTermModalTitle">添加关键词</h3>
+      <button class="km-modal-close" onclick="signalTermClose()" aria-label="关闭">✕</button>
+    </div>
+    <div style="padding:20px">
+      <div style="font-size:13px;color:#475569;margin-bottom:16px">
+        将搜索词「<b id="signalTermText"></b>」添加到监控关键词列表。
+      </div>
+      <label style="font-size:11px;color:#94a3b8;letter-spacing:.2px;text-transform:uppercase;display:block;margin-bottom:6px">选择分类</label>
+      <select id="signalTermGroupSelect" style="width:100%;font-size:13px;border:1px solid #e2e8f0;border-radius:10px;padding:9px 12px;outline:none;background:#fff;color:#333;margin-bottom:20px"></select>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="km-btn km-btn-ghost" onclick="signalTermClose()">取消</button>
+        <button class="km-btn km-btn-primary" id="signalTermConfirmBtn" onclick="signalTermConfirm()">确认添加</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- iframe for weixin anti-hotlink bypass -->
+<iframe id="weixinImageProxy" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
+
+<script src="/legacy/wechat/static/js/turnover-utils.js"></script>
+<script src="/legacy/wechat/static/js/monitor.js"></script>
+<script src="/legacy/wechat/static/js/article-list.js"></script>
+</body>
+</html>
