@@ -17,6 +17,7 @@ from content_hub.ingestion.markdown_store import MarkdownStore
 from content_hub.services.wiki import WikiService
 from content_hub.services.writing import WritingService, FakeProvider
 from content_hub.services.publishing import PublishingService, PublishAccount
+from content_hub.adapters.wiki import scan_directory
 
 
 @pytest.fixture
@@ -122,6 +123,88 @@ def test_t153_wiki_snapshot_rejects_symlinked_snapshot_root(hub):
     with pytest.raises(Exception):
         svc.save(cid, body="# 测试\n\n新文本\n", operator="test")
     assert not list(outside.iterdir())
+
+
+def test_t166_wiki_import_dry_run_has_no_database_writes(hub):
+    conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "母文章.md").write_text("# 母文章\n\n正文", encoding="utf-8")
+    (root / "wiki" / "知识库").mkdir(parents=True)
+    (root / "wiki" / "知识库" / "规则.md").write_text("# 规则\n\n知识", encoding="utf-8")
+    asset = tmp_path / "asset"
+    (asset / "wiki").mkdir(parents=True)
+    svc = WikiService(connection=conn, asset_root=asset, source_roots=[root], lock_path=tmp_path / "lock")
+    before = conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0]
+    result = svc.import_wiki(confirm=False, max_files=10)
+    assert result["status"] == "dry_run"
+    assert result["accepted"] == 2
+    assert result["processed"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == before
+    assert conn.execute("SELECT COUNT(*) FROM production_jobs").fetchone()[0] == 0
+
+
+def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
+    conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "母文章.md").write_text("# 母文章\n\n正文", encoding="utf-8")
+    (root / "wiki").mkdir()
+    (root / "wiki" / "规则.md").write_text("# 规则\n\n知识", encoding="utf-8")
+    asset = tmp_path / "asset"
+    (asset / "wiki").mkdir(parents=True)
+    svc = WikiService(connection=conn, asset_root=asset, source_roots=[root], lock_path=tmp_path / "lock")
+    first = svc.import_wiki(confirm=True, max_files=10, operator="test")
+    second = svc.import_wiki(confirm=True, max_files=10, operator="test")
+    assert first["status"] == "succeeded"
+    assert first["processed"] == 2
+    assert first["classification"]["mother_article"] == 1
+    assert first["classification"]["knowledge_article"] == 1
+    assert second["status"] == "succeeded"
+    assert conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM content_identifiers").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM content_discoveries WHERE discovery_system='wiki'").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM ingestion_checkpoints WHERE adapter_key='wiki'").fetchone()[0] == 1
+    audit = conn.execute("SELECT details_json FROM audit_log WHERE action='wiki.import' ORDER BY occurred_at DESC LIMIT 1").fetchone()[0]
+    assert str(root) not in audit
+    assert "configured/wiki-source" in audit
+
+
+def test_t168_wiki_scan_rejects_symlink_invalid_utf8_and_excluded_dirs(hub):
+    _conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "ok.md").write_text("# OK", encoding="utf-8")
+    (root / ".hidden").mkdir()
+    (root / ".hidden" / "hidden.md").write_text("# hidden", encoding="utf-8")
+    (root / "wiki-viewer").mkdir()
+    (root / "wiki-viewer" / "tool.md").write_text("# tool", encoding="utf-8")
+    (root / "其他" / "bad.md").write_bytes(b"\xff\xfe")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# outside", encoding="utf-8")
+    (root / "其他" / "link.md").symlink_to(outside)
+    scan = scan_directory(root, max_files=10)
+    reasons = {item["reason"] for item in scan.rejected}
+    refs = {item["source_ref"] for item in scan.rejected}
+    assert scan.accepted == 1
+    assert "invalid_utf8" in reasons
+    assert "symlink_or_not_regular_file" in reasons
+    assert "其他/bad.md" in refs
+    assert "其他/link.md" in refs
+    assert "excluded_directory:.hidden" in reasons
+    assert "excluded_directory:wiki-viewer" in reasons
+
+
+def test_t169_wiki_scan_reports_truncation_and_real_root_shape(hub):
+    _conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    for index in range(3):
+        (root / "其他" / f"{index}.md").write_text(f"# {index}", encoding="utf-8")
+    scan = scan_directory(root, max_files=2)
+    assert scan.scanned == 3
+    assert scan.accepted == 2
+    assert scan.truncated is True
 
 
 def test_t151_settings_default_wiki_roots_exclude_zkcode_source(hub):

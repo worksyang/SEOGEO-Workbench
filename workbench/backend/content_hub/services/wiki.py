@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..domain.ids import generate_ulid_like
+from ..adapters.wiki import DEFAULT_MAX_FILES, WikiIngestionPipeline, make_batch
+from ..ingestion.checkpoints import CheckpointStore, checkpoint_key_for
+from .audit import AuditService
+from .jobs import JobsService
 from ..validation.paths import resolve_within
 from ..validation.timestamps import utc_now_iso
 
@@ -26,10 +30,154 @@ class WikiService:
         connection: sqlite3.Connection,
         asset_root: Path,
         source_roots: Iterable[Path],
+        lock_path: Path | None = None,
     ):
         self._conn = connection
         self._asset_root = Path(asset_root).resolve()
         self._source_roots = [Path(root).resolve() for root in source_roots if root is not None]
+        self._lock_path = Path(lock_path or (Path(tempfile.gettempdir()) / "content_hub_wiki.lock"))
+
+    def import_root(self) -> Path | None:
+        """选择允许根中的 output_md 业务根；不把 asset_store 当历史源。"""
+        candidates = [
+            root for root in self._source_roots
+            if root != self._asset_root and root.is_dir() and (root / "wiki").is_dir()
+        ]
+        return sorted(candidates, key=lambda item: str(item))[0] if candidates else None
+
+    def import_wiki(
+        self,
+        *,
+        confirm: bool = False,
+        max_files: int = DEFAULT_MAX_FILES,
+        operator: str = "user",
+    ) -> dict[str, Any]:
+        if max_files < 1:
+            raise ValueError("max_files 必须大于 0")
+        root = self.import_root()
+        if root is None:
+            return {
+                "status": "blocked",
+                "reason": "没有可用的已配置 Wiki 允许根",
+                "source_root": "",
+                "scanned": 0, "accepted": 0, "rejected": 0, "processed": 0,
+                "truncated": False, "rejections": [],
+            }
+
+        raw, adapter_status, scan = make_batch(self._conn, wiki_root=root, max_files=max_files)
+        result: dict[str, Any] = {
+            "status": "degraded" if scan.rejected else "ready",
+            "source_root": "configured/wiki-source",
+            "scanned": scan.scanned,
+            "accepted": scan.accepted,
+            "rejected": len(scan.rejected),
+            "processed": 0,
+            "truncated": scan.truncated,
+            "max_files": max_files,
+            "rejections": list(scan.rejected),
+            "classification": {
+                "mother_article": sum(
+                    1 for item in scan.files
+                    if not (item[0].relative_to(scan.root).as_posix() == "wiki"
+                            or item[0].relative_to(scan.root).as_posix().startswith("wiki/"))
+                ),
+                "knowledge_article": sum(
+                    1 for item in scan.files
+                    if item[0].relative_to(scan.root).as_posix() == "wiki"
+                    or item[0].relative_to(scan.root).as_posix().startswith("wiki/")
+                ),
+                "excluded_directories": "hidden、wiki-viewer、WritingMoney、运行/缓存目录及历史候选/排除目录",
+            },
+        }
+        if not scan.accepted:
+            result["status"] = "blocked"
+            result["reason"] = "没有可导入的 UTF-8 普通 Markdown"
+            return result
+        if not confirm:
+            result["status"] = "dry_run"
+            result["preview"] = [
+                {"source_ref": item[0].relative_to(scan.root).as_posix(), "title": item[1]}
+                for item in scan.files[:20]
+            ]
+            return result
+
+        jobs = JobsService(self._conn)
+        job_id = jobs.create(
+            job_type="wiki_import",
+            payload={
+                "source_root": "configured/wiki-source",
+                "max_files": max_files,
+                "scanned": scan.scanned,
+                "accepted": scan.accepted,
+                "rejected": len(scan.rejected),
+                "truncated": scan.truncated,
+            },
+        )
+        self._conn.commit()
+        if not jobs.claim(job_id, operator):
+            result.update(status="blocked", reason="Wiki 导入任务无法获取执行锁", job_id=job_id)
+            self._conn.commit()
+            return result
+        try:
+            pipeline_result = WikiIngestionPipeline(self._conn, self._lock_path).run(raw)
+            result["processed"] = scan.accepted - len(
+                [error for error in pipeline_result.errors if error.get("scope") == "content"]
+            )
+            result["batch_id"] = pipeline_result.batch_id
+            result["records_written"] = pipeline_result.records_written
+            result["records_failed"] = pipeline_result.records_failed
+            result["errors"] = pipeline_result.errors
+            if pipeline_result.records_failed:
+                jobs.complete(job_id, status="failed")
+                result["status"] = "degraded"
+            else:
+                CheckpointStore(self._conn).upsert(
+                    adapter_key="wiki",
+                    checkpoint_key=checkpoint_key_for("configured/wiki-source", "manifest"),
+                    cursor_value=str(scan.accepted),
+                    source_hash=_scan_hash(scan),
+                    batch_id=pipeline_result.batch_id,
+                    payload={
+                        "scanned": scan.scanned,
+                        "accepted": scan.accepted,
+                        "rejected": len(scan.rejected),
+                        "truncated": scan.truncated,
+                    },
+                )
+                jobs.complete(job_id, status="succeeded")
+                result["status"] = "degraded" if scan.rejected else "succeeded"
+            AuditService(self._conn).record(
+                action="wiki.import",
+                subject_type="ingestion_batch",
+                subject_id=pipeline_result.batch_id,
+                actor_id=operator,
+                outcome="succeeded" if result["status"] == "succeeded" else "failed",
+                details={
+                    "job_id": job_id,
+                    "source_root": "configured/wiki-source",
+                    "scanned": scan.scanned,
+                    "accepted": scan.accepted,
+                    "rejected": len(scan.rejected),
+                    "processed": result["processed"],
+                    "truncated": scan.truncated,
+                },
+            )
+            result["job_id"] = job_id
+            self._conn.commit()
+            return result
+        except Exception as exc:
+            jobs.complete(job_id, status="failed")
+            AuditService(self._conn).record(
+                action="wiki.import",
+                subject_type="job",
+                subject_id=job_id,
+                actor_id=operator,
+                outcome="failed",
+                details={"source_root": "configured/wiki-source", "error": str(exc)},
+            )
+            self._conn.commit()
+            result.update(status="degraded", reason=f"导入失败：{exc}", job_id=job_id)
+            return result
 
     def tree(self) -> list[dict[str, Any]]:
         bucket_roots: list[tuple[Path, str]] = []
@@ -229,3 +377,11 @@ def _peek_title_and_excerpt(text: str, fallback: str) -> tuple[str, str]:
 def _content_id_from_path(path: Path) -> str:
     digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
     return f"cnt_{digest}"
+
+
+def _scan_hash(scan: Any) -> str:
+    manifest = "\n".join(
+        f"{item[0].relative_to(scan.root).as_posix()}:{item[3]}"
+        for item in scan.files
+    )
+    return hashlib.sha256(manifest.encode("utf-8")).hexdigest()

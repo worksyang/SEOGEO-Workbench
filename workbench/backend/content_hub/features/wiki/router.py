@@ -24,6 +24,7 @@ def _service(request: Request, *, readonly: bool = True) -> WikiService:
         connection=connect(settings, readonly=readonly),
         asset_root=Path(settings.asset_store_path),
         source_roots=_wiki_source_roots(settings),
+        lock_path=Path(settings.lock_path),
     )
 
 
@@ -36,6 +37,25 @@ def tree(request: Request) -> dict:
 def search(request: Request, query: str = Query(""), limit: int = Query(50, ge=1, le=200)) -> dict:
     items = _service(request).search(query, limit=limit)
     return {"ok": True, "data": {"items": items, "total": len(items)}}
+
+
+@router.post("/import")
+def import_wiki(request: Request, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    try:
+        max_files = int(payload.get("max_files", 2000))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="max_files 必须是正整数") from exc
+    if max_files < 1:
+        raise HTTPException(status_code=400, detail="max_files 必须是正整数")
+    result = _service(request, readonly=bool(payload.get("confirm", False))).import_wiki(
+        confirm=bool(payload.get("confirm", False)),
+        max_files=max_files,
+        operator=str(payload.get("operator") or "user"),
+    )
+    if result.get("status") == "blocked":
+        return {"ok": False, "data": result}
+    return {"ok": True, "data": result}
 
 
 @router.get("/{content_id}")
