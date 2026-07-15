@@ -2,7 +2,6 @@ import {useEffect, useMemo, useState, type ReactNode} from 'react'
 import {apiGet} from './api/client'
 import HomePage from './features/overview/HomePage'
 import MpPage from './features/mp/MpPage'
-import XhsPage from './features/xhs/XhsPage'
 import GeoPage from './features/geo/GeoPage'
 import WikiPage from './features/wiki/WikiPage'
 import WritingPage from './features/writing/WritingPage'
@@ -13,6 +12,7 @@ import {useWorkbenchData} from './hooks/useWorkbenchData'
 import './styles/app.css'
 import './styles/demo-shell.css'
 import WechatIslandPage from './features/wechat/WechatIslandPage'
+import XhsIslandPage from './features/xhs/XhsIslandPage'
 
 type NavKey = 'overview' | 'wechat' | 'xhs' | 'geo' | 'mp' | 'wiki' | 'mother' | 'batch' | 'publish' | 'systems' | 'governance'
 type BusinessNavKey = Exclude<NavKey, 'overview' | 'systems' | 'governance'>
@@ -151,7 +151,7 @@ export default function App() {
     if (active === 'overview') return <HomePage overview={overview} status={status} onNavigate={(key) => navigate(key)} />
     if (active === 'wechat') return <WechatIslandPage onSourceStatus={setWechatSourceStatus} />
     if (active === 'mp') return <MpPage onSourceStatus={setMpSourceStatus} />
-    if (active === 'xhs') return <XhsPage onSourceStatus={setXhsSourceStatus} />
+    if (active === 'xhs') return <XhsIslandPage onSourceStatus={setXhsSourceStatus} />
     if (active === 'geo') return <GeoPage onSourceStatus={setGeoSourceStatus} />
     if (active === 'wiki') return <WikiPage />
     if (active === 'mother') return <WritingPage initialTab="forge" />

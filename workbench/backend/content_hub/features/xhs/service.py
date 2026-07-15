@@ -428,7 +428,7 @@ class XhsService:
             return
         con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?)", (oid, subject_type, subject_id, metric_key, observed, value, snapshot_id, _clean_url(source.get("source")) or source.get("recorded_at"), _json(_scrub_payload({**source, "source_observation_id": source.get("observation_id")}))))
 
-    def bootstrap(self) -> dict[str, Any]:
+    def bootstrap(self, *, summary: bool = False) -> dict[str, Any]:
         try:
             response = self.adapter.bootstrap()
             if not 200 <= response.status < 300:
@@ -436,6 +436,23 @@ class XhsService:
             self._connection("healthy")
             payload = response.payload
             fact_keys = ("keywords", "accounts", "snapshots", "ranking_hits", "articles")
+            if summary:
+                available_counts = {
+                    key: len(value)
+                    for key, value in payload.items()
+                    if key in fact_keys and isinstance(value, list)
+                }
+                source_counts = payload.get("counts")
+                counts = (
+                    _scrub_payload(source_counts)
+                    if isinstance(source_counts, dict)
+                    else available_counts
+                )
+                return {
+                    "source_status": {"status": "healthy", "source": "legacy_http"},
+                    "counts": counts,
+                    "available_fact_arrays": sorted(available_counts),
+                }
             if any(not isinstance(payload.get(key), list) for key in fact_keys):
                 raise XhsSourceError("小红书 live bootstrap 缺少事实层数组", kind="invalid_source_payload", status=response.status, payload=payload)
             allowed = _scrub_payload({key: payload.get(key) for key in (*fact_keys, "snapshot_terms") if key in payload})
@@ -444,6 +461,17 @@ class XhsService:
             allowed["counts"] = counts if isinstance(counts, dict) else self._hub_counts()
             return {"source_status": {"status": "healthy", "source": "legacy_http"}, **allowed}
         except XhsSourceError as exc:
+            if summary:
+                counts = self._hub_counts()
+                if any(counts.values()):
+                    self._connection("degraded", error=str(exc))
+                    return {
+                        "source_status": {"status": "degraded", "source": "hub_db", "error": str(exc)},
+                        "counts": counts,
+                        "available_fact_arrays": [],
+                    }
+                self._connection("offline", error=str(exc))
+                raise ConflictError(f"{exc.kind}: {exc}") from exc
             fallback = self._hub_bootstrap()
             if fallback is not None:
                 self._connection("degraded", error=str(exc))

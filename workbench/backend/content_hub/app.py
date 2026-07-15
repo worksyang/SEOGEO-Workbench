@@ -76,9 +76,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
-        if request.url.path.startswith("/legacy/wechat/"):
+        if request.url.path.startswith("/legacy/"):
             # 原系统页面含历史 inline handler 与 Chart.js/marked 依赖；
-            # 只对同源、只读镜像岛屿放宽，不影响统一工作台主页面。
+            # 只对同源业务岛屿放宽，不影响统一工作台主页面。
             response.headers["X-Frame-Options"] = "SAMEORIGIN"
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; img-src 'self' data: https:; "

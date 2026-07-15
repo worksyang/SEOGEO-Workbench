@@ -9,16 +9,23 @@ from fastapi import Body, Request
 from fastapi.responses import JSONResponse, Response
 
 
-# 只代理微信搜一搜原页面已经使用的接口；禁止把工作台变成任意 URL 代理。
+# 只代理两个原版业务岛屿已经使用的接口；禁止把工作台变成任意 URL 代理。
 _ALLOWED_PREFIXES = (
+    "monitor-data",
     "monitor-data/bootstrap",
     "monitor-data/keyword/",
     "monitor-data/account/",
+    "creator-detail",
     "keyword-manage",
     "article-content",
     "article-covers",
     "article-hit-detail",
+    "article-cover-image",
+    "note-detail",
     "articles",
+    "account-aliases",
+    "penalty-signals",
+    "scheduler/",
     "keywords/",
     "refresh-all",
     "refresh-status/",
@@ -61,8 +68,16 @@ async def proxy_legacy_wechat_api(
         )
 
     settings: Any = request.app.state.settings
+    referer = request.headers.get("referer", "")
+    is_xhs = "/legacy/xhs/" in referer
+    source_url = settings.xhs_source_url if is_xhs else settings.wechat_source_url
+    timeout_seconds = (
+        settings.xhs_source_timeout_seconds
+        if is_xhs
+        else settings.wechat_source_timeout_seconds
+    )
     target = _upstream_url(
-        str(settings.wechat_source_url),
+        str(source_url),
         path,
         str(request.url.query),
     )
@@ -80,7 +95,7 @@ async def proxy_legacy_wechat_api(
     try:
         with urllib.request.urlopen(
             upstream_request,
-            timeout=float(settings.wechat_source_timeout_seconds),
+            timeout=float(timeout_seconds),
         ) as upstream:
             payload = upstream.read()
             status = int(upstream.status)
@@ -105,7 +120,7 @@ async def proxy_legacy_wechat_api(
                 "ok": False,
                 "error": {
                     "code": "LEGACY_UPSTREAM_UNAVAILABLE",
-                    "message": f"微信搜一搜旧服务暂时不可用：{exc}",
+                    "message": f"原系统服务暂时不可用：{exc}",
                 },
             },
         )

@@ -54,6 +54,20 @@ def test_legacy_proxy_whitelist_and_query(settings, monkeypatch) -> None:
                 assert allowed.json()["keywords"] == []
                 assert seen and "/api/monitor-data/bootstrap?cache=no" in seen[0]
 
+                xhs = await client.get(
+                    "/api/monitor-data/bootstrap",
+                    headers={"Referer": "http://testserver/legacy/xhs/monitor.html"},
+                )
+                assert xhs.status_code == 200
+                assert "127.0.0.1:8766" in seen[-1]
+
+                cover = await client.get(
+                    "/api/article-cover-image?url=https%3A%2F%2Fsns-na-i11.xhscdn.com%2Fcover",
+                    headers={"Referer": "http://testserver/legacy/xhs/monitor.html"},
+                )
+                assert cover.status_code == 200
+                assert "127.0.0.1:8766" in seen[-1]
+
                 blocked = await client.get("/api/not-registered")
                 assert blocked.status_code == 404
                 assert blocked.json()["error"]["code"] == "LEGACY_ENDPOINT_NOT_ALLOWED"

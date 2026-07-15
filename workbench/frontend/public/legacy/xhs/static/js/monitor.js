@@ -1,0 +1,5277 @@
+// ── 数据：由 Flask API 提供 ───────────────────────────
+// Parser 见 scripts/parse_search_md.py；字段语义见 字段数据字典 v1.md
+
+const DATA_URL = '/api/monitor-data';
+const BOOTSTRAP_URL = '/api/monitor-data/bootstrap';
+const KEYWORD_DETAIL_API = '/api/monitor-data/keyword';
+const ACCOUNT_DETAIL_API = '/api/monitor-data/account';
+const NOTE_DETAIL_API_URL = '/api/note-detail';
+const CREATOR_DETAIL_API_URL = '/api/creator-detail';
+const CONTENT_API_URL = '/api/article-content';
+const KEYWORD_API_BASE = '/api/keywords';
+const COVER_API_URL = '/api/article-covers';
+const COVER_PLACEHOLDER_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="60" height="38" viewBox="0 0 60 38"%3E%3Crect fill="%23f0ece4" width="60" height="38" rx="4"/%3E%3Cpath d="M20 12h20v2H20zM20 18h14v2H20z" fill="%23c9c2b5"/%3E%3C/svg%3E';
+const COVER_NO_URL_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxIDEnPjwvc3ZnPg==';
+
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+});
+
+let MONITOR_DATA = null;          // 整份 monitor-data.json
+let ALL_KEYWORDS = [];            // 关键词主视角列表
+let ALL_ACCOUNTS = [];            // 博主副视角列表
+let mode = 'keyword';
+let accountSortMode = 'score';  // 'score' | 'timeliness' | 'today'
+let curKeyword = null;
+let curAccount = null;
+let filter = '';
+let filterGroup = '';   // '' = 全部；按分组筛选
+let filterStatus = 'all'; // 'all' | 'turnover_observing' | 'turnover_fast' | 'turnover_obvious' | 'turnover_light' | 'turnover_stable'
+let sortActivity = 'heat';  // 'heat' | 'heat_delta' | 'trend_up' | 'trend_down' | 'ops' | 'turnover_desc' | 'turnover_asc'
+let kwGroupMap = {};    // keyword_text → group_label（由 loadGroups 维护）
+let kwGroupOrder = [];
+let kwGroupMoreOpen = false;
+let detailChart = null;
+let initialRouteApplied = false;
+const coverCache = new Map();
+const coverStateCache = new Map();
+const coverPending = new Set();
+let coverBatchInFlight = false;
+
+// ── 按需加载缓存 ───────────────────────────────────
+const KEYWORD_DETAIL_CACHE = new Map();  // keyword_id -> full payload
+const ACCOUNT_DETAIL_CACHE = new Map();  // account_id -> full payload
+const KEYWORD_DETAIL_PENDING = new Map(); // keyword_id -> Promise
+const ACCOUNT_DETAIL_PENDING = new Map(); // account_id -> Promise
+
+// ── 索引映射（移除线性查找） ─────────────────────────
+let ACCOUNT_BY_ID = new Map();   // account_id -> account summary
+let KEYWORD_BY_ID = new Map();   // keyword_id -> keyword summary
+let ACCOUNT_BY_NAME = new Map(); // name -> account summary
+let KEYWORD_BY_NAME = new Map(); // keyword -> keyword summary
+
+// ── Turnover 缓存（只算一次） ────────────────────────
+const TURNOVER_CACHE = new Map(); // keyword_id -> turnover result
+
+// ── 性能埋点 ─────────────────────────────────────────
+window.__XHS_PERF__ = { bootstrap: {}, render: {}, detail: {} };
+
+// ── 博主列表分页 ────────────────────────────────────
+const ACCOUNT_PAGE_SIZE = 100;
+let _accountPage = 1;
+
+
+const KW_GROUP_QUICK_LIMIT = 5;
+const TURNOVER_FAST_THRESHOLD = 0.40;
+const TURNOVER_OBVIOUS_THRESHOLD = 0.25;
+const TURNOVER_LIGHT_THRESHOLD = 0.10;
+
+// ── 权重（与 Parser 完全一致，仅用于前端临时显示，主数据已带 score） ─
+function rankWeight(r) {
+  if (r<=0) return 0;
+  const weights = {1:10.0, 2:8.2, 3:6.8, 4:5.6, 5:4.6, 6:3.7, 7:3.0, 8:2.4, 9:1.9, 10:1.5};
+  return weights[r] || 0;
+}
+
+// ── 数据组织：消费 monitor-data.json ───────────────────────
+function jsq(v) { return JSON.stringify(v); }
+
+function escapeHtml(v) {
+  return String(v == null ? '' : v)
+    .replace(/[&<>"']/g, s => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[s]))
+    .replace(/`/g, '&#96;')
+    .replace(/$\{/g, '&#36;{');
+}
+
+function scoreInt(v) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n));
+}
+
+const SCORE_BOARD_META = {
+  score: {
+    label: '博主分',
+    labelShort: '博主分',
+    dimLabel: '7项搜索资产力（加权）',
+    scoreField: 'score',
+    rawField: 'score_raw',
+    yesterdayField: 'score_yesterday',
+    deltaField: 'score_delta',
+    partsField: 'account_score_parts',
+    hexagonField: 'account_score_hexagon',
+    explainField: 'score_explain',
+    lead: '衡量这个博主在搜索场域中是否持续经营：既看历史与近期覆盖和笔记可见互动，也重点奖励经过时间验证的稳定笔记。',
+    formula: '7 项指标分别与当前有效博主的 P99 基准比较，剔除尚不可判断的轴后重归一化，再做轻量观察成熟度校准。',
+    confidenceDays: 5,
+    confidenceLabel: '观察满 5 个有效观察日后取得完整置信度',
+    confidenceAdjustedLabel: '保守分（置信校正）',
+  },
+  timeliness: {
+    label: '时效分',
+    labelShort: '时效分',
+    dimLabel: '7项冲榜动能（加权）',
+    scoreField: 'timeliness_score',
+    rawField: 'timeliness_score_raw',
+    yesterdayField: 'timeliness_score_yesterday',
+    deltaField: 'timeliness_score_delta',
+    partsField: 'timeliness_score_parts',
+    hexagonField: 'timeliness_score_hexagon',
+    explainField: 'timeliness_explain',
+    lead: '衡量最近 3 天谁在主动冲击头部：重点看 Top3 规模、覆盖面、新笔记冲榜、新进 Top3 以及连续冲榜能力。',
+    formula: '7 项指标分别与当前有效博主的 P99 基准比较，再按各自权重加权。',
+    confidenceDays: 3,
+    confidenceLabel: '观察满 3 个有效观察日后取得完整置信度',
+  },
+  today: {
+    label: '当天分',
+    labelShort: '当天分',
+    dimLabel: '7项即时战力（加权）',
+    scoreField: 'today_score',
+    rawField: 'today_score_raw',
+    yesterdayField: 'today_score_yesterday',
+    deltaField: 'today_score_delta',
+    partsField: 'today_score_parts',
+    hexagonField: 'today_score_hexagon',
+    explainField: 'today_explain',
+    lead: '只回答今天谁最强：同时看今日 Top3、关键词、笔记、搜索排名质量，以及今天的新进上升信号。',
+    formula: '7 项指标分别与今日有效博主的 P99 基准比较，再按各自权重加权。',
+    confidenceDays: 1,
+  },
+};
+
+function scoreBoardMeta(modeName) {
+  return SCORE_BOARD_META[modeName] || SCORE_BOARD_META.score;
+}
+
+function scoreBoardValue(account, modeName) {
+  return scoreInt(account?.[scoreBoardMeta(modeName).scoreField]);
+}
+
+function scoreBoardRawValue(account, modeName) {
+  const config = scoreBoardMeta(modeName);
+  const raw = Number(account?.[config.rawField]);
+  return Number.isFinite(raw) ? raw : scoreBoardValue(account, modeName);
+}
+
+function scoreBoardYesterdayValue(account, modeName) {
+  return scoreInt(account?.[scoreBoardMeta(modeName).yesterdayField]);
+}
+
+function scoreBoardParts(account, modeName) {
+  return account?.[scoreBoardMeta(modeName).partsField] || {};
+}
+
+function scoreBoardHexagon(account, modeName) {
+  const legacy = account?.[scoreBoardMeta(modeName).hexagonField];
+  if (legacy?.current?.axes) return legacy;
+
+  const sourceAxes = modeName === 'score'
+    ? account?.hexagon?.axes
+    : modeName === 'timeliness'
+      ? account?.timeliness_axes
+      : account?.today_axes;
+  if (!Array.isArray(sourceAxes) || !sourceAxes.length) return null;
+
+  const config = scoreBoardMeta(modeName);
+  const windowLabel = modeName === 'score' ? '15天' : modeName === 'timeliness' ? '近3天' : '今日';
+  const axisMeta = sourceAxes.map(axis => ({
+    key: axis.key,
+    label: axis.label || axis.key,
+    desc: axis.desc || '0–100 归一化指标。',
+  }));
+
+  const currentAxes = Object.fromEntries(sourceAxes.map(axis => [axis.key, Number(axis.value) || 0]));
+  const previousAxes = Object.fromEntries(sourceAxes.map(axis => [axis.key, Number(axis.yesterday_value || 0) || 0]));
+
+  return {
+    window_label: windowLabel,
+    axes_meta: axisMeta,
+    current: { axes: currentAxes, details: {} },
+    previous: { axes: previousAxes },
+    delta: Object.fromEntries(axisMeta.map(m => [m.key, Number(currentAxes[m.key] || 0) - Number(previousAxes[m.key] || 0)])),
+    weights: Object.fromEntries(axisMeta.map(m => [m.key, 1 / Math.max(axisMeta.length, 1)])),
+    benchmarks: Object.fromEntries(axisMeta.map(m => [m.key, 100])),
+    population: { score: null, axes: {} },
+    previous_population: { score: null, axes: {} },
+  };
+}
+
+function accountScoreTitle(a, modeName) {
+  const config = scoreBoardMeta(modeName);
+  return a?.[config.explainField] || `${config.label}：${config.dimLabel || "7项指标"}按各自权重加权，P99=100。`;
+}
+
+function scorePart(v) {
+  const n = Number(v || 0);
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00';
+}
+
+function scoreMoveSummary(a) {
+  const m = a.move_summary || {};
+  return `新进 ${m.new_count || 0} · 上升 ${m.up_count || 0} · 下降 ${m.down_count || 0}`;
+}
+
+const SCORE_RADAR_FALLBACK_META = [
+  {key:'history_coverage', label:'历史覆盖', desc:'15天覆盖的搜索词、笔记、主题数'},
+  {key:'recent_coverage', label:'近期覆盖', desc:'近7天覆盖的搜索词和笔记数'},
+  {key:'durable_notes', label:'稳定笔记', desc:'至少3天在同一关键词下出现的稳定笔记'},
+  {key:'continuity', label:'持续经营', desc:'近7天活跃天数和当前连续天数'},
+  {key:'content_matrix', label:'笔记矩阵', desc:'有效笔记数量和单篇集中度'},
+  {key:'engagement_quality', label:'互动质量', desc:'唯一笔记可见互动当量+排名质量'},
+  {key:'battle_breadth', label:'战场广度', desc:'主题覆盖和搜索意图类目覆盖'},
+];
+
+function signedDelta(v) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n) || n === 0) return '0';
+  return n > 0 ? `+${Math.round(n)}` : `${Math.round(n)}`;
+}
+
+function deltaClass(v) {
+  const n = Number(v || 0);
+  if (n > 0) return 'up';
+  if (n < 0) return 'down';
+  return 'flat';
+}
+
+function scoreDeltaValue(a, modeName) {
+  return Number(a?.[scoreBoardMeta(modeName).deltaField] || 0);
+}
+
+function scoreRadarMeta(hexagon) {
+  const meta = Array.isArray(hexagon?.axes_meta) && hexagon.axes_meta.length
+    ? hexagon.axes_meta
+    : SCORE_RADAR_FALLBACK_META;
+  const seen = new Set();
+  return meta
+    .filter(item => item && item.key && !seen.has(item.key) && (seen.add(item.key), true))
+    .slice(0, 8);
+}
+
+function scoreAxisValue(axes, key) {
+  const n = Number((axes || {})[key]);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n));
+}
+
+function radarPoint(value, index, total, cx, cy, radius, scaleMax = 100) {
+  const angle = (-90 + index * 360 / total) * Math.PI / 180;
+  const safeScale = Math.max(Number(scaleMax) || 100, 1);
+  const r = radius * (Math.max(0, Math.min(safeScale, Number(value) || 0)) / safeScale);
+  return {
+    x: cx + Math.cos(angle) * r,
+    y: cy + Math.sin(angle) * r,
+  };
+}
+
+function radarPolygonPoints(axes, metas, cx, cy, radius, scaleMax, fixed = 1) {
+  return metas.map((meta, idx) => {
+    const p = radarPoint(scoreAxisValue(axes, meta.key), idx, metas.length, cx, cy, radius, scaleMax);
+    return `${p.x.toFixed(fixed)},${p.y.toFixed(fixed)}`;
+  }).join(' ');
+}
+
+function scoreRadarScaleMax(metas, currentAxes, previousAxes) {
+  const values = metas.flatMap(meta => [
+    scoreAxisValue(currentAxes, meta.key),
+    scoreAxisValue(previousAxes, meta.key),
+  ]);
+  const maxValue = Math.max(100, ...values);
+  return maxValue > 100 ? Math.ceil(maxValue / 20) * 20 : 100;
+}
+
+function scoreRadarSvg(hexagon) {
+  const metas = scoreRadarMeta(hexagon);
+  if (!metas.length) return '';
+  const curAxes = hexagon?.current?.axes || {};
+  const prevAxes = hexagon?.previous?.axes || {};
+  const scaleMax = scoreRadarScaleMax(metas, curAxes, prevAxes);
+  const cx = 143;
+  const cy = 120;
+  const radius = 78;
+  const ringLevels = scaleMax > 100 ? [25, 50, 75, 100, scaleMax] : [20, 40, 60, 80, 100];
+  const rings = [...new Set(ringLevels)].map(level => {
+    const ringAxes = Object.fromEntries(metas.map(meta => [meta.key, level]));
+    const ringClass = level === 100
+      ? 'radar-ring radar-benchmark'
+      : level > 100
+        ? 'radar-ring radar-overflow-ring'
+        : 'radar-ring';
+    return `<polygon class="${ringClass}" points="${radarPolygonPoints(ringAxes, metas, cx, cy, radius, scaleMax)}"></polygon>`;
+  }).join('');
+  const spokes = metas.map((meta, idx) => {
+    const p = radarPoint(scaleMax, idx, metas.length, cx, cy, radius, scaleMax);
+    return `<line class="radar-spoke" x1="${cx}" y1="${cy}" x2="${p.x.toFixed(1)}" y2="${p.y.toFixed(1)}"></line>`;
+  }).join('');
+  const labels = metas.map((meta, idx) => {
+    const p = radarPoint(scaleMax, idx, metas.length, cx, cy, radius + 24, scaleMax);
+    const anchor = Math.abs(p.x - cx) < 8 ? 'middle' : (p.x > cx ? 'start' : 'end');
+    return `<text class="radar-label" x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle">${escapeHtml(meta.label)}</text>`;
+  }).join('');
+  const prevPoints = radarPolygonPoints(prevAxes, metas, cx, cy, radius, scaleMax);
+  const curPoints = radarPolygonPoints(curAxes, metas, cx, cy, radius, scaleMax);
+  const dots = metas.map((meta, idx) => {
+    const value = scoreAxisValue(curAxes, meta.key);
+    const p = radarPoint(value, idx, metas.length, cx, cy, radius, scaleMax);
+    return `<circle class="radar-dot${value > 100 ? ' is-breakthrough' : ''}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${value > 100 ? '3.6' : '2.8'}"></circle>`;
+  }).join('');
+  return `
+    <div class="score-radar-wrap">
+      <svg class="score-radar" viewBox="0 0 286 242" role="img" aria-label="${metas.length}项评分指标对比；100 为 P99 基准线">
+        ${rings}
+        ${spokes}
+        <polygon class="radar-prev" points="${prevPoints}"></polygon>
+        <polygon class="radar-cur" points="${curPoints}"></polygon>
+        ${dots}
+        ${labels}
+      </svg>
+      <div class="score-radar-legend"><span class="legend-cur">当前</span><span class="legend-prev">上一期</span><span class="legend-benchmark">100 基准</span>${scaleMax > 100 ? `<span class="legend-scale">外圈 ${scaleMax}</span>` : ''}</div>
+    </div>`;
+}
+
+function scorePopulationStat(hexagon, key = null, previous = false) {
+  const population = previous ? hexagon?.previous_population : hexagon?.population;
+  return key ? population?.axes?.[key] : population?.score;
+}
+
+function scorePercentileText(value) {
+  const percentile = Number(value);
+  if (!Number.isFinite(percentile)) return '—';
+  return Number.isInteger(percentile) ? `${percentile}` : percentile.toFixed(1);
+}
+
+function scorePopulationText(stat, compact = false) {
+  const rank = Number(stat?.rank || 0);
+  const total = Number(stat?.total || 0);
+  const tieCount = Number(stat?.tie_count || 0);
+  if (!rank || !total) return '暂无全站对比';
+  const rankText = tieCount > 1 ? `并列第${rank}` : `第${rank}`;
+  const percentileText = scorePercentileText(stat?.percentile);
+  if (compact) return `${rankText}/${total}${tieCount > 1 ? ` · 共${tieCount}人同分` : ''} · 超${percentileText}%`;
+  return `全站${rankText} / ${total} · 超过 ${percentileText}% 博主${tieCount > 1 ? ` · 共${tieCount}人同分` : ''}`;
+}
+
+function scoreAxisFact(modeName, key, details = {}) {
+  const count = name => Math.max(0, Math.round(Number(details[name] || 0)));
+  const percent = name => Math.max(0, Math.round(Number(details[name] || 0) * 100));
+  const fmt = name => Number(details[name] || 0).toFixed(1);
+  const durableDays = Number(details.durable_observed_days || details.observation_span_days || 0);
+  const durableNote = Number(details.durable_notes_status) === 0 && durableDays < 3
+    ? '；等待第3天验证（当前' + durableDays + '天）'
+    : (details.durable_notes_status === 'waiting' ? '；' + (details.durable_notes_message || '等待第3天验证') : '');
+  const facts = {
+    score: {
+      history_coverage: () => `15天覆盖 ${count('history_keyword_count')} 个搜索词 · ${count('history_article_count')} 篇笔记 · ${count('history_bucket_count')} 类搜索意图`,
+      recent_coverage: () => `近7天覆盖 ${count('recent_keyword_count')} 个搜索词 · ${count('recent_article_count')} 篇笔记`,
+      durable_notes: () => `${count('durable_article_count')} 篇稳定笔记 · ${count('durable_pair_count')} 组稳定命中${durableNote}`,
+      continuity: () => `近7天活跃 ${count('recent_active_days')} 天 · 当前连续 ${count('current_streak')} 天`,
+      content_matrix: () => `约 ${fmt('effective_article_count')} 篇有效笔记 · 单篇集中度 ${percent('article_concentration')}%`,
+      engagement_quality: () => `可见互动当量 ${fmt('engagement_total')} · 排名质量 ${(Number(details.engagement_rank_quality || 0) * 100).toFixed(1)}%`,
+      battle_breadth: () => `${count('history_bucket_count')} 类搜索意图 · 有效类别 ${fmt('effective_category_count')} · 最大类别集中度 ${percent('category_concentration')}%`,
+    },
+    timeliness: {
+      top3_volume: () => `近3天 Top3 ${count('top3_hit_count')} 次 · ${count('top3_article_count')} 篇笔记`,
+      top3_breadth: () => `Top3 覆盖 ${count('top3_keyword_count')} 个搜索词 · ${count('top3_bucket_count')} 类搜索意图`,
+      new_top3: () => `${count('new_top3_pair_count')} 组笔记×搜索词新进 Top3`,
+      fresh_top3: () => `${count('fresh_top3_article_count')} 篇发布30天内笔记冲入 Top3`,
+      upward_momentum: () => `较前一有效日新进 ${count('new_count')} 个 · 上升 ${count('up_count')} 个`,
+      new_entry_engagement: () => {
+      const nac = details['new_entry_article_count'];
+      const nacValid = typeof nac === 'number' && Number.isFinite(nac);
+      return `新进笔记可见互动当量 ${fmt('new_entry_engagement_total')}${nacValid ? ` · 覆盖 ${Math.max(0, Math.round(nac))} 篇` : ''}`;
+    },
+      top3_continuity: () => `最近3天有 ${count('top3_active_days')} 天出现 Top3`,
+    },
+    today: {
+      today_top3: () => `今天 Top3 ${count('today_top3_count')} 次 · 总命中 ${count('today_hit_count')} 次`,
+      today_keywords: () => `今天覆盖 ${count('today_keyword_count')} 个搜索词`,
+      today_notes: () => `今天由 ${count('today_article_count')} 篇不同笔记贡献`,
+      today_rank_quality: () => `综合排名质量 ${(Number(details.average_rank_quality || 0) * 100).toFixed(1)}/100 · 第1名权重最高`,
+      today_new_entries: () => `较前一有效日新进 ${count('today_new_entry_count')} 个 · 总命中 ${count('today_hit_count')} 次`,
+      today_engagement_quality: () => `今日可见互动当量 ${fmt('today_engagement_total')} · 仅点赞/收藏/评论/分享，不等同曝光或阅读`,
+      today_breadth: () => `今天覆盖 ${count('today_bucket_count')} 类搜索意图`,
+    },
+  };
+  return facts[modeName]?.[key]?.() || '暂无可解释的事实明细';
+}
+
+function scoreRankMoveText(currentStat, previousStat, compact = false) {
+  const currentRank = Number(currentStat?.rank || 0);
+  const previousRank = Number(previousStat?.rank || 0);
+  if (!currentRank || !previousRank) return '';
+  if (currentRank < previousRank) return `${compact ? '' : '全站'}升 ${previousRank - currentRank} 位`;
+  if (currentRank > previousRank) return `${compact ? '' : '全站'}降 ${currentRank - previousRank} 位`;
+  return compact ? '名次持平' : '全站名次持平';
+}
+
+function scoreAxisBenchmarkText(value) {
+  const score = scoreInt(value);
+  if (score > 100) return `突破 P99 +${score - 100}`;
+  if (score === 100) return '达到 P99 基准';
+  return `距 P99 基准 ${100 - score} 分`;
+}
+
+function scoreAxisCards(modeName, hexagon) {
+  const metas = scoreRadarMeta(hexagon);
+  const curAxes = hexagon?.current?.axes || {};
+  const prevAxes = hexagon?.previous?.axes || {};
+  const deltas = hexagon?.delta || {};
+  const details = hexagon?.current?.details || {};
+  const benchmarks = hexagon?.benchmarks || {};
+  const prevBenchmarks = hexagon?.previous_benchmarks || {};
+  const scaleMax = scoreRadarScaleMax(metas, curAxes, prevAxes);
+  const benchmarkLeft = Math.min(100, 10000 / scaleMax);
+  return metas.map(meta => {
+    const cur = scoreAxisValue(curAxes, meta.key);
+    const prev = scoreAxisValue(prevAxes, meta.key);
+    const d = Number.isFinite(Number(deltas[meta.key])) ? Number(deltas[meta.key]) : cur - prev;
+    const population = scorePopulationStat(hexagon, meta.key);
+    const previousPopulation = scorePopulationStat(hexagon, meta.key, true);
+    const currentLeft = Math.min(100, cur / scaleMax * 100);
+    const previousLeft = Math.min(100, prev / scaleMax * 100);
+    const label = modeName === "score" ? "昨" : "前一有效日";
+    const yesterdayText = d === 0
+      ? `${label} ${prev}`
+      : `${label} ${prev} · ${signedDelta(d)}`;
+    const p99Val = benchmarks[meta.key];
+    const prevP99Val = prevBenchmarks[meta.key];
+    const p99Text = p99Val != null ? `P99原始=${Number(p99Val).toFixed(4)}` : '';
+    const prevP99Text = prevP99Val != null && prevP99Val !== p99Val ? `${label}P99=${Number(prevP99Val).toFixed(4)}` : '';
+    const benchmarkExtra = [p99Text, prevP99Text].filter(Boolean).join(' ');
+    const isUnavailable = modeName === "score" && meta.key === "durable_notes" && details.durable_notes_status === "waiting";
+    const unavailText = isUnavailable ? '观察期数据不足，不参与本期加权/排名解释' : '';
+    return `<div class="score-axis-card${isUnavailable ? ' is-unavailable' : ''}${cur > 100 ? ' is-breakthrough' : ''}" title="${escapeHtml(meta.desc || '')}">
+      <div class="axis-card-head">
+        <b>${escapeHtml(meta.label)}${isUnavailable ? '<span class="score-axis-unavail">暂未纳入总分</span>' : ''}</b>
+        <span>${isUnavailable ? '等待第3天验证' : scorePopulationText(population, true)}</span>
+        <strong>${cur}</strong>
+      </div>
+      <div class="axis-card-fact">${isUnavailable ? escapeHtml(unavailText) : escapeHtml(scoreAxisFact(modeName, meta.key, details))}</div>
+      <div class="axis-bullet" role="img" aria-label="${escapeHtml(isUnavailable ? `${meta.label} 观察期数据不足` : `${meta.label}今天${cur}分，${label === "昨" ? "昨天" : "前一有效日"}${prev}分，100为P99基准`)}">
+        <span class="axis-bullet-fill${cur > 100 ? ' is-breakthrough' : ''}" style="width:${currentLeft.toFixed(2)}%"></span>
+        <i class="axis-bullet-benchmark" style="left:${benchmarkLeft.toFixed(2)}%"></i>
+        <em class="axis-bullet-previous" style="left:${previousLeft.toFixed(2)}%"></em>
+      </div>
+      <div class="axis-card-foot"><span>${isUnavailable ? '观察期数据不足' : `${yesterdayText} · ${scoreRankMoveText(population, previousPopulation, true)}`}</span><b>${isUnavailable ? '等待第3天' : scoreAxisBenchmarkText(cur)}</b></div>
+      ${benchmarkExtra && !isUnavailable ? `<div class="axis-card-benchmark">${escapeHtml(benchmarkExtra)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+
+
+function scoreWeightText(hexagon, modeName, a) {
+  const weights = hexagon?.weights || {};
+  const metas = scoreRadarMeta(hexagon);
+  if (modeName === 'score' && a) {
+    const parts = scoreBoardParts(a, modeName);
+    const unavail = parts.unavailable_axes || [];
+    const availWeight = parts.available_weight || 1.0;
+    if (unavail.length > 0 && availWeight > 0) {
+      return metas.map(meta => {
+        if (unavail.includes(meta.key)) {
+          return `${escapeHtml(meta.label)}<span style="color:#94a3b8;font-style:italic">暂不参与</span>`;
+        }
+        const pct = Math.round(Number(weights[meta.key] || 0) / availWeight * 100);
+        return `${escapeHtml(meta.label)}${pct}%`;
+      }).join(' \u00b7 ');
+    }
+  }
+  return metas.map(meta => `${escapeHtml(meta.label)}${Math.round(Number(weights[meta.key] || 0) * 100)}%`).join(' \u00b7 ');
+}
+
+function scoreEvidenceText(a, modeName, hexagon) {
+  const cur = hexagon?.current || {};
+  const d = cur.details || {};
+  const parts = scoreBoardParts(a, modeName);
+  const config = scoreBoardMeta(modeName);
+  const confidence = Math.round(Number(parts.confidence || cur.confidence || 0) * 100);
+  if (modeName === 'timeliness') {
+    return `近3天有效观察 <b>${d.observed_days ?? 0}</b> 天；Top3 命中 <b>${d.top3_hit_count ?? 0}</b> 次、覆盖 <b>${d.top3_keyword_count ?? 0}</b> 个搜索词；新进 Top3 <b>${d.new_top3_pair_count ?? 0}</b> 组，新笔记冲榜 <b>${d.fresh_top3_article_count ?? 0}</b> 篇。置信度 <b>${confidence}%</b>，${config.confidenceLabel || '观察满 3 天后取得完整置信度'}`;
+  }
+  if (modeName === 'today') {
+    const refreshKw = d.refresh_completed_keywords ?? 0;
+    const refreshTarget = d.refresh_target_keywords ?? 0;
+    const completeness = d.refresh_completeness ?? 0;
+    return `今天命中 <b>${d.today_hit_count ?? 0}</b> 次，其中 Top3 <b>${d.today_top3_count ?? 0}</b> 次；覆盖 <b>${d.today_keyword_count ?? 0}</b> 个搜索词、<b>${d.today_article_count ?? 0}</b> 篇笔记；较前一有效日新进 <b>${d.today_new_entry_count ?? 0}</b>。刷新完整度 <b>${refreshKw}/${refreshTarget}、${Math.round(completeness * 100)}%</b>`;
+  }
+  const durableDays = Math.max(0, Math.round(Number(d.durable_observed_days || d.observation_span_days || 0)));
+  const durableNote = durableDays < 3
+    ? '；稳定笔记不足3天观察（当前' + durableDays + '天），暂不纳入总分加权，等待第3天验证'
+    : '';
+  const confAdj = parts.confidence_adjusted_score;
+  const confAdjStr = (typeof confAdj === 'number' && Number.isFinite(confAdj)) ? confAdj.toFixed(1) : '—';
+  const strength = parts.strength_score;
+  const strengthStr = (typeof strength === 'number' && Number.isFinite(strength)) ? strength.toFixed(1) : '—';
+  const maturityFactor = Math.round(Number(parts.maturity_factor || 0) * 100);
+  return `滚动15天活跃 <b>${d.history_active_days ?? 0}</b> 天，近7天活跃 <b>${d.recent_active_days ?? 0}</b> 天，当前连续 <b>${d.current_streak ?? 0}</b> 天；覆盖 <b>${d.history_keyword_count ?? 0}</b> 个搜索词、<b>${d.history_article_count ?? 0}</b> 篇笔记。稳定笔记 <b>${d.durable_article_count ?? 0}</b> 篇，<b>${d.durable_pair_count ?? 0}</b> 组"笔记×搜索词"稳定命中。观察成熟度 <b>${confidence}%</b>（${config.confidenceLabel || '满5天100%'}），当前释放实力分的 <b>${maturityFactor}%</b>：纯实力 <b>${strengthStr}</b>，主榜校准后 <b>${scoreBoardValue(a, modeName)}</b>。保守分：<b>${confAdjStr}</b>（纯实力×成熟度，仅作最保守参考）${durableNote}`;
+}
+
+function scoreInsightRows(modeName, hexagon, a) {
+  const metas = scoreRadarMeta(hexagon);
+  const axes = hexagon?.current?.axes || {};
+  const details = hexagon?.current?.details || {};
+  // 排除 unavailable_axes
+  const parts = a ? scoreBoardParts(a, modeName) : {};
+  const unavailable = (parts.unavailable_axes || []);
+  const availableMetas = metas.filter(meta => !unavailable.includes(meta.key));
+  if (!availableMetas.length) return '<div class="score-insight-empty">暂无可用轴数据</div>';
+  const hasPopulationData = availableMetas.some(meta => {
+    const pop = scorePopulationStat(hexagon, meta.key);
+    return pop && Number(pop.percentile) > 0;
+  });
+  const sortByPercentile = (left, right) => right.percentile - left.percentile || left.rank - right.rank || right.value - left.value;
+  const sortByValue = (left, right) => right.value - left.value || left.rank - right.rank;
+  const ranked = availableMetas.map(meta => {
+    const population = scorePopulationStat(hexagon, meta.key);
+    return {
+      ...meta,
+      value: scoreAxisValue(axes, meta.key),
+      population,
+      percentile: hasPopulationData ? Number(population?.percentile || 0) : 0,
+      rank: hasPopulationData ? Number(population?.rank || Number.MAX_SAFE_INTEGER) : 0,
+    };
+  }).sort(hasPopulationData ? sortByPercentile : sortByValue);
+  if (!ranked.length) return '';
+  const strongest = ranked[0];
+  const second = ranked[1] || strongest;
+  const weakest = [...ranked].sort(hasPopulationData ? sortByPercentile : sortByValue).slice(-1)[0] || strongest;
+  return [
+    ['最突出', strongest],
+    ['第二强', second],
+    ['相对短板', weakest],
+  ].map(([tag, item]) => `
+    <div class="score-insight-row">
+      <span>${tag}</span>
+      <div><b>${escapeHtml(item.label)} ${item.value}</b><em>${escapeHtml(scoreAxisFact(modeName, item.key, details))}</em></div>
+      <small>${escapeHtml(scorePopulationText(item.population, true))}</small>
+    </div>
+  `).join('');
+}
+
+
+
+function scoreTimeStory(a, modeName, hexagon) {
+  const current = scoreBoardValue(a, modeName);
+  const previous = scoreBoardYesterdayValue(a, modeName);
+  const delta = scoreDeltaValue(a, modeName);
+  const population = scorePopulationStat(hexagon);
+  const previousPopulation = scorePopulationStat(hexagon, null, true);
+  const position = scorePopulationText(population, true);
+  const rankMove = scoreRankMoveText(population, previousPopulation);
+  if (current === previous && current === 100) {
+    return `<b>连续两天 100：</b>守住 P99 总分基准；${position}。同分数会明确并列，所以 100 不等于独占第一。`;
+  }
+  if (current === previous && current > 100) {
+    return `<b>连续两天 ${current}：</b>维持突破；${position}，${rankMove}。`;
+  }
+  if (current === previous) {
+    return `<b>连续两天 ${current}：</b>${position}，${rankMove}；分数不变不代表对手关系不变。`;
+  }
+  return `<b>${previous} → ${current}（${signedDelta(delta)}）：</b>${position}，${rankMove}。`;
+}
+
+function scoreAxisDefinitionText(hexagon, modeName, a) {
+  const metas = scoreRadarMeta(hexagon);
+  const dimCount = Math.max(metas.length, 1);
+  let availCount = dimCount;
+  let unavailNote = '';
+  if (modeName === 'score' && a) {
+    const parts = scoreBoardParts(a, modeName);
+    const unavail = parts.unavailable_axes || [];
+    availCount = dimCount - unavail.length;
+    unavailNote = unavail.length > 0
+      ? `当前${availCount}项已纳入加权；${unavail.length}项等待观察`
+      : '';
+  }
+  const weightedLine = modeName === 'score' && unavailNote
+    ? `<b>加权：</b>${unavailNote}；缺失轴不纳入总分，不会拖低分数。`
+    : `<b>加权：</b>${dimCount} 项可用轴加权（重归一化），缺失轴（如不足3天稳定笔记）不纳入总分，不会拖低分数。`;
+  return `<li><b>基准：</b>每项 0–100 分，100 = 当前有效博主池的 P99 分位基准。超出后对数延展，不设硬上限。</li><li>${weightedLine}</li><li><b>观察成熟度：</b>主榜温和校准，1/2/3/4/5个有效日分别释放纯实力的88%/92%/95%/98%/100%；避免短样本直接贴近100。保守分=纯实力×成熟度，仅作下限参考。</li><li><b>突破 >100：</b>需成熟度≥99.9%、稳定笔记可用、基础分≥85、至少2个可用轴超P99且含关键轴。</li>` + metas
+    .map(meta => `<li><b>${escapeHtml(meta.label)}：</b>${escapeHtml(meta.desc || '')}</li>`)
+    .join('');
+}
+
+
+function scoreConfidenceLine(a, modeName) {
+  const parts = scoreBoardParts(a, modeName);
+  const conf = parts.confidence || 0;
+  const confPct = Math.round(Number(conf) * 100);
+  const confAdj = parts.confidence_adjusted_score;
+  const confAdjStr = (typeof confAdj === 'number' && Number.isFinite(confAdj)) ? confAdj.toFixed(1) : '—';
+  const availAxes = parts.available_axes || [];
+  const unavailAxes = parts.unavailable_axes || [];
+  const score = scoreBoardValue(a, modeName);
+  const strength = Number(parts.strength_score ?? parts.base_score ?? score);
+  const maturityFactor = Math.round(Number(parts.maturity_factor ?? 1) * 100);
+  const AXIS_LABEL_MAP = { history_coverage: '历史覆盖', durable_notes: '稳定笔记' };
+  const availStr = unavailAxes.length > 0
+    ? `${availAxes.length}项已纳入 · ${unavailAxes.map(k => AXIS_LABEL_MAP[k] || k).join('、')}仍在观察`
+    : `${availAxes.length}项可用轴`;
+  return `<span class="score-confidence-line">主榜分 <b>${score}</b> · 纯实力 <b>${strength.toFixed(1)}</b> × 成熟释放 <b>${maturityFactor}%</b> · 保守分 <b>${confAdjStr}</b> · ${availStr}</span>`;
+}
+
+function scoreBreakthroughText(account, modeName) {
+  const parts = scoreBoardParts(account, modeName);
+  const hexagon = scoreBoardHexagon(account, modeName);
+  const score = scoreBoardValue(account, modeName);
+  const overCount = Array.isArray(parts.over_axes) ? parts.over_axes.length : 0;
+  const breakthroughEnergy = hexagon?.current?.breakthrough_energy;
+  const availAxes = parts.available_axes || [];
+  const unavailAxes = parts.unavailable_axes || [];
+  if (score > 100) {
+    return `已触发突破：基础分达到 ${Math.round(Number(parts.base_score || 0))}，${overCount} 个可用维度超过 P99，并包含本榜关键维度；突破能量 +${breakthroughEnergy != null ? Number(breakthroughEnergy).toFixed(2) : scorePart(parts.breakthrough_energy)}。`;
+  }
+  if (parts.breakthrough_gate) {
+    return `已满足突破门槛，${overCount} 个可用维度超过 P99；但基础分加突破能量后的总分仍为 ${score}，尚未越过 100 基准线。`;
+  }
+  if (overCount > 0) {
+    return `已有 ${overCount} 个维度超过 P99，但突破 >100 需同时满足"完整置信度（≥99.9%）、稳定笔记可用、基础分≥85、至少 2 轴超 P99 且包含关键轴"，当前暂不触发。`;
+  }
+  if (unavailAxes.length > 0) {
+    return `当前没有可用维度超过 P99。不可用轴：${unavailAxes.join('、')}（暂未纳入总分）。100 是 P99 分位基准线，不是满分上限；只有多维同时超出当前认知时，总分才允许突破。`;
+  }
+  return '当前没有维度超过 P99。100 是 P99 分位基准线，不是满分上限；只有多维同时超出当前认知时，总分才允许突破。';
+}
+
+
+
+function fallbackScoreTooltipHtml(a, modeName) {
+  const config = scoreBoardMeta(modeName);
+  const name = escapeHtml(a.name || '该博主');
+  const score = scoreBoardValue(a, modeName);
+  return `
+    <div class="score-tip-kicker">${config.label} · ${config.dimLabel || '评分'}</div>
+    <div class="score-tip-title"><strong>${name}</strong><span>${score}</span></div>
+    <div class="score-tip-lead">${escapeHtml(config.lead)}</div>
+    <div class="score-tip-formula">${escapeHtml(config.formula)}</div>
+  `;
+}
+
+function accountScoreTooltipHtml(a, modeName) {
+  const config = scoreBoardMeta(modeName);
+  const name = escapeHtml(a.name || '该博主');
+  const hexagon = scoreBoardHexagon(a, modeName);
+  if (!hexagon?.current?.axes) return fallbackScoreTooltipHtml(a, modeName);
+
+  const score = scoreBoardValue(a, modeName);
+  const scoreY = scoreBoardYesterdayValue(a, modeName);
+  const scoreD = scoreDeltaValue(a, modeName);
+  const scoreClass = score > 100 ? ' is-breakthrough' : '';
+  const population = scorePopulationStat(hexagon);
+  const metas = scoreRadarMeta(hexagon);
+  const dimCount = Math.max(metas.length, 1);
+
+  return `
+    <div class="score-tip-kicker">${escapeHtml(config.label)} · ${escapeHtml(hexagon.window_label || '')} · ${escapeHtml(config.dimLabel || dimCount + '项指标')}</div>
+    <div class="score-tip-title">
+      <div><strong>${name}</strong><small>${escapeHtml(scorePopulationText(population))}</small></div>
+      <span class="${scoreClass.trim()}">${score}<small>${escapeHtml(config.label)}<br>P99=100</small>${scoreD !== 0 ? `<em class="score-main-delta ${deltaClass(scoreD)}">${signedDelta(scoreD)}</em>` : ''}</span>
+    </div>
+    ${modeName === 'score' ? '<div class="score-tip-confidence">' + scoreConfidenceLine(a, modeName) + '</div>' : ''}
+    <div class="score-time-story">${scoreTimeStory(a, modeName, hexagon)}</div>
+    <div class="score-core-layout">
+      ${scoreRadarSvg(hexagon)}
+      <div class="score-insight-panel">
+        <div class="score-section-label">先看结论</div>
+        ${scoreInsightRows(modeName, hexagon, a)}
+        <div class="score-legend-note"><b>怎么看：</b>分数看强度，名次看对手，同分数看并列数；深蓝是当前，浅蓝是上一期。</div>
+      </div>
+    </div>
+    <div class="score-axis-section-head"><b>${dimCount}项事实对比</b><span>细线=上一期 · 虚线=100基准</span></div>
+    <div class="score-axis-grid">${scoreAxisCards(modeName, hexagon)}</div>
+    <details class="score-tech-details">
+      <summary>想看算法细节</summary>
+      <div class="score-tech-body">
+        <p>${config.lead}</p>
+        <p>${scoreEvidenceText(a, modeName, hexagon)}</p>
+        <p class="score-breakthrough-line${scoreClass}">${scoreBreakthroughText(a, modeName)}</p>
+        <p><b>公式直觉：</b>${config.formula}<br><b>本项权重：</b>${scoreWeightText(hexagon, modeName, a)}。单轴在基准内按 <code>100 × 原始值 ÷ P99</code> 换算；超出后按 <code>100 + 40 × log₂(原始值 ÷ P99)</code> 计算突破能量。</p>
+        <ul>${scoreAxisDefinitionText(hexagon, modeName, a)}</ul>
+        <p class="score-tech-yesterday">上一期总分 ${scoreY}；上一期人口位置按当前博主池回看，便于比较同一批博主的变化。</p>
+      </div>
+    </details>
+  `;
+}
+
+let activeScoreTooltipAnchor = null;
+let scoreTooltipHideTimer = null;
+let lastScorePointer = { x: 0, y: 0 };
+
+// ── 按需 fetch 详情 ─────────────────────────────────────
+async function _fetchKeywordDetail(keywordId) {
+  if (KEYWORD_DETAIL_PENDING.has(keywordId)) return KEYWORD_DETAIL_PENDING.get(keywordId);
+  const p = (async () => {
+    try {
+      const resp = await fetch(KEYWORD_DETAIL_API + '/' + encodeURIComponent(keywordId), { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      KEYWORD_DETAIL_CACHE.set(keywordId, data);
+      // 合并到摘要
+      const summary = KEYWORD_BY_ID.get(keywordId);
+      if (summary) Object.assign(summary, data);
+      window.__XHS_PERF__.detail.fetch = performance.now();
+      return data;
+    } catch (e) {
+      KEYWORD_DETAIL_PENDING.delete(keywordId);
+      throw e;
+    }
+  })();
+  KEYWORD_DETAIL_PENDING.set(keywordId, p);
+  return p;
+}
+
+async function _fetchAccountDetail(accountId) {
+  if (ACCOUNT_DETAIL_PENDING.has(accountId)) return ACCOUNT_DETAIL_PENDING.get(accountId);
+  const p = (async () => {
+    try {
+      const resp = await fetch(ACCOUNT_DETAIL_API + '/' + encodeURIComponent(accountId), { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      ACCOUNT_DETAIL_CACHE.set(accountId, data);
+      // 合并到摘要
+      const summary = ACCOUNT_BY_ID.get(accountId);
+      if (summary) Object.assign(summary, data);
+      window.__XHS_PERF__.detail.fetch = performance.now();
+      return data;
+    } catch (e) {
+      ACCOUNT_DETAIL_PENDING.delete(accountId);
+      throw e;
+    }
+  })();
+  ACCOUNT_DETAIL_PENDING.set(accountId, p);
+  return p;
+}
+
+function lazyBuildScoreTooltipHtml(anchor) {
+  /* 从详情缓存懒构建 tooltip HTML */
+  const modeName = anchor.dataset.scoreTooltipMode || 'score';
+  const accountId = anchor.dataset.accountId || '';
+  if (!accountId) return null;
+  const full = ACCOUNT_DETAIL_CACHE.get(accountId);
+  if (full) return accountScoreTooltipHtml(full, modeName);
+  // 摘要不构建正式tooltip，让 showAccountScoreTooltip 触发 fetch
+  return null;
+}
+
+function ensureAccountScoreTooltip() {
+  let tip = document.getElementById('accountScoreTooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'accountScoreTooltip';
+    tip.className = 'account-score-tooltip';
+    tip.addEventListener('mouseenter', () => {
+      if (scoreTooltipHideTimer) clearTimeout(scoreTooltipHideTimer);
+    });
+    tip.addEventListener('mouseleave', () => hideAccountScoreTooltip());
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function placeAccountScoreTooltip(anchor, tip) {
+  const margin = 12;
+  const topMargin = 56;
+  const gap = 12;
+  const rect = anchor.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  tip.style.maxWidth = `${Math.max(280, vw - margin * 2)}px`;
+  tip.style.maxHeight = `${Math.max(220, vh - topMargin - margin)}px`;
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+
+  let left = rect.left - tw - gap;
+  if (left < margin) left = rect.right + gap;
+  if (left + tw > vw - margin) left = vw - tw - margin;
+  left = Math.max(margin, left);
+
+  let top = rect.top + rect.height / 2 - th / 2;
+  if (top < topMargin) top = topMargin;
+  if (top + th > vh - margin) top = Math.max(topMargin, vh - th - margin);
+
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function showAccountScoreTooltip(anchor) {
+  if (scoreTooltipHideTimer) {
+    clearTimeout(scoreTooltipHideTimer);
+    scoreTooltipHideTimer = null;
+  }
+  activeScoreTooltipAnchor = anchor;
+  const tip = ensureAccountScoreTooltip();
+  // 尝试从缓存构建
+  let html = lazyBuildScoreTooltipHtml(anchor);
+  if (html) {
+    tip.innerHTML = html;
+    tip.classList.add('show');
+    placeAccountScoreTooltip(anchor, tip);
+    return;
+  }
+  // 未缓存：显示加载态 + 触发异步 fetch
+  const accountId = anchor.dataset.accountId || '';
+  const modeName = anchor.dataset.scoreTooltipMode || 'score';
+  if (accountId && !ACCOUNT_DETAIL_PENDING.has(accountId)) {
+    tip.innerHTML = '<div class="score-tip-loading" style="padding:16px;text-align:center;color:#999">加载评分详情…</div>';
+    tip.classList.add('show');
+    placeAccountScoreTooltip(anchor, tip);
+    _fetchAccountDetail(accountId).then(full => {
+      if (full) {
+        if (activeScoreTooltipAnchor === anchor) {
+          tip.innerHTML = accountScoreTooltipHtml(full, modeName);
+          placeAccountScoreTooltip(anchor, tip);
+        }
+      }
+    }).catch(() => {
+      if (activeScoreTooltipAnchor === anchor) {
+        tip.innerHTML = '<div class="score-tip-loading" style="padding:16px;text-align:center;color:#999">评分暂不可用</div>';
+        placeAccountScoreTooltip(anchor, tip);
+      }
+    });
+  }
+}
+
+function hideAccountScoreTooltip(anchor) {
+  if (anchor && activeScoreTooltipAnchor && anchor !== activeScoreTooltipAnchor) return;
+  const tip = document.getElementById('accountScoreTooltip');
+  if (tip) tip.classList.remove('show');
+  activeScoreTooltipAnchor = null;
+}
+
+function initAccountScoreTooltip() {
+  if (window.__accountScoreTooltipInited) return;
+  window.__accountScoreTooltipInited = true;
+
+  // ✂ [perf] 移除高频 elementFromPoint
+  const scheduleHide = (anchor) => {
+    if (scoreTooltipHideTimer) clearTimeout(scoreTooltipHideTimer);
+    scoreTooltipHideTimer = setTimeout(() => {
+      // 检查 active anchor 是否仍是 tooltip 触发源
+      if (activeScoreTooltipAnchor && document.contains(activeScoreTooltipAnchor) && !activeScoreTooltipAnchor.matches(':hover')) {
+        hideAccountScoreTooltip(anchor);
+      }
+    }, 180);
+  };
+
+    // ✂ [perf] 移除高频 mousemove handler
+document.addEventListener('mouseover', (event) => {
+    lastScorePointer = { x: event.clientX, y: event.clientY };
+    const anchor = event.target.closest?.('.js-score-tooltip');
+    if (!anchor) return;
+    if (anchor.contains(event.relatedTarget)) return;
+    showAccountScoreTooltip(anchor);
+  });
+  document.addEventListener('mouseout', (event) => {
+    const anchor = event.target.closest?.('.js-score-tooltip');
+    if (!anchor) return;
+    if (anchor.contains(event.relatedTarget)) return;
+    scheduleHide(anchor);
+  });
+  document.addEventListener('focusin', (event) => {
+    const anchor = event.target.closest?.('.js-score-tooltip');
+    if (anchor) showAccountScoreTooltip(anchor);
+  });
+  document.addEventListener('focusout', (event) => {
+    const anchor = event.target.closest?.('.js-score-tooltip');
+    if (anchor) hideAccountScoreTooltip(anchor);
+  });
+  window.addEventListener('scroll', () => hideAccountScoreTooltip(), true);
+  window.addEventListener('resize', () => hideAccountScoreTooltip());
+}
+
+function hasRealUrl(url) {
+  return !!url && !String(url).startsWith('placeholder://');
+}
+
+function articleHitDetailHref(meta = {}, url = '') {
+  if (meta.article_id) return `/article-hit-detail?article_id=${encodeURIComponent(meta.article_id)}`;
+  if (url) return `/article-hit-detail?url=${encodeURIComponent(url)}`;
+  return '/article-hit-detail';
+}
+
+function metricsChipHtml(art) {
+  const parts = [];
+  if (art.read_count != null) parts.push(`<span class="metric-chip">👁 ${art.read_count}</span>`);
+  if (art.like_count != null) parts.push(`<span class="metric-chip">👍 ${art.like_count}</span>`);
+  return parts.join('');
+}
+
+function buildCoverProxyUrl(coverUrl) {
+  return `/api/article-cover-image?url=${encodeURIComponent(coverUrl)}`;
+}
+
+function primeCoverCache(article) {
+  if (!article?.article_id || coverCache.has(article.article_id)) return;
+  if (typeof article.cover_url === 'string' && article.cover_url.trim()) {
+    coverCache.set(article.article_id, article.cover_url.trim());
+    coverStateCache.set(article.article_id, 'cached');
+  }
+}
+
+function getArticleCoverValue(article) {
+  if (!article?.article_id) return undefined;
+  primeCoverCache(article);
+  return coverCache.get(article.article_id);
+}
+
+function renderArticleCoverCard(kind, rankText) {
+  const toneClass = kind === 'no_url'
+    ? 'is-no-url'
+    : (kind === 'retry' ? 'is-retry' : 'is-no-cover');
+  const mainText = kind === 'no_url'
+    ? '仅榜单'
+    : (kind === 'retry' ? '待重试' : '有链接');
+  const subText = kind === 'no_url'
+    ? ''
+    : (kind === 'retry' ? '封面抓取失败' : '暂无封面');
+  return `
+    <div class="article-cover article-cover-text ${toneClass}" data-cover-ready="1">
+      <div class="cover-text-rank">${escapeHtml(String(rankText || '—'))}</div>
+      <div class="cover-text-label">${mainText}</div>
+      ${subText ? `<div class="cover-text-sub">${subText}</div>` : ''}
+    </div>`;
+}
+
+function buildArticleCoverHtml(article) {
+  const articleId = article?.article_id || '';
+  const url = article?.url || '';
+  const rankText = article.best_rank || article.rank || '—';
+  const coverUrl = getArticleCoverValue(article);
+  const coverState = articleId ? coverStateCache.get(articleId) : '';
+
+  if (coverUrl) {
+    return `
+      <div class="article-cover" data-cover-ready="1">
+        <img src="${escapeHtml(buildCoverProxyUrl(coverUrl))}" alt="" loading="lazy" />
+      </div>`;
+  }
+
+  if (!hasRealUrl(url)) {
+    return renderArticleCoverCard('no_url', rankText);
+  }
+
+  if (coverState === 'not_found') {
+    return renderArticleCoverCard('no_cover', rankText);
+  }
+  if (coverState === 'request_error' || coverState === 'http_error') {
+    return renderArticleCoverCard('retry', rankText);
+  }
+
+  const attrs = articleId
+    ? ` data-cover-article-id="${escapeHtml(articleId)}" data-cover-url="${escapeHtml(url)}" data-cover-rank="${escapeHtml(String(rankText))}"`
+    : '';
+  return `
+    <div class="article-cover is-loading"${attrs}>
+      <img src="${COVER_PLACEHOLDER_URL}" alt="" loading="lazy" />
+    </div>`;
+}
+
+function applyArticleCover(item) {
+  document.querySelectorAll(`[data-cover-article-id="${item.article_id}"]`).forEach(node => {
+    const rankText = node.getAttribute('data-cover-rank') || '—';
+    if (item.cover_url) {
+      node.innerHTML = `<img src="${escapeHtml(buildCoverProxyUrl(item.cover_url))}" alt="" loading="lazy" />`;
+      node.className = 'article-cover';
+    } else if (item.status === 'not_found') {
+      node.outerHTML = renderArticleCoverCard('no_cover', rankText);
+      return;
+    } else if (item.status === 'request_error' || item.status === 'http_error') {
+      node.outerHTML = renderArticleCoverCard('retry', rankText);
+      return;
+    } else {
+      node.outerHTML = renderArticleCoverCard('no_cover', rankText);
+      return;
+    }
+    node.removeAttribute('data-cover-article-id');
+    node.removeAttribute('data-cover-url');
+    node.removeAttribute('data-cover-rank');
+    node.setAttribute('data-cover-ready', '1');
+  });
+}
+
+async function loadQueuedArticleCovers() {
+  if (coverBatchInFlight) return;
+
+  const batch = [];
+  const seen = new Set();
+  const nodes = Array.from(document.querySelectorAll('[data-cover-article-id]'));
+  for (const node of nodes) {
+    const articleId = node.getAttribute('data-cover-article-id') || '';
+    const url = node.getAttribute('data-cover-url') || '';
+    if (!articleId || seen.has(articleId) || coverPending.has(articleId) || coverCache.has(articleId) || coverStateCache.has(articleId)) continue;
+    seen.add(articleId);
+    batch.push({ article_id: articleId, url });
+    if (batch.length >= 10) break;
+  }
+  if (!batch.length) return;
+
+  batch.forEach(item => coverPending.add(item.article_id));
+  coverBatchInFlight = true;
+  try {
+    const resp = await fetch(COVER_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ articles: batch })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const payload = await resp.json();
+    for (const item of payload.items || []) {
+      if (item.cover_url) coverCache.set(item.article_id, item.cover_url);
+      coverStateCache.set(item.article_id, item.status || 'unknown');
+      coverPending.delete(item.article_id);
+      applyArticleCover(item);
+    }
+  } catch (e) {
+    batch.forEach(item => {
+      coverPending.delete(item.article_id);
+      coverStateCache.set(item.article_id, 'request_error');
+      applyArticleCover({ article_id: item.article_id, status: 'request_error', cover_url: null });
+    });
+    console.warn('article cover batch failed', e);
+  } finally {
+    coverBatchInFlight = false;
+    if (document.querySelector('[data-cover-article-id]')) {
+      setTimeout(loadQueuedArticleCovers, 0);
+    }
+  }
+}
+
+function queueVisibleArticleCovers() {
+  setTimeout(loadQueuedArticleCovers, 0);
+}
+
+function normalizeTitleForCompare(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[·•|｜:：,，。！？!?—\-_\[\]【】()（）<>《》“”"'‘’`]+/g, '');
+}
+
+function preprocessArticleMarkdown(md, title) {
+  const lines = String(md || '')
+    .replace(/\u0000/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n');
+
+  const out = [];
+  const titleKey = normalizeTitleForCompare(title);
+  let skippedIntroHeading = false;
+  let skippedLinkLine = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\u200b/g, '').trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (out.length && out[out.length - 1] !== '') out.push('');
+      continue;
+    }
+    if (trimmed === 'StartFragment' || trimmed === 'EndFragment') continue;
+    if (!skippedLinkLine && /^链接[:：]\s*https?:\/\//.test(trimmed)) {
+      skippedLinkLine = true;
+      continue;
+    }
+    if (!skippedIntroHeading && trimmed.startsWith('#')) {
+      const headingText = trimmed.replace(/^#+\s*/, '');
+      if (normalizeTitleForCompare(headingText) === titleKey) {
+        skippedIntroHeading = true;
+        continue;
+      }
+    }
+    out.push(line);
+  }
+
+  while (out.length && out[0] === '') out.shift();
+  while (out.length && out[out.length - 1] === '') out.pop();
+  return out.join('\n');
+}
+
+function formatDateShort(date) {
+  if (!date) return '';
+  return date.slice(5).replace('-', '/');
+}
+
+function formatXhsDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+    const map = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}`;
+  }
+  return String(value).replace('T', ' ').replace(/(?:Z|[+-]\d{2}:\d{2})$/, '').slice(0, 16);
+}
+
+function snapshotHitToneClass(days) {
+  const n = Number(days || 0);
+  if (n >= 10) return 'tone-5';
+  if (n >= 7) return 'tone-4';
+  if (n >= 5) return 'tone-3';
+  if (n >= 3) return 'tone-2';
+  return 'tone-1';
+}
+
+function formatRunType(triggerType) {
+  if (triggerType === 'manual') return '手动复查';
+  if (triggerType === 'backfill') return '补抓';
+  return '定时抓取';
+}
+
+function formatRunTypeShort(triggerType) {
+  if (triggerType === 'manual') return '手动';
+  if (triggerType === 'backfill') return '补抓';
+  return '定时';
+}
+
+function keywordDateInputId(kw) {
+  return `custom-date-${encodeURIComponent(kw)}`;
+}
+
+function keywordTopicInputId(keywordId) {
+  return `topic-input-${encodeURIComponent(keywordId)}`;
+}
+
+function keywordBucketInputId(keywordId) {
+  return `bucket-input-${encodeURIComponent(keywordId)}`;
+}
+
+function dayIndexInWindow(dateStr) {
+  if (!MONITOR_DATA?.window_start || !dateStr) return -1;
+  const start = new Date(`${MONITOR_DATA.window_start}T00:00:00`);
+  const target = new Date(`${dateStr}T00:00:00`);
+  return Math.round((target - start) / 86400000);
+}
+
+function getKeywordRuns(kw) {
+  const k = KEYWORD_BY_NAME.get(kw) || KEYWORD_BY_ID.get(kw) || ALL_KEYWORDS.find(x => x.keyword === kw);
+  return k && Array.isArray(k.runs) ? k.runs : [];
+}
+
+function refreshTopicSuggestions() {
+  const datalist = document.getElementById('topicSuggestions');
+  if (!datalist) return;
+  const topics = [...new Set(
+    ALL_KEYWORDS
+      .map(item => String(item.topic || item.keyword || '').trim())
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  datalist.innerHTML = topics.map(topic => `<option value="${escapeHtml(topic)}"></option>`).join('');
+}
+
+function applyInitialRouteState() {
+  if (initialRouteApplied) return;
+  initialRouteApplied = true;
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get('view');
+  const keyword = params.get('keyword');
+  const account = params.get('account');
+  if (view === 'account') mode = 'account';
+  if (view === 'keywordManage' || view === 'keyword-manage') mode = 'keywordManage';
+  if (keyword && ALL_KEYWORDS.some(item => item.keyword === keyword)) {
+    curKeyword = keyword;
+    mode = 'keyword';
+    ensureKeywordRunState(keyword);
+  }
+  if (account && ALL_ACCOUNTS.some(item => item.name === account)) {
+    curAccount = account;
+    mode = 'account';
+  }
+}
+
+function refreshBucketSuggestions() {
+  const datalist = document.getElementById('bucketSuggestions');
+  if (!datalist) return;
+  const buckets = [...new Set(
+    (MONITOR_DATA?.keyword_bucket_options || [])
+      .concat(ALL_KEYWORDS.map(item => String(item.keyword_bucket || '').trim()))
+      .filter(Boolean)
+  )];
+  datalist.innerHTML = buckets.map(bucket => `<option value="${escapeHtml(bucket)}"></option>`).join('');
+}
+
+const keywordRunState = {};
+
+function ensureKeywordRunState(kw) {
+  const runs = getKeywordRuns(kw);
+  if (!runs.length) return null;
+  if (!keywordRunState[kw]) {
+    keywordRunState[kw] = { date: runs[0].date, runId: runs[0].id };
+  }
+  const exists = runs.some(run => run.id === keywordRunState[kw].runId);
+  if (!exists) {
+    keywordRunState[kw] = { date: runs[0].date, runId: runs[0].id };
+  }
+  return keywordRunState[kw];
+}
+
+function getSelectedKeywordRun(kw) {
+  const runs = getKeywordRuns(kw);
+  if (!runs.length) return null;
+  const state = ensureKeywordRunState(kw);
+  return runs.find(run => run.id === state.runId) || runs[0];
+}
+
+function getKeywordDates(kw) {
+  return [...new Set(getKeywordRuns(kw).map(run => run.date))];
+}
+
+function getRecentKeywordDates(kw, limit = 9) {
+  return getKeywordDates(kw).slice(0, limit);
+}
+
+function setKeywordDateState(kw, date) {
+  const runs = getKeywordRuns(kw).filter(run => run.date === date);
+  if (!runs.length) return;
+  const preferred = runs[0];
+  keywordRunState[kw] = { date, runId: preferred.id };
+}
+
+function rankMoveLabel(today, prev) {
+  if (today == null) return '未上榜';
+  if (prev == null) return '新入榜';
+  if (prev > today) return `上升 ${prev}→${today}`;
+  if (prev < today) return `回落 ${prev}→${today}`;
+  return '保持不变';
+}
+
+function buildHeatRow(history, titleFn) {
+  if (!Array.isArray(history)) return '';
+  return history.map((r, i) => {
+    if (r === 0) return '';
+    return `<div class="heatcell ${r <= 3 ? 'c1' : 'c2'}" title="${escapeHtml(titleFn(r, i))}"></div>`;
+  }).join('');
+}
+
+function formatAidsoCount(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 100000000) return (n / 100000000).toFixed(n >= 1000000000 ? 0 : 1) + '亿';
+  if (n >= 10000) return (n / 10000).toFixed(n >= 1000000 ? 0 : 1) + 'w';
+  return String(n);
+}
+
+
+// ── keyword_heat_metric 新契约辅助函数 ─────────────────
+function kwHeatMetric(k) {
+  return k?.keyword_heat_metric || null;
+}
+
+function kwHeatMetricOk(k) {
+  const m = kwHeatMetric(k);
+  if (!m) return false;
+  const s = m.status;
+  if (s !== 'available' && s !== 'ok') return false;
+  return !!(m.method && m.steady_heat != null && Number.isFinite(Number(m.steady_heat)));
+}
+
+function kwHeatSteady(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k) || m.steady_heat == null) return null;
+  return Number(m.steady_heat);
+}
+
+function kwHeatDelta(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k) || Number(m.effective_days || 0) < 2 || m.heat_delta_15d == null) return null;
+  const delta = Number(m.heat_delta_15d);
+  return Number.isFinite(delta) ? delta : null;
+}
+
+function kwTrendSignal(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k)) return null;
+  return m.trend_signal || null;
+}
+
+function kwTrendLabel(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k)) return null;
+  return m.trend_label || null;
+}
+
+function kwTrendRatio(k) {
+  const m = kwHeatMetric(k);
+  const label = kwTrendLabel(k);
+  if (!kwHasSufficientData(k) || !label || label === '观察中') return null;
+  const r = Number(m.trend_ratio);
+  return Number.isFinite(r) ? r : null;
+}
+
+function kwConfidenceLevel(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k)) return null;
+  return m.confidence_level || null;
+}
+
+function kwConfidenceScore(k) {
+  const m = kwHeatMetric(k);
+  if (!kwHeatMetricOk(k)) return null;
+  const s = Number(m.confidence_score);
+  return Number.isFinite(s) ? s : null;
+}
+
+function kwPeakHeat(k) {
+  const m = kwHeatMetric(k);
+  if (!m || m.peak_heat == null) return null;
+  return Number(m.peak_heat);
+}
+
+function kwPeakDate(k) {
+  const m = kwHeatMetric(k);
+  if (!m) return null;
+  return m.peak_date || null;
+}
+
+function kwEffectiveDays(k) {
+  const m = kwHeatMetric(k);
+  if (!m || m.effective_days == null) return null;
+  return Number(m.effective_days);
+}
+
+function kwWindowDays(k) {
+  const m = kwHeatMetric(k);
+  if (!m || m.window_days == null) return null;
+  return Number(m.window_days);
+}
+
+function kwDailyHeatPoints(k) {
+  const m = kwHeatMetric(k);
+  if (!m || !Array.isArray(m.daily_heat_points)) return null;
+  return m.daily_heat_points;
+}
+
+function kwCurrentInteractions(k) {
+  const m = kwHeatMetric(k);
+  if (!m || !m.current_interactions) return null;
+  return m.current_interactions;
+}
+
+function kwValueSignal(k) {
+  const m = kwHeatMetric(k);
+  if (!m || !m.value_signal) return null;
+  return m.value_signal;
+}
+
+function kwHeatTrendTone(k) {
+  const label = kwTrendLabel(k);
+  if (label === '上升') return 'hot';
+  if (label === '下降') return 'cool';
+  if (label === '平稳') return 'neutral';
+  return 'observing';
+}
+
+function kwHeatConfidenceLabel(k) {
+  const level = kwConfidenceLevel(k);
+  return {
+    high: '高置信',
+    medium: '中置信',
+    low: '低置信',
+  }[level] || '观察中';
+}
+
+function kwHasSufficientData(k) {
+  const m = kwHeatMetric(k);
+  if (!m) return false;
+  const s = m.status;
+  if (s !== 'available' && s !== 'ok') return false;
+  const days = m.effective_days;
+  return days != null && Number(days) >= 4;
+}
+
+
+function keywordReadDelta(k) {
+  return k?.keyword_read_delta || null;
+}
+
+function hasReadDeltaValue(delta) {
+  return !!delta
+    && delta.status === 'ok'
+    && delta.read_delta_estimated !== null
+    && Number.isFinite(Number(delta.read_delta_estimated));
+}
+
+function readDeltaNumeric(k) {
+  const delta = keywordReadDelta(k);
+  return hasReadDeltaValue(delta) ? Number(delta.read_delta_estimated) : null;
+}
+
+function trendRatioNumeric(k) {
+  const delta = keywordReadDelta(k);
+  if (!delta || delta.status !== 'ok') return null;
+  const ratio = Number(delta.recent_vs_baseline_ratio);
+  return Number.isFinite(ratio) ? ratio : null;
+}
+
+function hasSteadyReadValue(delta) {
+  return !!delta
+    && delta.status === 'ok'
+    && delta.steady_read_median !== null
+    && Number.isFinite(Number(delta.steady_read_median));
+}
+
+function steadyReadNumeric(k) {
+  const delta = keywordReadDelta(k);
+  return hasSteadyReadValue(delta) ? Number(delta.steady_read_median) : null;
+}
+
+function trendTone(delta) {
+  if (!delta || delta.status !== 'ok') return 'neutral';
+  const signal = Number(delta.trend_signal || 0);
+  if (signal >= 0.2) return 'hot';
+  if (signal <= -0.2) return 'cool';
+  return 'neutral';
+}
+
+function trendToneFromLabel(label) {
+  if (label === '上升') return 'hot';
+  if (label === '下降') return 'cool';
+  if (label === '平稳') return 'neutral';
+  if (label === '观察中' || !label) return 'observing';
+  return 'neutral';
+}
+
+function confidenceLabel(delta) {
+  return {
+    high: '高置信',
+    medium: '中置信',
+    low: '低置信',
+    insufficient: '观察中'
+  }[delta?.confidence_level] || '观察中';
+}
+
+function formatTrendPercent(delta) {
+  const ratio = Number(delta?.recent_vs_baseline_ratio);
+  if (!Number.isFinite(ratio)) return '—';
+  const pct = Math.round(ratio * 100);
+  return `${pct > 0 ? '+' : ''}${pct}%`;
+}
+
+function readMetricTooltip(delta) {
+  if (!delta || delta.status !== 'ok') {
+    return '至少积累3个自然日后再计算，不把数据不足当成0';
+  }
+  const observed = formatPercentValue(delta.observed_share);
+  const estimated = formatPercentValue(delta.estimated_share);
+  const slots = formatPercentValue(delta.slot_coverage_ratio);
+  return `趋势口径：最近3天对比前7天，按同一Top10尺子计算；${confidenceLabel(delta)}`;
+}
+
+function formatSignedNumber(n) {
+  const value = Number(n || 0);
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toLocaleString('zh-CN')}`;
+}
+
+function formatReadDeltaValue(delta) {
+  return hasReadDeltaValue(delta) ? formatSignedNumber(delta.read_delta_estimated) : '数据不足';
+}
+
+function formatSteadyReadValue(delta) {
+  if (!hasSteadyReadValue(delta)) return '数据不足';
+  return Math.round(Number(delta.steady_read_median)).toLocaleString('zh-CN');
+}
+
+function formatIsoMinute(value) {
+  if (!value) return '—';
+  return String(value).replace('T', ' ').slice(5, 16);
+}
+
+function formatPercentValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return `${Math.round(n * 100)}%`;
+}
+
+function readDeltaTagHtml(k) {
+  // 基于 keyword_heat_metric 的趋势/价值标签
+  const label = kwTrendLabel(k);
+  const vs = kwValueSignal(k);
+  const vsLabel = vs ? (vs.label || null) : null;
+  const showValue = kwHasSufficientData(k) && !!vsLabel && vsLabel !== '观察中';
+  if (!label && !showValue) return '';
+  const tone = kwHeatTrendTone(k);
+  const parts = [];
+  if (label) {
+    const trendDisplayLabel = label === '观察中' ? '趋势观察中' : label;
+    parts.push('<span class="kw-tag kw-tag-trend tone-' + tone + '">' + escapeHtml(trendDisplayLabel) + '</span>');
+  }
+  if (showValue) {
+    const valueDisplayLabel = ['上升', '下降', '平稳'].includes(vsLabel) ? `价值${vsLabel}` : vsLabel;
+    const score = Number(vs?.score);
+    const vsScore = Number.isFinite(score)
+      ? ` · ${Math.abs(score) <= 1 ? `${(score * 100).toFixed(0)}%` : score.toFixed(1)}`
+      : '';
+    parts.push('<span class="kw-tag kw-tag-value" title="价值信号' + vsScore + '">' + escapeHtml(valueDisplayLabel) + '</span>');
+  }
+  return parts.join('');
+}
+
+function readDeltaSideHtml(k) {
+  // 基于 keyword_heat_metric：常态热度 + 15日热度增量 + 置信度
+  const m = kwHeatMetric(k);
+  const ok = kwHeatMetricOk(k);
+  if (!ok) {
+    return '<div class="kw-read-delta-side is-insufficient">' +
+      '<div class="kw-read-metric-block is-primary is-insufficient">' +
+        '<div class="kw-read-delta-val">观察中</div>' +
+        '<div class="kw-read-delta-lbl">常态热度</div>' +
+      '</div></div>';
+  }
+  const steady = kwHeatSteady(k);
+  const delta = kwHeatDelta(k);
+  const tone = kwHeatTrendTone(k);
+  const conf = kwHeatConfidenceLabel(k);
+  const hasDelta = delta != null;
+  const steadyStr = steady != null ? steady.toFixed(1) : '—';
+  const deltaStr = hasDelta ? (delta > 0 ? '+' : '') + delta.toFixed(1) : '—';
+  const deltaClass = hasDelta ? (delta > 0 ? 'tone-hot' : delta < 0 ? 'tone-cool' : 'tone-neutral') : 'tone-neutral';
+  return '<div class="kw-read-delta-side">' +
+    '<div class="kw-read-metric-block is-primary' + (!ok ? ' is-insufficient' : '') + '">' +
+      '<div class="kw-read-delta-val">' + escapeHtml(steadyStr) + '</div>' +
+      '<div class="kw-read-delta-lbl">常态热度</div>' +
+    '</div>' +
+    '<div class="kw-read-metric-block is-secondary ' + deltaClass + (!hasDelta ? ' is-insufficient' : '') + '">' +
+      '<div class="kw-read-delta-val">' + escapeHtml(deltaStr) + '</div>' +
+      '<div class="kw-read-delta-lbl">15日热度增量 · ' + escapeHtml(conf) + '</div>' +
+    '</div></div>';
+}
+
+function readDeltaChartShow(event) {
+  const zone = event.currentTarget;
+  const chart = zone.closest('.read-delta-chart');
+  if (!chart) return;
+
+  const tooltip = chart.querySelector('.read-delta-tooltip');
+  const cursor = chart.querySelector('.read-delta-chart-cursor');
+  const activeDot = chart.querySelector('.read-delta-active-dot');
+  if (!tooltip || !cursor || !activeDot) return;
+
+  const x = Number(zone.dataset.x || 0);
+  const y = Number(zone.dataset.y || 0);
+  const xPct = Number(zone.dataset.xPct || 0);
+  const yPct = Number(zone.dataset.yPct || 0);
+  const value = Number(zone.dataset.value || 0);
+  const date = zone.dataset.date || '';
+  const articles = Number(zone.dataset.articles || 0);
+  const snapshots = Number(zone.dataset.snapshots || 0);
+  const observed = Number(zone.dataset.observed || 0);
+  const estimated = Number(zone.dataset.estimated || 0);
+  const slotCoverage = Number(zone.dataset.slotCoverage || 0);
+  const imputedDay = zone.dataset.imputedDay === 'true';
+
+  cursor.setAttribute('x1', String(x));
+  cursor.setAttribute('x2', String(x));
+  cursor.classList.add('active');
+  activeDot.style.left = `${xPct}%`;
+  activeDot.style.top = `${yPct}%`;
+  activeDot.classList.add('active');
+
+  tooltip.classList.remove('is-left', 'is-right');
+  if (xPct < 18) tooltip.classList.add('is-left');
+  if (xPct > 82) tooltip.classList.add('is-right');
+  tooltip.style.left = `${xPct}%`;
+  tooltip.innerHTML = `
+    <div class="read-delta-tip-date">${escapeHtml(formatDateShort(date))}${imputedDay ? ' · 缺失日补值' : ''}</div>
+    <div class="read-delta-tip-value">≈${escapeHtml(formatSignedNumber(value))}</div>
+    <div class="read-delta-tip-meta">实测校准 ${escapeHtml(formatSignedNumber(observed))} · 模型补值 ${escapeHtml(formatSignedNumber(estimated))}</div>
+    <div class="read-delta-tip-meta">${articles} 篇结果 · ${snapshots} 次切片 · Top10完整 ${escapeHtml(formatPercentValue(slotCoverage))}</div>`;
+  tooltip.classList.add('active');
+}
+
+function readDeltaChartHide(event) {
+  const chart = event.currentTarget.closest('.read-delta-chart');
+  if (!chart) return;
+  chart.querySelector('.read-delta-tooltip')?.classList.remove('active');
+  chart.querySelector('.read-delta-chart-cursor')?.classList.remove('active');
+  chart.querySelector('.read-delta-active-dot')?.classList.remove('active');
+}
+
+function renderReadDeltaSparkline(delta) {
+  if (!hasReadDeltaValue(delta)) return '';
+  const points = Array.isArray(delta.daily_read_delta_points)
+    ? delta.daily_read_delta_points
+    : [];
+  if (!points.length) return '';
+
+  const values = points.map(point => Math.max(0, Number(point.read_delta || 0)));
+  const maxValue = Math.max(...values, 1);
+  const width = 520;
+  const height = 132;
+  const padX = 18;
+  const padY = 16;
+  const baseY = height - padY;
+  const innerWidth = width - padX * 2;
+  const innerHeight = height - padY * 2 - 20;
+  const coord = (value, index) => {
+    const x = points.length === 1
+      ? width / 2
+      : padX + (innerWidth * index) / (points.length - 1);
+    const y = baseY - 20 - (value / maxValue) * innerHeight;
+    return [Number(x.toFixed(2)), Number(y.toFixed(2))];
+  };
+  const coords = values.map(coord);
+  const line = coords.map(([x, y]) => `${x},${y}`).join(' ');
+  const area = coords.length
+    ? `M ${coords[0][0]} ${baseY - 20} L ${coords.map(([x, y]) => `${x} ${y}`).join(' L ')} L ${coords[coords.length - 1][0]} ${baseY - 20} Z`
+    : '';
+  const peakIndex = values.reduce((best, value, idx) => value > values[best] ? idx : best, 0);
+  const dots = coords.map(([x, y], idx) => {
+    const value = values[idx];
+    const classes = [];
+    if (idx === peakIndex && value > 0) classes.push('is-peak');
+    if (points[idx]?.is_imputed_day) classes.push('is-imputed');
+    const cls = classes.length ? ` class="${classes.join(' ')}"` : '';
+    return `<span${cls} style="left:${(x / width * 100).toFixed(2)}%;top:${(y / height * 100).toFixed(2)}%"></span>`;
+  }).join('');
+  const gridLines = [0, 0.5, 1].map(rate => {
+    const y = baseY - 20 - rate * innerHeight;
+    return `<line class="read-delta-grid-line" x1="${padX}" x2="${width - padX}" y1="${y.toFixed(2)}" y2="${y.toFixed(2)}"></line>`;
+  }).join('');
+  const hitZones = coords.map(([x, y], idx) => {
+    const prevX = idx === 0 ? padX : (coords[idx - 1][0] + x) / 2;
+    const nextX = idx === coords.length - 1 ? width - padX : (x + coords[idx + 1][0]) / 2;
+    const point = points[idx] || {};
+    return `<rect class="read-delta-hit-zone"
+      x="${prevX.toFixed(2)}"
+      y="0"
+      width="${Math.max(1, nextX - prevX).toFixed(2)}"
+      height="${height}"
+      data-x="${x}"
+      data-y="${y}"
+      data-x-pct="${(x / width * 100).toFixed(2)}"
+      data-y-pct="${(y / height * 100).toFixed(2)}"
+      data-date="${escapeHtml(point.date || '')}"
+      data-value="${values[idx]}"
+      data-articles="${Number(point.article_count || 0)}"
+      data-snapshots="${Number(point.snapshot_count || 0)}"
+      data-observed="${Number(point.observed_component || 0)}"
+      data-estimated="${Number(point.estimated_component || 0)}"
+      data-slot-coverage="${Number(point.slot_coverage_ratio || 0)}"
+      data-imputed-day="${point.is_imputed_day ? 'true' : 'false'}"
+      onmouseenter="readDeltaChartShow(event)"
+      onmousemove="readDeltaChartShow(event)"
+      onmouseleave="readDeltaChartHide(event)"></rect>`;
+  }).join('');
+  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const labels = labelIndexes.map(idx => {
+    const [x] = coords[idx];
+    return `<span style="left:${(x / width * 100).toFixed(2)}%">${escapeHtml(formatDateShort(points[idx]?.date || ''))}</span>`;
+  }).join('');
+  const peakPoint = points[peakIndex] || {};
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const steadyReadText = formatSteadyReadValue(delta);
+
+  return `
+    <div class="read-delta-chart">
+      <div class="read-delta-chart-head">
+        <div>
+          <span>公平日增量</span>
+          <em>每次抓取统一换算为Top10</em>
+        </div>
+        <strong>峰值 ≈${escapeHtml(formatSignedNumber(values[peakIndex]))} · ${escapeHtml(formatDateShort(peakPoint.date || ''))}</strong>
+      </div>
+      <div class="read-delta-chart-stage">
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="关键词每日观测折线图">
+          <defs>
+            <linearGradient id="readDeltaAreaGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#059669" stop-opacity=".22"></stop>
+              <stop offset="100%" stop-color="#059669" stop-opacity="0"></stop>
+            </linearGradient>
+          </defs>
+          ${gridLines}
+          <path class="read-delta-chart-area" d="${area}"></path>
+          <polyline class="read-delta-chart-line" points="${line}"></polyline>
+          <line class="read-delta-chart-cursor" x1="0" x2="0" y1="${padY}" y2="${baseY - 14}"></line>
+          ${hitZones}
+        </svg>
+        <div class="read-delta-chart-dots" aria-hidden="true">${dots}</div>
+        <div class="read-delta-active-dot" aria-hidden="true"></div>
+      </div>
+      <div class="read-delta-chart-labels">${labels}</div>
+      <div class="read-delta-tooltip" aria-hidden="true"></div>
+      <div class="read-delta-chart-note">图中合计 ≈${escapeHtml(formatSignedNumber(total))}。小红书不公开阅读量；</div>
+    </div>`;
+}
+
+function renderKeywordReadDeltaCard(k) {
+  // 旧版 read_delta 卡片已停用
+  return '';
+}
+
+// ── 关键词互动热度卡片（详情面板） ─────────────────────
+function renderHeatMetricCard(k) {
+  const m = kwHeatMetric(k);
+  const ok = kwHeatMetricOk(k);
+  if (!ok) {
+    return '<div class="card kw-heat-card"><div class="card-title">关键词互动热度</div><div style="padding:12px 0;font-size:12px;color:#94a3b8;text-align:center">数据观察中，持续抓取后自动生成</div></div>';
+  }
+
+  const steady = kwHeatSteady(k);
+  const delta = kwHeatDelta(k);
+  const peak = kwPeakHeat(k);
+  const peakDate = kwPeakDate(k);
+  const trendLabel = kwTrendLabel(k);
+  const tone = kwHeatTrendTone(k);
+  const conf = kwConfidenceLevel(k);
+  const confScore = kwConfidenceScore(k);
+  const vs = kwValueSignal(k);
+  const effectiveDays = kwEffectiveDays(k);
+  const dailyPoints = kwDailyHeatPoints(k);
+  const ci = kwCurrentInteractions(k);
+
+  // 顶部指标行
+  const steadyStr = steady != null ? steady.toFixed(1) : '—';
+  const deltaStr = delta != null ? (delta > 0 ? '+' : '') + delta.toFixed(1) : '—';
+  const deltaClass = delta != null ? (delta > 0 ? 'tone-hot' : delta < 0 ? 'tone-cool' : 'tone-neutral') : '';
+  const peakStr = peak != null ? peak.toFixed(1) : '—';
+  const peakDateStr = peakDate ? formatDateShort(peakDate) : '';
+  const trendHtml = trendLabel
+    ? '<span class="kw-tag kw-tag-trend tone-' + tone + '" style="font-size:11px">' + escapeHtml(trendLabel) + '</span>'
+    : '<span class="kw-tag" style="font-size:11px;color:#94a3b8">观察中</span>';
+  const confLabel = conf ? {high:'高置信',medium:'中置信',low:'低置信'}[conf] || '观察中' : '观察中';
+  const confScoreStr = confScore != null ? ' (' + confScore.toFixed(1) + ')' : '';
+  const vsLabel = vs ? (vs.label || '—') : '—';
+  const vsScoreValue = Number(vs?.score);
+  const vsScoreStr = vsLabel !== '观察中' && Number.isFinite(vsScoreValue)
+    ? ' · ' + (Math.abs(vsScoreValue) <= 1 ? (vsScoreValue * 100).toFixed(0) + '%' : vsScoreValue.toFixed(1))
+    : '';
+  const effectiveStr = effectiveDays != null ? effectiveDays + '天' : '—';
+
+  // 当前互动结构
+  let interactionsHtml = '<div style="font-size:11px;color:#94a3b8;margin-top:10px">等待快照数据</div>';
+  if (ci) {
+    const eq = ci.equivalent != null ? ci.equivalent.toFixed(1) : '—';
+    const nc = ci.note_count != null ? ci.note_count : '—';
+    const cc = ci.creator_count != null ? ci.creator_count : '—';
+    const likes = ci.likes != null ? ci.likes : '—';
+    const collects = ci.collects != null ? ci.collects : '—';
+    const comments = ci.comments != null ? ci.comments : '—';
+    const shares = ci.shares != null ? ci.shares : '—';
+    const structure = ci.interaction_structure || {};
+    const formatInteractionPct = value => {
+      const n = Number(value);
+      return value != null && Number.isFinite(n) ? n.toFixed(1) + '%' : '—';
+    };
+    const lp = formatInteractionPct(structure.likes_pct);
+    const cp = formatInteractionPct(structure.collects_pct);
+    const cmp = formatInteractionPct(structure.comments_pct);
+    const sp = formatInteractionPct(structure.shares_pct);
+    interactionsHtml = `
+      <div class="kw-heat-interact-row">
+        <div class="kw-heat-interact-stat"><span class="kw-heat-interact-num">${escapeHtml(eq)}</span><span class="kw-heat-interact-lbl">互动当量</span></div>
+        <div class="kw-heat-interact-stat"><span class="kw-heat-interact-num">${escapeHtml(String(nc))}</span><span class="kw-heat-interact-lbl">笔记数</span></div>
+        <div class="kw-heat-interact-stat"><span class="kw-heat-interact-num">${escapeHtml(String(cc))}</span><span class="kw-heat-interact-lbl">创作者</span></div>
+      </div>
+      <div class="kw-heat-interact-grid">
+        <div class="kw-heat-interact-item"><span class="kw-heat-interact-n">${escapeHtml(String(likes))}</span><span class="kw-heat-interact-l">点赞 · ${escapeHtml(lp)}</span></div>
+        <div class="kw-heat-interact-item"><span class="kw-heat-interact-n">${escapeHtml(String(collects))}</span><span class="kw-heat-interact-l">收藏 · ${escapeHtml(cp)}</span></div>
+        <div class="kw-heat-interact-item"><span class="kw-heat-interact-n">${escapeHtml(String(comments))}</span><span class="kw-heat-interact-l">评论 · ${escapeHtml(cmp)}</span></div>
+        <div class="kw-heat-interact-item"><span class="kw-heat-interact-n">${escapeHtml(String(shares))}</span><span class="kw-heat-interact-l">分享 · ${escapeHtml(sp)}</span></div>
+      </div>`;
+  }
+  // 每日热点折线
+  let chartHtml = '';
+  const effectivePoints = Array.isArray(dailyPoints)
+    ? dailyPoints.filter(point => Number(point?.heat) > 0)
+    : [];
+  if (effectivePoints.length >= 2) {
+    const values = effectivePoints.map(point => Number(point.heat));
+    const maxValue = Math.max(...values, 1);
+    const width = 520;
+    const height = 120;
+    const padX = 18;
+    const padY = 12;
+    const baseY = height - padY;
+    const innerWidth = width - padX * 2;
+    const innerHeight = height - padY * 2 - 16;
+    const coord = (value, idx) => {
+      const x = padX + (innerWidth * idx) / (effectivePoints.length - 1);
+      const y = baseY - 16 - (value / maxValue) * innerHeight;
+      return [Number(x.toFixed(2)), Number(y.toFixed(2))];
+    };
+    const coords = values.map(coord);
+    const line = coords.map(c => c.join(',')).join(' ');
+    const area = coords.length
+      ? 'M ' + coords[0][0] + ' ' + (baseY - 16) + ' L ' + coords.map(c => c[0] + ' ' + c[1]).join(' L ') + ' L ' + coords[coords.length - 1][0] + ' ' + (baseY - 16) + ' Z'
+      : '';
+    const gridLines = [0, 0.5, 1].map(rate => {
+      const y = baseY - 16 - rate * innerHeight;
+      return '<line class="read-delta-grid-line" x1="' + padX + '" x2="' + (width - padX) + '" y1="' + y.toFixed(2) + '" y2="' + y.toFixed(2) + '"></line>';
+    }).join('');
+    const labelIndexes = [0, Math.floor((effectivePoints.length - 1) / 2), effectivePoints.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+    const labels = labelIndexes.map(idx => {
+      const x = coords[idx][0];
+      return '<span style="left:' + (x / width * 100).toFixed(2) + '%">' + escapeHtml(formatDateShort(effectivePoints[idx]?.date || '')) + '</span>';
+    }).join('');
+    chartHtml = '<div class="kw-heat-chart"><svg viewBox="0 0 ' + width + ' ' + height + '" role="img"><defs><linearGradient id="kwHeatGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#059669" stop-opacity=".22"></stop><stop offset="100%" stop-color="#059669" stop-opacity="0"></stop></linearGradient></defs>' + gridLines + '<path class="read-delta-chart-area" d="' + area + '"></path><polyline class="read-delta-chart-line" points="' + line + '"></polyline></svg><div class="read-delta-chart-labels">' + labels + '</div></div>';
+  } else if (effectivePoints.length === 1) {
+    const point = effectivePoints[0];
+    chartHtml = '<div style="font-size:11px;color:#94a3b8;text-align:center;padding:12px 0">单点观察中 · ' +
+      escapeHtml(formatDateShort(point.date || '')) + ' · ' + escapeHtml(Number(point.heat).toFixed(1)) + '</div>';
+  } else {
+    chartHtml = '<div style="font-size:11px;color:#94a3b8;text-align:center;padding:12px 0">尚无有效热度数据</div>';
+  }
+
+  return '<div class="card kw-heat-card">' +
+    '<div class="card-title">关键词互动热度</div>' +
+    '<div class="kw-heat-metrics">' +
+      '<div class="kw-heat-metric-block is-primary"><div class="kw-heat-val">' + escapeHtml(steadyStr) + '</div><div class="kw-heat-lbl">常态热度</div></div>' +
+      '<div class="kw-heat-metric-block ' + deltaClass + '"><div class="kw-heat-val">' + escapeHtml(deltaStr) + '</div><div class="kw-heat-lbl">净增量（15日）</div></div>' +
+      '<div class="kw-heat-metric-block"><div class="kw-heat-val">' + escapeHtml(peakStr) + '</div><div class="kw-heat-lbl">峰值' + (peakDateStr ? ' · ' + escapeHtml(peakDateStr) : '') + '</div></div>' +
+      '<div class="kw-heat-metric-block"><div class="kw-heat-val">' + trendHtml + '</div><div class="kw-heat-lbl">趋势 · ' + escapeHtml(confLabel) + confScoreStr + '</div></div>' +
+      '<div class="kw-heat-metric-block"><div class="kw-heat-val">' + escapeHtml(vsLabel) + vsScoreStr + '</div><div class="kw-heat-lbl">价值信号 · ' + escapeHtml(effectiveStr) + '有效</div></div>' +
+    '</div>' +
+    chartHtml +
+    '<div class="kw-heat-interact-section">' +
+      '<div class="kw-heat-section-title">当前互动结构</div>' +
+      interactionsHtml +
+    '</div>' +
+    '<div class="kw-heat-footnote">基于搜索榜单可见的互动数据（点赞/收藏/评论/分享）及排名加权计算，非阅读量/曝光量/官方指数</div>' +
+  '</div>';
+}
+
+function kmComputeStreaks(history) {
+  let current = 0;
+  let longest = 0;
+  let running = 0;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i] > 0) {
+      running += 1;
+      longest = Math.max(longest, running);
+    } else {
+      running = 0;
+    }
+  }
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i] > 0) current += 1;
+    else break;
+  }
+  return { current, longest };
+}
+
+function applyKeywordManageStateToMonitorData(data) {
+  return data;
+}
+
+// ── 加载真实数据 ─────────────────────────────────────
+async function loadData(options = {}) {
+  const preserveSelection = !!options.preserveSelection;
+  const skipManageReload = !!options.skipManageReload;
+  const prevKeyword = curKeyword;
+  const prevAccount = curAccount;
+  try {
+    const managePromise = skipManageReload ? Promise.resolve(null) : kmEnsureDataLoaded({ silent: true });
+    const resp = await fetch(BOOTSTRAP_URL, { cache: 'no-cache' })  // 允许 revalidate，不强制回源;
+    window.__XHS_PERF__.bootstrap.fetch = performance.now();
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    MONITOR_DATA = await resp.json();
+    await managePromise;
+    MONITOR_DATA = applyKeywordManageStateToMonitorData(MONITOR_DATA);
+  } catch (e) {
+    document.getElementById('colRight').innerHTML = `
+      <div style="padding:32px;color:#999;font-size:13px;line-height:1.8">
+        <div style="font-weight:700;color:#991b1b;margin-bottom:8px">无法加载 ${escapeHtml(DATA_URL)}</div>
+        <div>原因：${escapeHtml(e.message)}</div>
+        <div style="margin-top:14px;padding:12px;background:#fafafa;border:1px solid #eee;border-radius:6px;font-family:Menlo,monospace;font-size:12px">
+          请改用 Flask 本地服务启动（小红书关键词监控系统，端口 8766）：<br><br>
+          <code>cd /Users/works14/Documents/zkcode/取数/xhs-keyword-monitor</code><br>
+          <code>python3 run.py</code><br>
+          <code>open http://127.0.0.1:8765</code>
+        </div>
+        <div style="margin-top:14px">或先跑一次 Parser：<code>python3 scripts/parse_search_md.py</code></div>
+      </div>`;
+    return false;
+  }
+
+  ALL_KEYWORDS = MONITOR_DATA.keywords || [];
+  ALL_ACCOUNTS = MONITOR_DATA.accounts || [];
+  _rebuildIndexMaps();
+  await loadGroups();  // 注入 _group 并填充分组下拉（与主数据并行 fetch，独立 catch，不影响主流程）
+  refreshTopicSuggestions();
+  refreshBucketSuggestions();
+  curKeyword = preserveSelection && prevKeyword && ALL_KEYWORDS.some(k => k.keyword === prevKeyword)
+    ? prevKeyword
+    : (ALL_KEYWORDS[0] ? ALL_KEYWORDS[0].keyword : null);
+  curAccount = preserveSelection && prevAccount && ALL_ACCOUNTS.some(a => a.name === prevAccount)
+    ? prevAccount
+    : (ALL_ACCOUNTS[0] ? ALL_ACCOUNTS[0].name : null);
+  if (!preserveSelection) applyInitialRouteState();
+  window.__XHS_PERF__.bootstrap.parse = performance.now();
+  document.getElementById('kwCountTop').textContent = ALL_KEYWORDS.length;
+  document.getElementById('acctCountTop').textContent = ALL_ACCOUNTS.length;
+  if (MONITOR_DATA.generated_at) {
+    const latestRun = ALL_KEYWORDS
+      .map(k => k.latest_run && (k.latest_run.run_at_short || k.latest_run.run_at))
+      .filter(Boolean)
+      .sort()
+      .pop();
+    const pinnedCount = ALL_KEYWORDS.filter(k => k.is_pinned).length;
+    const meta = latestRun
+      ? `最近抓取：${latestRun} · TikHub 实时 · 置顶 ${pinnedCount} 个 · ${MONITOR_DATA.window_days} 天窗口`
+      : `置顶 ${pinnedCount} 个 · ${MONITOR_DATA.window_days}天窗口`;
+    document.querySelector('.topbar-right').textContent = `默认入口：关键词 · ${meta}`;
+  }
+  return true;
+}
+
+function _rebuildIndexMaps() {
+  ACCOUNT_BY_ID = new Map();
+  KEYWORD_BY_ID = new Map();
+  ACCOUNT_BY_NAME = new Map();
+  KEYWORD_BY_NAME = new Map();
+  TURNOVER_CACHE.clear();
+  for (const kw of ALL_KEYWORDS) {
+    if (kw.keyword_id) KEYWORD_BY_ID.set(kw.keyword_id, kw);
+    if (kw.keyword) KEYWORD_BY_NAME.set(kw.keyword, kw);
+  }
+  for (const acct of ALL_ACCOUNTS) {
+    if (acct.account_id) ACCOUNT_BY_ID.set(acct.account_id, acct);
+    if (acct.name) ACCOUNT_BY_NAME.set(acct.name, acct);
+  }
+}
+
+function badgeHtml(type, label, title) {
+  const tooltipAttr = title ? ` data-tooltip="${escapeHtml(title)}"` : '';
+  return `<span class="badge badge-${type}"${title ? ` title="${escapeHtml(title)}"` : ''}${tooltipAttr}>${label}</span>`;
+}
+
+// 通用博主控件：圆形头像 + 名称，蓝底胶囊
+// headimgUrl 可选，无头像时降级为纯文字 chip
+function accountChipHtml(name, headimgUrl, opts = {}) {
+  const { clickHandler = '', extraClass = '' } = opts;
+  const avatarHtml = headimgUrl
+    ? `<img class="acct-chip-avatar" src="${headimgUrl}" alt="" loading="lazy" onerror="this.style.display='none'">`
+    : '';
+  return `<span class="account-chip ${extraClass}" ${clickHandler}>${avatarHtml}<span class="acct-chip-name">${escapeHtml(name)}</span></span>`;
+}
+
+function accountBadge(a) {
+  const summary = a.move_summary || {};
+  let html = '';
+  if (summary.primary_type) {
+    const label = summary.primary_type === 'new' ? '新命中' : summary.primary_type === 'up' ? '上升' : summary.primary_type === 'down' ? '下降' : '稳定';
+    html += badgeHtml(summary.primary_type, `${label} ${summary.primary_count || 0}`);
+  }
+  if (summary.secondary_type) {
+    const label = summary.secondary_type === 'up' ? '上升' : '下降';
+    html += badgeHtml(summary.secondary_type, `${label} ${summary.secondary_count || 0}`);
+  }
+  return html;
+}
+
+function calcTurnoverRate(runs) {
+  return window.TurnoverViz ? window.TurnoverViz.calc(runs || []) : null;
+  return window.TurnoverViz ? window.TurnoverViz.calc(runs || []) : null;
+}
+
+function turnoverDetailUrl(k) {
+  const params = new URLSearchParams();
+  if (k.keyword_id) params.set('keyword_id', k.keyword_id);
+  params.set('keyword', k.keyword || '');
+  return `/keyword-turnover?${params.toString()}`;
+}
+
+function turnoverPercent(rate) {
+  return `${(Number(rate || 0) * 100).toFixed(0)}%`;
+}
+
+function turnoverShareText(rate) {
+  const pct = Math.round(Number(rate || 0) * 100);
+  if (pct <= 0) return '几乎没换';
+  if (pct < 10) return '不到1成';
+  if (pct >= 45 && pct <= 55) return '约一半';
+  if (pct > 90) return '几乎全换';
+  return `约${Math.round(pct / 10)}成`;
+}
+
+function turnoverRunPairText(turnover) {
+  const sameDay = turnover.lastCurrDate === turnover.lastPrevDate;
+  const curr = `${turnover.lastCurrDate}${turnover.latest?.time ? ` ${turnover.latest.time}` : ''}`;
+  const prev = turnover.latest?.prevDate
+    ? `${turnover.latest.prevDate}${turnover.latest.prevTime ? ` ${turnover.latest.prevTime}` : ''}`
+    : turnover.lastPrevDate;
+  return sameDay
+    ? `同一天的两次抓取在比：${curr} vs ${prev}`
+    : `这次抓取 vs 上一次抓取：${curr} vs ${prev}`;
+}
+
+function buildTurnoverPreviewHtml(k, turnover) {
+  const meta = TurnoverViz.statusMeta ? TurnoverViz.statusMeta(turnover) : TurnoverViz.levelMeta(turnover.rate);
+  const pct = turnoverPercent(turnover.rate);
+  const latestPct = turnoverPercent(turnover.lastRate);
+  const averageShare = turnoverShareText(turnover.rate);
+  const latestShare = turnoverShareText(turnover.lastRate);
+  const mature = TurnoverViz.isMature ? TurnoverViz.isMature(turnover) : true;
+  const cells = (turnover.comparisons || []).slice(-34);
+  const cellHtml = cells.map(item => {
+    const title = `${item.date} ${item.time || ''} · ${turnoverShareText(item.rate)}笔记和上一次不一样 · 新出现${item.newCount}篇 · 掉出${item.gone}篇`;
+    return `<span class="turnover-preview-cell" title="${escapeHtml(title)}" style="background:${TurnoverViz.rateColor(item.rate)}"></span>`;
+  }).join('');
+  const href = turnoverDetailUrl(k);
+  const escapedHref = escapeHtml(href);
+  return `
+    <div class="turnover-preview ${meta.className}" role="button" tabindex="0" onclick="event.stopPropagation();window.location.href='${escapedHref}'" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();window.location.href='${escapedHref}'}" title="打开完整换新热力图">
+      <div class="turnover-preview-head">
+        <div class="turnover-preview-rate" style="color:${meta.color}">${pct}</div>
+        <div class="turnover-preview-copy">
+          <div class="turnover-preview-level" style="color:${meta.color}">${meta.label}</div>
+          <div class="turnover-preview-meta">${mature ? `平均每次${averageShare}笔记和上一次不一样` : escapeHtml(meta.reason || '样本还在积累')}</div>
+        </div>
+        <div class="turnover-preview-cta">看明细</div>
+      </div>
+      <div class="turnover-preview-explain">${mature ? `过去${turnover.windowDays}天，把每次抓取结果都和“上一次抓取”比较，共比了${turnover.numComparisons}次。` : `当前只展示原始换新率 ${pct}，暂不进入四档判断。${escapeHtml(meta.reason || '')}`}</div>
+      <div class="turnover-preview-grid" aria-label="最近轮换率热力图">${cellHtml}</div>
+      <div class="turnover-preview-legend">
+        <span>绿=变化少</span>
+        <span class="turnover-preview-swatch" style="background:#1a8754"></span>
+        <span class="turnover-preview-swatch" style="background:#86d49b"></span>
+        <span class="turnover-preview-swatch" style="background:#f5d36e"></span>
+        <span class="turnover-preview-swatch" style="background:#f59e0b"></span>
+        <span class="turnover-preview-swatch" style="background:#ef4444"></span>
+        <span>红=换得多</span>
+        <strong>最近一次${latestShare}变了</strong>
+      </div>
+    </div>`;
+}
+
+function keywordBadge(k) {
+  let html = '';
+  if (k.is_pinned) html += badgeHtml('flat', '置顶');
+
+  const turnover = calcTurnoverRate(k.runs || []);
+  if (turnover) {
+    const { rate, numComparisons, windowDays, lastSame, lastNew, lastGone, lastCurrCount, lastPrevCount, lastCurrDate, lastPrevDate } = turnover;
+    const mature = TurnoverViz.isMature ? TurnoverViz.isMature(turnover) : true;
+    const meta = TurnoverViz.statusMeta ? TurnoverViz.statusMeta(turnover) : TurnoverViz.levelMeta(rate);
+    if (!mature) {
+      const title = `${meta.reason || '样本还在积累'} · 当前原始换新率${turnoverPercent(rate)} · 最近一次相同${lastSame}篇，新出现${lastNew}篇，掉出${lastGone}篇`;
+      html += badgeHtml('flat', meta.label, title);
+      return html;
+    }
+    let type;
+    if (rate >= TURNOVER_OBVIOUS_THRESHOLD) {
+      type = 'up';
+    } else if (rate >= TURNOVER_LIGHT_THRESHOLD) {
+      type = 'flat';
+    } else {
+      type = 'down';
+    }
+    const title = `平均每次${turnoverShareText(rate)}笔记和上一次不一样 · 基于${windowDays}天内${numComparisons}次对比 · 最近一次相同${lastSame}篇，新出现${lastNew}篇，掉出${lastGone}篇 · 本次${lastCurrCount}篇，上次${lastPrevCount}篇`;
+    html += badgeHtml(type, meta.label, title);
+    return html;
+  }
+
+  const latestIdx = dayIndexInWindow(k.latest_run?.date);
+  if (latestIdx < 0 && !html) return badgeHtml('flat', '暂无快照');
+  const todayHits = k.history_hits?.[latestIdx] || 0;
+  if (todayHits > 0) {
+    html += badgeHtml('new', '新上榜');
+  } else if (!html) {
+    html += badgeHtml('flat', '暂无上榜');
+  }
+  return html;
+}
+
+function getAccountTopicNames(a) {
+  const names = Object.values(a.topics || {}).map(info => info.label || '').filter(Boolean);
+  if (names.length) return names;
+  return Object.keys(a.keywords || {});
+}
+
+function sumTopicScores(info) {
+  const ds = (info && Array.isArray(info.day_scores)) ? info.day_scores : [];
+  return ds.reduce((sum, value) => sum + Number(value || 0), 0);
+}
+
+function syncModeUi() {
+  document.getElementById('modeKeyword').classList.toggle('active', mode === 'keyword');
+  document.getElementById('modeAccount').classList.toggle('active', mode === 'account');
+  const kmBtn = document.getElementById('modeKeywordManage');
+  if (kmBtn) kmBtn.classList.toggle('active', mode === 'keywordManage');
+  const alBtn = document.getElementById('modeArticleList');
+  if (alBtn) alBtn.classList.toggle('active', mode === 'articleList');
+
+  // 筛选/排序栏：仅 keyword 模式显示
+  const filterBar = document.getElementById('kwFilterBar');
+  if (filterBar) filterBar.style.display = (mode === 'keyword') ? '' : 'none';
+
+  const layout = document.querySelector('.layout');
+  const kmView = document.getElementById('keywordManageView');
+  const kmWrap = document.getElementById('kmGroupsWrap');
+  const alView = document.getElementById('articleListView');
+  if (mode === 'keywordManage') {
+    if (layout) layout.style.display = 'none';
+    if (kmView) kmView.classList.add('active');
+    if (kmWrap) kmWrap.style.display = '';
+    if (alView) alView.classList.remove('active');
+    closeDrawer();
+  } else if (mode === 'articleList') {
+    if (layout) layout.style.display = 'none';
+    if (kmView) kmView.classList.remove('active');
+    if (kmWrap) kmWrap.style.display = 'none';
+    if (alView) alView.classList.add('active');
+    closeDrawer();
+    if (window.alRestoreState && !window.alRestoreState()) {
+      if (window.alInit) window.alInit();
+    }
+  } else {
+    if (layout) layout.style.display = '';
+    if (kmView) kmView.classList.remove('active');
+    if (kmWrap) kmWrap.style.display = 'none';
+    if (alView) alView.classList.remove('active');
+  }
+
+  const searchInput = document.getElementById('searchInput');
+  const acctSortTabs = document.getElementById('acctSortTabs');
+  if (acctSortTabs) acctSortTabs.style.display = mode === 'account' ? '' : 'none';
+  if (searchInput) {
+    searchInput.placeholder = mode === 'keyword' ? '搜索关键词…' : '搜索博主…';
+  }
+  kmSyncInlineRefreshUi();
+}
+
+function keywordTurnoverStatus(item) {
+  const turnover = calcTurnoverRate(item?.runs || []);
+  if (!turnover) return 'turnover_unknown';
+  if (TurnoverViz.isMature && !TurnoverViz.isMature(turnover)) return 'turnover_observing';
+  const rate = Number(turnover.rate || 0);
+  if (rate >= TURNOVER_FAST_THRESHOLD) return 'turnover_fast';
+  if (rate >= TURNOVER_OBVIOUS_THRESHOLD) return 'turnover_obvious';
+  if (rate >= TURNOVER_LIGHT_THRESHOLD) return 'turnover_light';
+  return 'turnover_stable';
+}
+
+function keywordMatchesStatus(item, status = filterStatus) {
+  if (status && status.startsWith('turnover_')) return keywordTurnoverStatus(item) === status;
+  return true;
+}
+
+function getFilteredKeywordBase(options = {}) {
+  const {
+    group = filterGroup,
+    status = filterStatus,
+  } = options;
+
+  let base = filter ? ALL_KEYWORDS.filter(item => item.keyword.includes(filter)) : ALL_KEYWORDS;
+  if (group) base = base.filter(item => (item._group || '') === group);
+  if (status && status !== 'all') base = base.filter(item => keywordMatchesStatus(item, status));
+  return base;
+}
+
+function compareKeywordsByHeatMetric(a, b) {
+  // 基于 keyword_heat_metric 的常态热度排序（降序）
+  const sa = kwHeatSteady(a);
+  const sb = kwHeatSteady(b);
+  const ah = sa != null ? 1 : 0;
+  const bh = sb != null ? 1 : 0;
+  if (ah !== bh) return bh - ah;
+  if (sa != null && sb != null && sb !== sa) return sb - sa;
+  return String(a.keyword || '').localeCompare(String(b.keyword || ''), 'zh-CN');
+}
+
+function compareKeywordsByHeatDelta(a, b) {
+  const da = kwHeatDelta(a);
+  const db = kwHeatDelta(b);
+  const ah = da != null ? 1 : 0;
+  const bh = db != null ? 1 : 0;
+  if (ah !== bh) return bh - ah;
+  if (da != null && db != null && db !== da) return db - da;
+  return compareKeywordsByHeatMetric(a, b);
+}
+
+function sortKeywordList(base) {
+  const rateCache = new Map();
+  const getTurnoverInfo = (item) => {
+    const key = item.keyword_id || item.keyword;
+    if (!rateCache.has(key)) {
+      const turnover = calcTurnoverRate(item.runs || []);
+      rateCache.set(key, {
+        turnover,
+        rate: turnover?.rate ?? -1,
+        mature: turnover ? !(TurnoverViz.isMature && !TurnoverViz.isMature(turnover)) : false
+      });
+    }
+    return rateCache.get(key);
+  };
+  const tier = (info) => {
+    if (!info.turnover || !info.mature) return 3;
+    const rate = info.rate;
+    if (rate < TURNOVER_LIGHT_THRESHOLD) return 0;
+    if (rate >= TURNOVER_OBVIOUS_THRESHOLD) return 1;
+    return 2;
+  };
+
+  return [...base].sort((a, b) => {
+    const ap = a.is_pinned ? 1 : 0;
+    const bp = b.is_pinned ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+
+    if (sortActivity === 'ops') {
+      const ia = getTurnoverInfo(a);
+      const ib = getTurnoverInfo(b);
+      const ra = ia.rate;
+      const rb = ib.rate;
+      const ta = tier(ia);
+      const tb = tier(ib);
+      if (ta !== tb) return ta - tb;
+      if (rb !== ra) return rb - ra;
+      return compareKeywordsByHeatMetric(a, b);
+    }
+
+    if (sortActivity === 'heat') {
+      // 默认排序：基于常态热度，有数据优先，降序
+      const sa = kwHeatSteady(a);
+      const sb = kwHeatSteady(b);
+      const ah = sa != null ? 1 : 0;
+      const bh = sb != null ? 1 : 0;
+      if (ah !== bh) return bh - ah;
+      if (sa != null && sb != null && sb !== sa) return sb - sa;
+      return String(a.keyword || '').localeCompare(String(b.keyword || ''), 'zh-CN');
+    }
+
+    if (sortActivity === 'heat_delta') {
+      // 热度增量排序：有数据优先，按增量降序
+      const da = kwHeatDelta(a);
+      const db = kwHeatDelta(b);
+      const ah = da != null ? 1 : 0;
+      const bh = db != null ? 1 : 0;
+      if (ah !== bh) return bh - ah;
+      if (da != null && db != null && db !== da) return db - da;
+      return compareKeywordsByHeatMetric(a, b);
+    }
+
+    if (sortActivity === 'trend_up' || sortActivity === 'trend_down') {
+      // 基于 keyword_heat_metric 的趋势比率排序
+      const ta = kwTrendRatio(a);
+      const tb = kwTrendRatio(b);
+      const ah = ta != null ? 1 : 0;
+      const bh = tb != null ? 1 : 0;
+      if (ah !== bh) return bh - ah;
+      if (ta != null && tb != null && ta !== tb) {
+        return sortActivity === 'trend_up' ? tb - ta : ta - tb;
+      }
+      // 趋势上升/下降：缺趋势数据的排最后
+      if (sortActivity === 'trend_up' || sortActivity === 'trend_down') {
+        const la = kwTrendLabel(a);
+        const lb = kwTrendLabel(b);
+        if (la === '上升' && lb !== '上升') return -1;
+        if (la !== '上升' && lb === '上升') return 1;
+        if (la === '下降' && lb !== '下降') return -1;
+        if (la !== '下降' && lb === '下降') return 1;
+      }
+      return compareKeywordsByHeatMetric(a, b);
+    }
+
+    if (sortActivity === 'turnover_desc') {
+      const ia = getTurnoverInfo(a);
+      const ib = getTurnoverInfo(b);
+      const ra = ia.mature ? ia.rate : -1;
+      const rb = ib.mature ? ib.rate : -1;
+      if (rb !== ra) return rb - ra;
+      return compareKeywordsByHeatMetric(a, b);
+    }
+
+    if (sortActivity === 'turnover_asc') {
+      const ia = getTurnoverInfo(a);
+      const ib = getTurnoverInfo(b);
+      const ra = ia.mature ? ia.rate : Infinity;
+      const rb = ib.mature ? ib.rate : Infinity;
+      if (ra !== rb) return ra - rb;
+      return compareKeywordsByHeatMetric(a, b);
+    }
+
+    return compareKeywordsByHeatMetric(a, b);
+  });
+}
+
+function getKeywordGroupLabels() {
+  const labels = kwGroupOrder.length
+    ? kwGroupOrder
+    : [...new Set(ALL_KEYWORDS.map(item => String(item._group || '').trim()).filter(Boolean))];
+  return labels.filter(Boolean);
+}
+
+function renderFilterChip({ label, count = null, active = false, onClick = '', disabled = false, title = '' }) {
+  const classNames = ['kw-filter-pill'];
+  if (active) classNames.push('active');
+  if (disabled && !active) classNames.push('is-empty');
+  const disabledAttr = disabled && !active ? ' disabled' : '';
+  return `<button class="${classNames.join(' ')}" type="button" title="${escapeHtml(title || label)}"${disabledAttr}${onClick ? ` onclick="${escapeHtml(onClick)}"` : ''}>
+    <span class="kw-filter-pill-label">${escapeHtml(label)}</span>
+    ${count == null ? '' : `<span class="kw-filter-pill-count">${count}</span>`}
+  </button>`;
+}
+
+function renderKeywordFilterBar() {
+  const summary = document.getElementById('kwFilterSummary');
+  const resetBtn = document.getElementById('kwFilterReset');
+  const groupChips = document.getElementById('kwGroupChips');
+  const groupMoreBtn = document.getElementById('kwGroupMoreBtn');
+  const groupMorePanel = document.getElementById('kwGroupMorePanel');
+  const statusChips = document.getElementById('kwStatusChips');
+  const sortChips = document.getElementById('kwSortChips');
+  if (!summary || !groupChips || !groupMoreBtn || !groupMorePanel || !statusChips || !sortChips) return;
+
+  const labels = getKeywordGroupLabels();
+  if (filterGroup && !labels.includes(filterGroup)) filterGroup = '';
+
+  const groupBase = getFilteredKeywordBase({ group: '', status: filterStatus });
+  const groupCountMap = new Map();
+  groupBase.forEach(item => {
+    const label = String(item._group || '').trim();
+    if (!label) return;
+    groupCountMap.set(label, (groupCountMap.get(label) || 0) + 1);
+  });
+
+  const statusBase = getFilteredKeywordBase({ group: filterGroup, status: 'all' });
+  const totalCount = ALL_KEYWORDS.length;
+  const visibleBase = getFilteredKeywordBase();
+  const visibleCount = visibleBase.length;
+  summary.textContent = `已显示 ${visibleCount} / ${totalCount} 个关键词`;
+  if (resetBtn) resetBtn.hidden = !(filterGroup || filterStatus !== 'all');
+
+  const candidateGroups = labels.filter(label => (groupCountMap.get(label) || 0) > 0 || label === filterGroup);
+  let visibleGroups = candidateGroups.slice(0, KW_GROUP_QUICK_LIMIT);
+  if (filterGroup && !visibleGroups.includes(filterGroup)) {
+    visibleGroups = visibleGroups.slice(0, Math.max(0, KW_GROUP_QUICK_LIMIT - 1)).concat(filterGroup);
+  }
+  visibleGroups = [...new Set(visibleGroups)];
+  const hiddenGroups = candidateGroups.filter(label => !visibleGroups.includes(label));
+  if (!hiddenGroups.length) kwGroupMoreOpen = false;
+
+  groupChips.innerHTML = [
+    renderFilterChip({
+      label: '全部',
+      count: groupBase.length,
+      active: !filterGroup,
+      onClick: "setKeywordGroup('')",
+      disabled: groupBase.length === 0,
+    }),
+    ...visibleGroups.map(label => renderFilterChip({
+      label,
+      count: groupCountMap.get(label) || 0,
+      active: filterGroup === label,
+      onClick: `setKeywordGroup(${jsq(label)})`,
+      disabled: (groupCountMap.get(label) || 0) === 0,
+    }))
+  ].join('');
+
+  groupMoreBtn.hidden = !hiddenGroups.length;
+  if (!hiddenGroups.length) {
+    groupMorePanel.hidden = true;
+    groupMorePanel.innerHTML = '';
+  } else {
+    groupMoreBtn.textContent = kwGroupMoreOpen ? '收起' : `更多 ${hiddenGroups.length}`;
+    groupMorePanel.hidden = !kwGroupMoreOpen;
+    groupMorePanel.innerHTML = hiddenGroups.map(label => renderFilterChip({
+      label,
+      count: groupCountMap.get(label) || 0,
+      active: filterGroup === label,
+      onClick: `setKeywordGroup(${jsq(label)})`,
+      disabled: (groupCountMap.get(label) || 0) === 0,
+    })).join('');
+  }
+
+  const statusOptions = [
+    { value: 'all', label: '全部', count: statusBase.length },
+    { value: 'turnover_observing', label: '观察中', count: statusBase.filter(item => keywordMatchesStatus(item, 'turnover_observing')).length },
+    { value: 'turnover_fast', label: '换得很快', count: statusBase.filter(item => keywordMatchesStatus(item, 'turnover_fast')).length },
+    { value: 'turnover_obvious', label: '换得明显', count: statusBase.filter(item => keywordMatchesStatus(item, 'turnover_obvious')).length },
+    { value: 'turnover_light', label: '小幅换新', count: statusBase.filter(item => keywordMatchesStatus(item, 'turnover_light')).length },
+    { value: 'turnover_stable', label: '基本没变', count: statusBase.filter(item => keywordMatchesStatus(item, 'turnover_stable')).length },
+  ];
+  statusChips.innerHTML = statusOptions.map(option => renderFilterChip({
+    label: option.label,
+    count: option.count,
+    active: filterStatus === option.value,
+    onClick: `setKeywordStatus(${jsq(option.value)})`,
+    disabled: option.count === 0,
+  })).join('');
+
+  const heatReadyCount = visibleBase.filter(item => kwHeatSteady(item) != null).length;
+  const heatDeltaReadyCount = visibleBase.filter(item => kwHeatDelta(item) != null).length;
+  const trendReadyCount = visibleBase.filter(item => {
+    const label = kwTrendLabel(item);
+    return kwHasSufficientData(item) && label != null && label !== '观察中';
+  }).length;
+  const sortOptions = [
+    { value: 'heat', label: '默认', count: visibleCount },
+    { value: 'heat_delta', label: '热度增量', count: heatDeltaReadyCount, title: '按15日热度增量从高到低排序' },
+    { value: 'trend_up', label: '趋势上升', count: trendReadyCount, title: '趋势上升的关键词优先' },
+    { value: 'trend_down', label: '趋势下降', count: trendReadyCount, title: '趋势下降的关键词优先' },
+  ];
+  sortChips.innerHTML = sortOptions.map(option => renderFilterChip({
+    label: option.label,
+    count: option.count,
+    title: option.title,
+    active: sortActivity === option.value,
+    onClick: `setKeywordSortMode(${jsq(option.value)})`,
+    disabled: option.count === 0,
+  })).join('');
+}
+
+function setKeywordGroup(groupLabel) {
+  filterGroup = groupLabel || '';
+  kwGroupMoreOpen = false;
+  refresh();
+}
+
+function setKeywordStatus(status) {
+  filterStatus = filterStatus === status && status !== 'all' ? 'all' : status;
+  refresh();
+}
+
+function setKeywordSortMode(nextSort) {
+  sortActivity = nextSort || 'heat';
+  refresh();
+}
+
+function toggleKwGroupPanel() {
+  kwGroupMoreOpen = !kwGroupMoreOpen;
+  renderKeywordFilterBar();
+}
+
+function resetKeywordFilters() {
+  filterGroup = '';
+  filterStatus = 'all';
+  kwGroupMoreOpen = false;
+  refresh();
+}
+
+function renderList() {
+  // 分页状态追踪：只在 filter/sortMode/mode 变化时重置页码
+  if (typeof renderList._lastFilter === 'undefined') renderList._lastFilter = '';
+  if (typeof renderList._lastSortMode === 'undefined') renderList._lastSortMode = '';
+  if (typeof renderList._lastMode === 'undefined') renderList._lastMode = '';
+  const filterChanged = filter !== renderList._lastFilter || filterGroup !== renderList._lastFilterGroup || filterStatus !== renderList._lastFilterStatus;
+  const sortModeChanged = accountSortMode !== renderList._lastSortMode || mode !== renderList._lastMode;
+  if (filterChanged || sortModeChanged) {
+    _accountPage = 1;
+  }
+  renderList._lastFilter = filter;
+  renderList._lastFilterGroup = filterGroup;
+  renderList._lastFilterStatus = filterStatus;
+  renderList._lastSortMode = accountSortMode;
+  renderList._lastMode = mode;
+  if (mode === 'keyword') renderKeywordFilterBar();
+  const list = mode === 'keyword'
+    ? (() => {
+        const sorted = sortKeywordList(getFilteredKeywordBase());
+        if (sorted.length) {
+          if (!curKeyword || !sorted.some(item => item.keyword === curKeyword)) {
+            curKeyword = sorted[0].keyword;
+            ensureKeywordRunState(curKeyword);
+          }
+        } else {
+          curKeyword = null;
+        }
+        return sorted;
+      })()
+    : (() => {
+        const base = filter ? ALL_ACCOUNTS.filter(a => a.name.includes(filter)) : ALL_ACCOUNTS;
+        const sorted = [...base].sort((accountA, accountB) => {
+          const scoreDelta = scoreBoardRawValue(accountB, accountSortMode) - scoreBoardRawValue(accountA, accountSortMode);
+          if (scoreDelta) return scoreDelta;
+          if (accountSortMode === 'today') {
+            const hitDelta = Number(accountB.today_hit_count || 0) - Number(accountA.today_hit_count || 0);
+            if (hitDelta) return hitDelta;
+          }
+          return String(accountA.name || '').localeCompare(String(accountB.name || ''), 'zh-CN');
+        });
+        // 分页由 renderList 入口统一管理
+        return sorted;
+      })();
+
+  const html = mode === 'keyword'
+    ? list.map((k, i) => {
+        const rc = i === 0 ? 'r1' : '';
+        const heat = buildHeatRow(k.history_best, (r, idx) => `D${idx + 1} · 最佳第${r === undefined ? 0 : r}名 · 命中${(k.history_hits && k.history_hits[idx]) || 0}个博主`);
+        const tags = [
+          `topic ${k.topic || k.keyword}`,
+          `类目 ${k.keyword_bucket || '未分类'}`,
+          k.is_pinned ? `人工置顶` : null,
+          `最新上榜 ${k.today_count}`,
+          k.latest_run ? `快照 ${formatDateShort(k.latest_run.date)} ${k.latest_run.time}` : '暂无快照',
+          `追踪博主 ${k.tracked_accounts}`,
+          `沉淀笔记 ${k.article_count}`
+        ].filter(Boolean).map(t => `<span class="kw-tag">${escapeHtml(t)}</span>`).join('');
+        const readDeltaTag = readDeltaTagHtml(k);
+        const readDeltaSide = readDeltaSideHtml(k);
+        // 已移除：🔥外部热度分/丰度分/小红书指数展示，保留 kw_score 兼容旧数据
+        const refreshedCls = kmRefreshedKeywords.has(k.keyword) ? ' is-refreshed' : '';
+        return `<div class="acct-row ${curKeyword === k.keyword ? 'active' : ''}" onclick='selectKeyword(${jsq(k.keyword)})'>
+          <div class="rank-no ${rc}${refreshedCls}">${i + 1}</div>
+          <div class="acct-main">
+            <div class="acct-name-row"><span class="acct-name">${escapeHtml(k.keyword)}</span>${keywordBadge(k)}</div>
+            <div class="kw-tags">${readDeltaTag}${tags}</div>
+          </div>
+          ${readDeltaSide}
+        </div>`;
+      }).join('')
+    : list.slice(0, _accountPage * ACCOUNT_PAGE_SIZE).map((a, i) => {
+        const rc = i === 0 ? 'r1' : '';
+        const heat = buildHeatRow(Array.isArray(a.history) ? a.history : [], (r, idx) => `D${idx + 1} · 最佳第${r === undefined ? 0 : r}名`);
+        const topicHtml = getAccountTopicNames(a).slice(0, 6).map(topic => `<span class="kw-tag">${escapeHtml(topic)}</span>`).join('');
+        const acctRefreshed = Object.keys(a.keywords || {}).some(kw => kmRefreshedKeywords.has(kw));
+        const scoreRefreshedCls = acctRefreshed ? ' is-refreshed' : '';
+        const scoreDisplay = scoreBoardValue(a, accountSortMode);
+        const scoreLabel = scoreBoardMeta(accountSortMode).label;
+        const scoreBreakthroughClass = scoreDisplay > 100 ? ' is-breakthrough' : '';
+        const scoreSubtitle = accountSortMode === 'today'
+          ? `<div class="score-sub">今日上榜 ${a.today_hit_count ?? 0} · 历史上榜 ${a.article_count ?? 0}</div>`
+          : '';
+        const scoreTitle = accountScoreTitle(a, accountSortMode);
+        return `<div class="acct-row ${curAccount === a.name ? 'active' : ''}" onclick='selectAccount(${jsq(a.name)})'>
+          <div class="rank-no ${rc}">${i + 1}</div>
+          <div class="acct-main">
+            <div class="acct-name-row">${accountChipHtml(a.name, a.headimg_url)}${accountBadge(a)}</div>
+            <div class="kw-tags">${topicHtml}</div>
+            <div class="kw-tags"><span class="kw-tag">近7天在榜 ${a.recent_hit_days || 0} 天</span><span class="kw-tag">覆盖 ${a.topic_count || 0} 个产品</span><span class="kw-tag">触达 ${a.bucket_count || 0} 类意图</span><span class="kw-tag">笔记 ${a.article_count || 0} 篇</span><span class="kw-tag">当天命中 ${a.today_hit_count || 0} 次</span></div>
+            <div class="heatrow">${heat}</div>
+          </div>
+          <div class="acct-score js-score-tooltip${scoreBreakthroughClass}" data-account-id="${escapeHtml(a.account_id || a.name || '')}" data-score-tooltip-mode="${accountSortMode}" aria-label="${escapeHtml(scoreTitle)}" tabindex="0"><div class="score-val${scoreRefreshedCls}${scoreBreakthroughClass}">${scoreDisplay}</div><div class="score-lbl">${scoreLabel}</div>${scoreSubtitle}</div>
+        </div>`;
+      }).join('');
+
+  const accountListLen = mode === 'account' ? list.length : 0;
+  const displayed = mode === 'account' ? Math.min(accountListLen, _accountPage * ACCOUNT_PAGE_SIZE) : 0;
+  const total = accountListLen;
+  const hasMore = mode === 'account' && displayed < total;
+  const loadMoreBtn = hasMore ? `<div class="load-more-row"><button class="load-more-btn" onclick="loadMoreAccounts()">加载更多账号（${displayed}/${total}）</button></div>` : '';
+  document.getElementById('acctList').innerHTML = (html || `<div class="empty-hint">没有匹配结果</div>`) + loadMoreBtn;
+}
+
+function loadMoreAccounts() {
+  _accountPage++;
+  renderList();
+  // 滚动到新加载的行附近
+  setTimeout(() => {
+    const rows = document.querySelectorAll('.acct-row');
+    const targetRow = rows[_accountPage * ACCOUNT_PAGE_SIZE - ACCOUNT_PAGE_SIZE];
+    if (targetRow) targetRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, 50);
+}
+
+function mountDetailChart(values, tooltipPrefix) {
+  if (detailChart) {
+    detailChart.destroy();
+    detailChart = null;
+  }
+  setTimeout(() => {
+    const ctx = document.getElementById('detailChart');
+    if (!ctx) return;
+    const existing = Chart.getChart && Chart.getChart(ctx);
+    if (existing) existing.destroy();
+    detailChart = new Chart(ctx, {
+      type:'bar',
+      data:{
+        labels:Array.from({length:values.length}, (_, i) => `D${i + 1}`),
+        datasets:[{
+          data:values,
+          backgroundColor:values.map(v => v >= 8 ? '#3b82f6' : v >= 3 ? '#93c5fd' : '#dbeafe'),
+          borderRadius:3,
+          borderSkipped:false
+        }]
+      },
+      options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        scales:{
+          y:{ beginAtZero:true, ticks:{color:'#bbb'}, grid:{color:'#f5f5f5'} },
+          x:{ ticks:{color:'#bbb', font:{size:10}}, grid:{display:false} }
+        },
+        plugins:{
+          legend:{display:false},
+          tooltip:{ callbacks:{ label:c => c.raw ? `${tooltipPrefix}：${c.raw}` : '无数据' } }
+        }
+      }
+    });
+  }, 30);
+}
+
+function renderKeywordDetail(kw) {
+  const k = KEYWORD_BY_NAME.get(kw) || ALL_KEYWORDS.find(x => x.keyword === kw);
+  if (!k) {
+    document.getElementById('colRight').innerHTML = `<div class="empty-hint">← 点击左侧关键词查看详情</div>`;
+    return;
+  }
+  const runs = Array.isArray(k.runs) ? k.runs : [];
+  const currentRun = getSelectedKeywordRun(kw);
+  // 如果只有摘要没有完整数据，触发 lazy fetch
+  if (!runs.length && k.keyword_id && !KEYWORD_DETAIL_CACHE.has(k.keyword_id)) {
+    const detailContainer = document.getElementById('colRight');
+    const loadingHtml = '<div class="detail-wrap"><div class="card" style="text-align:center;padding:60px 20px"><div class="loading-spinner" style="margin:0 auto 12px"></div><div style="color:#999;font-size:13px">正在加载关键词详情…</div></div></div>';
+    detailContainer.innerHTML = loadingHtml;
+    const _kw = kw;
+    const _kid = k.keyword_id;
+    _fetchKeywordDetail(_kid).then(full => {
+      if (curKeyword !== _kw || mode !== 'keyword') return;
+      const summary = KEYWORD_BY_ID.get(_kid);
+      if (summary) Object.assign(summary, full);
+      renderKeywordDetail(_kw);
+    }).catch(e => {
+      if (curKeyword !== _kw || mode !== 'keyword') return;
+      detailContainer.innerHTML = '<div class="detail-wrap"><div class="card" style="text-align:center;padding:60px 20px;color:#991b1b"><div style="font-size:14px;font-weight:700;margin-bottom:8px">加载失败</div><div style="font-size:12px;color:#bbb">' + escapeHtml(e.message) + '</div></div></div>';
+    });
+    return;
+  }
+  if (!runs.length || !currentRun) {
+    const topic = k.topic || k.keyword;
+    const bucket = k.keyword_bucket || '未分类';
+    document.getElementById('colRight').innerHTML = `
+    <div class="detail-wrap">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:15px;font-weight:700">${escapeHtml(k.keyword)}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:3px">关键词主视角 · 暂无快照数据</div>
+            <div style="font-size:11px;color:#999;margin-top:8px">归属 topic：${escapeHtml(topic)}</div>
+            <div style="font-size:11px;color:#999;margin-top:4px">类目：${escapeHtml(bucket)}</div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px">
+            <button class="pin-btn ${k.is_pinned ? 'active' : ''}" onclick='toggleKeywordPin(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)}, ${k.is_pinned ? 'false' : 'true'})'>${k.is_pinned ? '取消置顶' : '置顶关键词'}</button>
+            <button class="pin-btn" id="refresh-btn-${escapeHtml(k.keyword_id)}" onclick='startKeywordRefresh(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)})'>刷新数据</button>
+            <button class="pin-btn" style="color:#dc2626;border-color:#fecaca" onclick='deleteKeywordFromDetail(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)})'>删除关键词</button>
+          </div>
+        </div>
+        <div class="stat-row" style="margin-top:12px;padding-top:10px;border-top:1px solid #f5f5f5">
+          <div class="stat-item"><div class="stat-n">0</div><div class="stat-l">当前快照笔记数</div></div>
+          <div class="stat-item"><div class="stat-n">0</div><div class="stat-l">当日快照数</div></div>
+          <div class="stat-item"><div class="stat-n">${k.coverage_days || 0}</div><div class="stat-l">${MONITOR_DATA.window_days}天覆盖天数</div></div>
+          <div class="stat-item"><div class="stat-n">${k.article_count || 0}</div><div class="stat-l">沉淀笔记数</div></div>
+        </div>
+      </div>
+      ${renderHeatMetricCard(k)}
+      <div class="card" style="text-align:center;padding:40px 20px;color:#bbb;font-size:13px">
+        该关键词暂无可回看的快照<br>
+        <span style="font-size:11px;color:#ccc;margin-top:6px;display:inline-block">点击「刷新数据」可立即抓取一次</span>
+      </div>
+    </div>`;
+    return;
+  }
+
+  const selectedDate = currentRun.date || '';
+  const currentTopic = k.topic || k.keyword || '';
+  const currentBucket = k.keyword_bucket || '未分类';
+  const dateOptions = getKeywordDates(kw);
+  const recentDateOptions = getRecentKeywordDates(kw);
+  const customDateActive = selectedDate ? !recentDateOptions.includes(selectedDate) : true;
+  const customDateLabel = customDateActive ? `自定义 ${formatDateShort(selectedDate)}` : '自定义日期';
+  const runsOnDate = runs.filter(run => run.date === selectedDate);
+  const runArticles = Array.isArray(currentRun.articles) ? currentRun.articles : [];
+  const lead = runArticles[0];
+  const topicPeers = ALL_KEYWORDS.filter(item => (item.topic || item.keyword) === currentTopic)
+    .map(item => item.keyword)
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const articleRows = runArticles.length
+    ? runArticles.map(art => {
+      const actionText = art.content_path ? '查看正文' : (hasRealUrl(art.url) ? '查看原文' : '仅榜单');
+      const liked = Number(art.liked_count ?? art.like_count ?? 0);
+      const collected = Number(art.collected_count ?? 0);
+      const commented = Number(art.comment_count ?? 0);
+      const shared = Number(art.shared_count ?? 0);
+      const workType = String(art.work_type || '').toLowerCase();
+      const isVideo = workType.includes('video') || workType.includes('视频');
+      return `<article class="xhs-note-card" onclick='openArtByUrl(${jsq(art.url)}, ${jsq(art.title)}, ${jsq(art.content_path)}, { article_id:${jsq(art.article_id || '')}, work_type:${jsq(art.work_type || '')}, rank:${art.rank != null ? art.rank : 'null'}, account:${jsq(art.account)}, kw:${jsq(k.keyword)}, liked_count:${art.liked_count != null ? art.liked_count : 'null'}, collected_count:${art.collected_count != null ? art.collected_count : 'null'} })'>
+        <div class="xhs-note-cover">
+          ${buildArticleCoverHtml(art)}
+          <span class="xhs-note-rank">${art.rank || '—'}</span>
+          ${isVideo ? '<span class="xhs-note-type">▶ 视频</span>' : ''}
+          <span class="xhs-note-hit ${snapshotHitToneClass(art.hit_days)}">在榜 ${art.hit_days || 0} 天</span>
+        </div>
+        <div class="xhs-note-body">
+          <div class="xhs-note-title" title="${escapeHtml(art.title)}">${escapeHtml(art.title)}</div>
+          <div class="xhs-note-author-row">
+            ${accountChipHtml(art.account, art.account_headimg, {clickHandler: `onclick='event.stopPropagation();selectAccount(${jsq(art.account)})'`, extraClass: 'snapshot-account-chip'})}
+            <span class="xhs-note-like" title="点赞数">♡ ${liked}</span>
+          </div>
+          <div class="xhs-note-engagement" title="收藏 ${collected} · 评论 ${commented} · 分享 ${shared}">
+            <span>☆ ${collected}</span><span>评 ${commented}</span><span>↗ ${shared}</span>
+          </div>
+          <div class="xhs-note-foot">
+            <span class="xhs-note-published" title="发布时间">${escapeHtml(formatXhsDateTime(art.published_at))}</span>
+            <span class="xhs-note-action">${actionText}</span>
+          </div>
+        </div>
+      </article>`;
+    }).join('')
+    : `<div class="empty-block">该快照暂无可展示笔记</div>`;
+
+  const accountRows = k.accounts.length
+    ? k.accounts.map(a => {
+      const fullAccount = ACCOUNT_BY_ID.get(a.account_id) || a;
+      return `<div class="mini-row" onclick='selectAccount(${jsq(a.name)})'>
+        <div class="art-rank ${a.today_rank ? `rl-${Math.min(a.today_rank,10)}` : 'r-low'}">${a.today_rank || '—'}</div>
+        <div class="mini-main">
+          <div class="mini-name">${accountChipHtml(a.name, a.headimg_url)}</div>
+          <div class="mini-meta">${MONITOR_DATA.window_days}天在榜 ${a.hit_days} 天 · ${a.best_rank ? `最佳第${a.best_rank}名` : '暂无历史'} · ${escapeHtml(rankMoveLabel(a.today_rank, a.today_prev))}</div>
+        </div>
+        <div class="mini-side js-score-tooltip" data-account-id="${escapeHtml(a.account_id || a.name || '')}" data-score-tooltip-mode="score" aria-label="${escapeHtml(accountScoreTitle(fullAccount, 'score'))}" tabindex="0">
+          <div class="mini-rank">${scoreInt(fullAccount.score)}</div>
+          <div class="mini-score-sm">博主分</div>
+        </div>
+      </div>`;
+    }).join('')
+    : `<div class="empty-block">暂无博主透视数据</div>`;
+
+  // 搜索词信号
+  const termsBlock = (() => {
+    const t = currentRun.terms || {suggestions: [], related: []};
+    const renderTerm = (x) => `<span class="kw-tag signal-term" onclick='signalTermClick(${jsq(x)})' style="cursor:pointer" title="点击添加到监控关键词">${escapeHtml(x)}</span>`;
+    const sugg = t.suggestions.length
+      ? t.suggestions.map(renderTerm).join(' ')
+      : '<span style="color:#bbb;font-size:11px">无</span>';
+    const rel = t.related.length
+      ? t.related.map(renderTerm).join(' ')
+      : '<span style="color:#bbb;font-size:11px">无</span>';
+    return `
+      <div style="margin-bottom:8px"><span style="font-size:11px;color:#999;margin-right:6px">下拉词</span>${sugg}</div>
+      <div><span style="font-size:11px;color:#999;margin-right:6px">相关搜索</span>${rel}</div>`;
+  })();
+
+  const topicPeerTags = topicPeers.map(item => `<span class="kw-tag">${escapeHtml(item)}</span>`).join('');
+
+  document.getElementById('colRight').innerHTML = `
+    <div class="detail-wrap">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:15px;font-weight:700">${escapeHtml(k.keyword)}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:3px">关键词主视角 · 快照榜单在前，${MONITOR_DATA.window_days}天盯号在后</div>
+            <div style="font-size:11px;color:#999;margin-top:8px">${lead ? `当前快照领跑：${escapeHtml(lead.account)} · ${escapeHtml(lead.title)}` : '当前快照暂无领跑笔记'}</div>
+            <div style="font-size:11px;color:#999;margin-top:6px">归属 topic：${escapeHtml(k.topic || k.keyword)}</div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px">
+            <button class="pin-btn ${k.is_pinned ? 'active' : ''}" onclick='toggleKeywordPin(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)}, ${k.is_pinned ? 'false' : 'true'})'>${k.is_pinned ? '取消置顶' : '置顶关键词'}</button>
+            <button class="pin-btn" id="refresh-btn-${escapeHtml(k.keyword_id)}" onclick='startKeywordRefresh(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)})'>刷新数据</button>
+            <button class="pin-btn" style="color:#dc2626;border-color:#fecaca" onclick='deleteKeywordFromDetail(event, ${jsq(k.keyword_id)}, ${jsq(k.keyword)})'>删除关键词</button>
+          </div>
+        </div>
+        <div class="stat-row" style="margin-top:12px;padding-top:10px;border-top:1px solid #f5f5f5">
+          <div class="stat-item"><div class="stat-n hi">${currentRun.result_count}</div><div class="stat-l">当前快照笔记数</div></div>
+          <div class="stat-item"><div class="stat-n">${runsOnDate.length}</div><div class="stat-l">当日快照数</div></div>
+          <div class="stat-item"><div class="stat-n">${k.coverage_days}</div><div class="stat-l">${MONITOR_DATA.window_days}天覆盖天数</div></div>
+          <div class="stat-item"><div class="stat-n">${k.article_count}</div><div class="stat-l">沉淀笔记数</div></div>
+        </div>
+      </div>
+
+      ${renderHeatMetricCard(k)}
+
+      ${(() => {
+        const turnover = calcTurnoverRate(k.runs || []);
+        if (!turnover) return '';
+        const { lastRate, lastSame, lastNew, lastGone, lastCurrCount, lastPrevCount, lastCurrDate, lastPrevDate } = turnover;
+        const lastPct = turnoverPercent(lastRate);
+        const latestShare = turnoverShareText(lastRate);
+        const changeCount = lastNew + lastGone;
+        const compareTotal = lastCurrCount + lastPrevCount;
+        return `
+        <div class="card turnover-card">
+          <div class="card-title-row">
+            <span class="card-title">上榜笔记换新</span>
+            <a class="turnover-card-link" href="${escapeHtml(turnoverDetailUrl(k))}" onclick="event.stopPropagation()">完整热力图</a>
+          </div>
+          ${buildTurnoverPreviewHtml(k, turnover)}
+          <div class="turnover-latest-box">
+            <div>
+              <strong>最近一次怎么读</strong>
+              <span>${escapeHtml(turnoverRunPairText(turnover))}</span>
+            </div>
+            <div>这次抓到 ${lastCurrCount} 篇，上一次抓到 ${lastPrevCount} 篇；其中 ${lastSame} 篇还在榜。</div>
+            <div>${lastNew} 篇是这次新出现的，${lastGone} 篇从上次榜单里掉出，所以最近一次${latestShare}内容变了（${changeCount}/${compareTotal} = ${lastPct}）。</div>
+          </div>
+        </div>`;
+      })()}
+
+      <div class="card">
+        <div class="card-title">快照时间选择</div>
+        <div class="picker-stack">
+          <div class="picker-group">
+            <div class="picker-label">日期</div>
+            <div class="chip-row">
+              <span class="time-chip date-chip ${customDateActive ? 'active' : ''}" onclick='event.stopPropagation();openCustomKeywordDatePicker(${jsq(k.keyword)})'>
+                ${customDateLabel}
+                <input id="${keywordDateInputId(k.keyword)}" class="date-chip-input" type="date" value="${selectedDate}" min="${dateOptions[dateOptions.length - 1]}" max="${dateOptions[0]}" onchange='onCustomKeywordDateChange(${jsq(k.keyword)}, this.value)' />
+              </span>
+              ${recentDateOptions.map(date => `<span class="time-chip ${date === selectedDate ? 'active' : ''}" onclick='event.stopPropagation();selectKeywordDate(${jsq(k.keyword)},${jsq(date)})'>${formatDateShort(date)}</span>`).join('')}
+            </div>
+          </div>
+          <div class="picker-group">
+            <div class="picker-label">该日抓取时间点</div>
+            <div class="chip-row">
+              ${runsOnDate.map(run => `<span class="time-chip ${run.id === currentRun.id ? 'active' : ''}" onclick='event.stopPropagation();selectKeywordRun(${jsq(k.keyword)},${jsq(run.id)})'>${run.time} · ${formatRunTypeShort(run.trigger_type)}${run.is_primary ? ' · 主' : ''}</span>`).join('')}
+            </div>
+          </div>
+          <div class="snapshot-meta">当前显示：${escapeHtml(currentRun.date || "")} ${escapeHtml(currentRun.time || "")} · ${formatRunType(currentRun.trigger_type)} · ${currentRun.result_count} 个笔记上榜${currentRun.note ? ` · ${escapeHtml(currentRun.note)}` : ''}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">当前快照榜单</div>
+          <div class="xhs-waterfall-hint">${runArticles.length} 篇 · 按当前排名</div>
+        </div>
+        <div class="snapshot-waterfall">${articleRows}</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">搜索词信号（来自当前快照）</div>
+        ${termsBlock}
+      </div>
+
+      <div class="card">
+        <div class="card-title">博主透视（${MONITOR_DATA.window_days}天窗口）</div>
+        <div style="font-size:11px;color:#aaa;margin-bottom:10px">这里不跟随上方快照切换，用来判断这个词长期值得盯哪些号。</div>
+        <div class="section-stack">${accountRows}</div>
+      </div>
+    </div>`;
+
+  queueVisibleArticleCovers();
+}
+
+function accountArticleKey(article) {
+  if (!article) return '';
+  return article.article_id || `${article.title || ''}|${article.url || ''}`;
+}
+
+function accountArticleSortValue(dateText) {
+  const text = String(dateText || '').trim();
+  const full = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (full) return Number(`${full[1]}${String(full[2]).padStart(2, '0')}${String(full[3]).padStart(2, '0')}`);
+  const yySlash = text.match(/^(\d{2})\/(\d{1,2})\/(\d{1,2})$/);
+  if (yySlash) return Number(`20${yySlash[1]}${String(yySlash[2]).padStart(2, '0')}${String(yySlash[3]).padStart(2, '0')}`);
+  const short = text.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (short) return Number(`${new Date().getFullYear()}${String(short[1]).padStart(2, '0')}${String(short[2]).padStart(2, '0')}`);
+  return 0;
+}
+
+function emptyKeywordMeta() {
+  return { topics: new Set(), buckets: new Set() };
+}
+
+function addKeywordMeta(map, keyword, updater) {
+  if (!keyword) return;
+  const meta = map.get(keyword) || emptyKeywordMeta();
+  updater(meta);
+  map.set(keyword, meta);
+}
+
+function mergeAccountArticle(articleMap, rawArticle) {
+  const key = accountArticleKey(rawArticle);
+  if (!key) return null;
+
+  const current = articleMap.get(key) || {
+    article_id: rawArticle.article_id || '',
+    title: rawArticle.title || '未命名笔记',
+    url: rawArticle.url || '',
+    cover_url: rawArticle.cover_url,
+    published_at: rawArticle.published_at || '',
+    content_path: rawArticle.content_path,
+    best_rank: 0,
+    topics: new Set(),
+    buckets: new Set(),
+    keywords: new Set(),
+    theme_histories: [],
+    read_count: null,
+    like_count: null,
+  };
+
+  if (!current.article_id && rawArticle.article_id) current.article_id = rawArticle.article_id;
+  if (!current.url && rawArticle.url) current.url = rawArticle.url;
+  if (!current.cover_url && rawArticle.cover_url) current.cover_url = rawArticle.cover_url;
+  if (!current.published_at && rawArticle.published_at) current.published_at = rawArticle.published_at;
+  if (!current.content_path && rawArticle.content_path) current.content_path = rawArticle.content_path;
+  if (!current.title && rawArticle.title) current.title = rawArticle.title;
+  if (current.read_count == null && rawArticle.read_count != null) current.read_count = rawArticle.read_count;
+  if (current.like_count == null && rawArticle.like_count != null) current.like_count = rawArticle.like_count;
+
+  const rank = Number(rawArticle.rank || rawArticle.best_rank || 0);
+  if (rank > 0 && (!current.best_rank || rank < current.best_rank)) current.best_rank = rank;
+
+  articleMap.set(key, current);
+  return current;
+}
+
+function buildAccountArticleFeed(account) {
+  const articleMap = new Map();
+  const keywordMetaMap = new Map();
+
+  for (const [, info] of Object.entries(account.topics || {})) {
+    const themeLabel = info.label || '';
+    const isBucketTheme = info.theme_type === 'bucket';
+    for (const keyword of info.keywords || []) {
+      addKeywordMeta(keywordMetaMap, keyword, meta => {
+        if (themeLabel) (isBucketTheme ? meta.buckets : meta.topics).add(themeLabel);
+        for (const bucket of info.buckets || []) meta.buckets.add(bucket);
+      });
+    }
+  }
+
+  for (const [keyword, detail] of Object.entries(account.keywords || {})) {
+    const meta = keywordMetaMap.get(keyword) || emptyKeywordMeta();
+    const kwText = detail.keyword_text || keyword;
+    for (const art of detail.articles || []) {
+      const row = mergeAccountArticle(articleMap, art);
+      if (!row) continue;
+      row.keywords.add(kwText);
+      for (const topic of meta.topics) row.topics.add(topic);
+      for (const bucket of meta.buckets) row.buckets.add(bucket);
+    }
+  }
+
+  for (const [, info] of Object.entries(account.topics || {})) {
+    const themeLabel = info.label || '';
+    const isBucketTheme = info.theme_type === 'bucket';
+    for (const art of info.articles || []) {
+      const row = mergeAccountArticle(articleMap, art);
+      if (!row) continue;
+      if (themeLabel) (isBucketTheme ? row.buckets : row.topics).add(themeLabel);
+      for (const bucket of info.buckets || []) row.buckets.add(bucket);
+      if (info.history?.length) row.theme_histories.push(info.history);
+    }
+  }
+
+  return [...articleMap.values()].sort((a, b) => {
+    const dateDelta = accountArticleSortValue(b.published_at) - accountArticleSortValue(a.published_at);
+    if (dateDelta) return dateDelta;
+    return (a.best_rank || 99) - (b.best_rank || 99);
+  });
+}
+
+function renderAccountArticleRow(article, accountName) {
+  const bestRank = article.best_rank || 0;
+  const rankClass = bestRank ? `rl-${Math.min(bestRank, 10)}` : 'r-low';
+  const rankText = bestRank || '—';
+  const actionText = article.content_path ? '查看正文' : (hasRealUrl(article.url) ? '查看原文' : '仅榜单');
+  const dateStr = formatXhsDateTime(article.published_at);
+
+  const topicList = [...article.topics];
+  const bucketList = [...article.buckets];
+  const kwList = [...article.keywords];
+
+  const parts = [];
+  if (topicList.length) parts.push(`<span class="acart-topic">📌 ${topicList.map(t => escapeHtml(t)).join(' · ')}</span>`);
+  if (bucketList.length) parts.push(`<span class="acart-bucket">🏷 ${bucketList.map(b => escapeHtml(b)).join(' · ')}</span>`);
+  if (kwList.length) parts.push(`<span class="acart-kw">🔍 匹配了${kwList.slice(0, 6).map(k => `"${escapeHtml(k)}"`).join('、')}${kwList.length > 6 ? `等 ${kwList.length} 个关键词` : ''}</span>`);
+  const tagsLine = parts.length ? `<div class="acart-tags">${parts.join('<span class="acart-sep">丨</span>')}</div>` : '';
+
+  return `<div class="art-row account-article-row${article.is_today ? ' is-today' : ''}" onclick='openArtByUrl(${jsq(article.url)}, ${jsq(article.title)}, ${jsq(article.content_path)}, { article_id:${jsq(article.article_id || '')}, work_type:${jsq(article.work_type || '')}, rank:${bestRank || 'null'}, account:${jsq(accountName)}, liked_count:${article.liked_count != null ? article.liked_count : 'null'}, collected_count:${article.collected_count != null ? article.collected_count : 'null'} })'>
+    ${buildArticleCoverHtml(article)}
+    <div class="account-article-main">
+      <div class="acart-header">
+        <span class="art-rank ${rankClass}">${rankText}</span>
+        <span class="acart-title${article.is_today ? ' is-today' : ''}">${escapeHtml(article.title)}</span>
+      </div>
+      <div class="acart-meta">
+        <span>${dateStr}</span>
+        ${metricsChipHtml(article)}
+        <span class="row-link">${actionText}</span>
+      </div>
+      ${tagsLine}
+    </div>
+  </div>`;
+}
+
+
+function buildAccountEnrichRow(a) {
+  // 从 TikHub 缓存展示博主资料
+  const hasEnrich = a.fans != null || a.description || a.headimg_url || a.total_works != null;
+  if (!hasEnrich) {
+    return '<div style="font-size:12px;color:#999;margin-top:6px;padding:6px 10px;background:#f9f9f9;border-radius:6px">尚未加载完整资料 · <span class="row-link" onclick="loadCreatorDetail(\'' + escapeHtml(a.account_id) + '\')">按需加载</span></div>';
+  }
+  const parts = [];
+  if (a.red_id) parts.push('小红书号 ' + escapeHtml(a.red_id));
+  if (a.description) parts.push(escapeHtml(a.description));
+  if (a.fans != null) parts.push('👥 粉丝 ' + _fmtNum(a.fans));
+  if (a.follows_total != null) parts.push('👤 关注 ' + _fmtNum(a.follows_total));
+  if (a.total_works != null) parts.push('📝 作品 ' + _fmtNum(a.total_works));
+  if (a.likes_total != null) parts.push('👍 获赞 ' + _fmtNum(a.likes_total));
+  if (a.collects_total != null) parts.push('🔖 收藏 ' + _fmtNum(a.collects_total));
+  if (a.ip_location) parts.push('📍 ' + escapeHtml(a.ip_location));
+  if (a.verify_info) parts.push('✅ ' + escapeHtml(a.verify_info));
+  const interaction = a.interaction_metrics || null;
+  if (interaction) {
+    const absolute = interaction.absolute || {};
+    const delta = interaction.delta || {};
+    const absoluteText = `监测笔记互动 👍${_fmtNum(absolute.liked)} · 🔖${_fmtNum(absolute.collected)} · 💬${_fmtNum(absolute.comment)} · ↗${_fmtNum(absolute.shared)}`;
+    if (interaction.delta_available) {
+      parts.push(`${absoluteText} · 本轮变化 👍+${_fmtNum(delta.liked)} · 🔖+${_fmtNum(delta.collected)} · 💬+${_fmtNum(delta.comment)} · ↗+${_fmtNum(delta.shared)}`);
+    } else {
+      parts.push(`${absoluteText} · 互动增量待下一次同笔记快照`);
+    }
+  }
+  return '<div style="font-size:12px;color:#555;margin-top:6px;padding:8px 10px;background:#f9f9f9;border-radius:6px;line-height:1.6">' + parts.join(' · ') + '</div>';
+}
+
+function _fmtNum(n) {
+  if (n == null) return '—';
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+  return n.toLocaleString();
+}
+
+async function loadCreatorDetail(userId) {
+  try {
+    const resp = await fetch(CREATOR_DETAIL_API_URL + '?user_id=' + encodeURIComponent(userId), { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const detail = await resp.json();
+    // Update the account in ALL_ACCOUNTS
+    const acct = ACCOUNT_BY_ID.get(userId) || ALL_ACCOUNTS.find(x => x.account_id === userId);
+    if (acct && detail) {
+      if (detail.fans != null) acct.fans = detail.fans;
+      if (detail.description) acct.description = detail.description;
+      if (detail.avatar) acct.headimg_url = detail.avatar;
+      if (detail.total_works != null) acct.total_works = detail.total_works;
+      if (detail.likes != null) acct.likes_total = detail.likes;
+      if (detail.collects != null) acct.collects_total = detail.collects;
+      if (detail.follows != null) acct.follows_total = detail.follows;
+      if (detail.ip_location) acct.ip_location = detail.ip_location;
+      if (detail.verify_info) acct.verify_info = detail.verify_info;
+      if (detail.platform_payload && detail.platform_payload.red_id) {
+        acct.red_id = detail.platform_payload.red_id;
+      }
+    }
+    // Re-render account detail
+    if (curAccount) renderAccountDetail(curAccount);
+  } catch (e) {
+    console.error('loadCreatorDetail failed', e);
+  }
+}
+function renderAccountDetail(name) {
+  const a = ACCOUNT_BY_NAME.get(name) || ALL_ACCOUNTS.find(x => x.name === name);
+  if (!a) {
+    document.getElementById('colRight').innerHTML = `<div class="empty-hint">← 点击左侧博主查看详情</div>`;
+    return;
+  }
+  // 如果只有摘要没有完整数据，触发 lazy fetch
+  if (a.account_id && !ACCOUNT_DETAIL_CACHE.has(a.account_id)) {
+    const detailContainer = document.getElementById('colRight');
+    const loadingHtml = '<div class="detail-wrap"><div class="card" style="text-align:center;padding:60px 20px"><div class="loading-spinner" style="margin:0 auto 12px"></div><div style="color:#999;font-size:13px">正在加载博主详情…</div></div></div>';
+    detailContainer.innerHTML = loadingHtml;
+    const _name = name;
+    const _aid = a.account_id;
+    _fetchAccountDetail(_aid).then(full => {
+      if (curAccount !== _name || mode !== 'account') return;
+      const summary = ACCOUNT_BY_ID.get(_aid);
+      if (summary) Object.assign(summary, full);
+      renderAccountDetail(_name);
+    }).catch(e => {
+      if (curAccount !== _name || mode !== 'account') return;
+      detailContainer.innerHTML = '<div class="detail-wrap"><div class="card" style="text-align:center;padding:60px 20px;color:#991b1b"><div style="font-size:14px;font-weight:700;margin-bottom:8px">加载失败</div><div style="font-size:12px;color:#bbb">' + escapeHtml(e.message) + '</div></div></div>';
+    });
+    return;
+  }
+
+  const topicTags = getAccountTopicNames(a).map(topic => `<span class="kw-tag">${escapeHtml(topic)}</span>`).join('');
+  const accountArticles = buildAccountArticleFeed(a);
+  const initArticleTab = accountSortMode === 'timeliness' ? 'top3' : 'all';
+  const detailScore = scoreBoardValue(a, accountSortMode);
+  const detailScoreLabel = scoreBoardMeta(accountSortMode).label;
+  const detailScoreClass = detailScore > 100 ? ' is-breakthrough' : '';
+  const detailScoreSubtitle = accountSortMode === 'today'
+    ? `<div class="detail-score-sub">今日上榜 ${a.today_hit_count ?? 0} · 历史上榜 ${a.article_count ?? 0}</div>`
+    : '';
+  const topicBlocks = Object.entries(a.topics || {})
+    .sort(([, da], [, db]) => sumTopicScores(db) - sumTopicScores(da))
+    .map(([topic, info]) => {
+      const themeLabel = info.label || topic;
+      const themeKind = info.theme_type === 'bucket' ? '类目主题' : '产品主题';
+      const cells = info.history.map((r, i) => {
+        if (r === 0) return `<div class="tl-cell" title="D${i + 1}: 未上榜"></div>`;
+        return `<div class="tl-cell rl-${Math.min(r,10)}" title="D${i + 1}: 第${r}名">${r}</div>`;
+      }).join('');
+      const articleList = (info.articles || []).slice(0, 6).map(art => `<div class="art-row">
+          <div class="art-rank rl-${Math.min(art.rank,10)}">${art.rank}</div>
+          ${buildArticleCoverHtml(art)}
+          <div class="art-main">
+            <div class="art-title" onclick='openArtByUrl(${jsq(art.url)}, ${jsq(art.title)}, ${jsq(art.content_path)}, { article_id:${jsq(art.article_id || '')}, work_type:${jsq(art.work_type || '')}, rank:${art.rank || 'null'}, liked_count:${art.liked_count != null ? art.liked_count : 'null'}, collected_count:${art.collected_count != null ? art.collected_count : 'null'} })'>${escapeHtml(art.title)}</div>
+            <div class="art-sub">${escapeHtml(formatXhsDateTime(art.published_at))} ${metricsChipHtml(art)} · ${art.content_path ? '有正文' : '仅榜单/原文'}</div>
+          </div>
+        </div>`).join('');
+      const score = sumTopicScores(info).toFixed(2);
+      return `<div class="kw-section">
+        <div class="kw-header">
+          <div>
+            <div class="kw-name">${escapeHtml(themeLabel)}</div>
+            <div class="topic-summary">在榜 ${info.hit_days} 天 · 最佳第${info.best_rank || '—'}名 · 笔记 ${info.article_count} 篇 · 关键词 ${info.keyword_count} 个 · 类目 ${info.bucket_count || 0} 个 · 基础分 ${score}</div>
+          </div>
+          <div class="score-pill">${escapeHtml(themeKind)}</div>
+        </div>
+        <div class="kw-tags">${(info.buckets || []).map(bucket => `<span class="kw-tag">${escapeHtml(bucket)}</span>`).join('')}</div>
+        <div class="kw-tags">${(info.keywords || []).map(keyword => `<span class="kw-tag">${escapeHtml(keyword)}</span>`).join('')}</div>
+        <div class="timeline">${cells}</div>
+        <div class="stack-block">${articleList || '<div style="font-size:11px;color:#bbb;padding:8px 0">该主题下暂无笔记记录</div>'}</div>
+      </div>`;
+    }).join('');
+
+  const kwBlocks = Object.entries(a.keywords || {})
+    .sort(([, da], [, db]) => (db.history || []).reduce((s,r)=>s+rankWeight(r),0)
+                              - (da.history || []).reduce((s,r)=>s+rankWeight(r),0))
+    .map(([kw, d]) => {
+      const cells = d.history.map((r, i) => {
+        if (r === 0) return `<div class="tl-cell" title="D${i + 1}: 未上榜"></div>`;
+        return `<div class="tl-cell rl-${Math.min(r,10)}" title="D${i + 1}: 第${r}名">${r}</div>`;
+      }).join('');
+      const artList = (d.articles || []).map(art => `<div class="art-row">
+          <div class="art-rank rl-${Math.min(art.rank,10)}" onclick='event.stopPropagation();selectKeyword(${jsq(kw)})'>${art.rank}</div>
+          <div class="art-main">
+            <div class="art-title" onclick='openArtByUrl(${jsq(art.url)}, ${jsq(art.title)}, ${jsq(art.content_path)}, { article_id:${jsq(art.article_id || '')}, work_type:${jsq(art.work_type || '')}, rank:${art.rank || 'null'}, liked_count:${art.liked_count != null ? art.liked_count : 'null'}, collected_count:${art.collected_count != null ? art.collected_count : 'null'} })'>${escapeHtml(art.title)}</div>
+            <div class="art-sub">${escapeHtml(formatXhsDateTime(art.published_at))} ${metricsChipHtml(art)} · ${art.content_path ? '有正文' : (hasRealUrl(art.url) ? '有原文链接' : '仅榜单记录')}</div>
+          </div>
+          <div class="row-actions">
+            <span class="row-link" onclick='event.stopPropagation();openArtByUrl(${jsq(art.url)}, ${jsq(art.title)}, ${jsq(art.content_path)}, { article_id:${jsq(art.article_id || '')}, work_type:${jsq(art.work_type || '')} })'>${art.content_path ? '正文' : (hasRealUrl(art.url) ? '原文' : '详情')}</span>
+            <span class="row-link" onclick='event.stopPropagation();selectKeyword(${jsq(kw)})'>看词榜</span>
+          </div>
+        </div>`).join('');
+      return `<div class="kw-section">
+        <div class="kw-header">
+          <div>
+            <div class="kw-name">${escapeHtml(kw)}</div>
+            <div class="kw-meta">在榜 ${d.hit_days} 天${d.best_rank ? ` · 最佳第${d.best_rank}名` : ''}</div>
+          </div>
+          <span class="jump-link" onclick='event.stopPropagation();selectKeyword(${jsq(kw)})'>查看关键词</span>
+        </div>
+        <div class="timeline">${cells}</div>
+        <div style="display:flex;flex-direction:column;gap:2px">${artList || '<div style="font-size:11px;color:#bbb;padding:8px 0">该关键词下暂无笔记记录</div>'}</div>
+      </div>`;
+    }).join('');
+
+  document.getElementById('colRight').innerHTML = `
+    <div class="detail-wrap">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:15px;font-weight:700">${accountChipHtml(a.name, a.headimg_url, {extraClass: 'acct-chip-lg'})}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:3px">博主副视角 · 先看最近上榜笔记，再用主题标签理解这个博主在写什么。</div>
+            ${buildAccountEnrichRow(a)}
+            <div style="font-size:11px;color:#999;margin-top:8px">最近上榜笔记按发布时间倒序排列；主题和类目会作为标签挂在每篇笔记下面。</div>
+          </div>
+          <div class="detail-score js-score-tooltip${detailScoreClass}" data-account-id="${escapeHtml(a.account_id || a.name || '')}" data-score-tooltip-mode="${accountSortMode}" aria-label="${escapeHtml(accountScoreTitle(a, accountSortMode))}" tabindex="0">
+            <div class="detail-score-value${detailScoreClass}">${detailScore}</div>
+            <div class="detail-score-label">${detailScoreLabel}</div>
+            ${detailScoreSubtitle}
+          </div>
+        </div>
+        <div class="stat-row" style="margin-top:12px;padding-top:10px;border-top:1px solid #f5f5f5">
+          <div class="stat-item"><div class="stat-n hi">${a.recent_hit_days || 0}</div><div class="stat-l">近7天在榜天数</div></div>
+          <div class="stat-item"><div class="stat-n">${a.current_streak || 0}</div><div class="stat-l">当前连击</div></div>
+          <div class="stat-item"><div class="stat-n">${a.longest_streak || 0}</div><div class="stat-l">窗口最长连击</div></div>
+          <div class="stat-item"><div class="stat-n">${a.topic_count || 0}</div><div class="stat-l">近7天产品数</div></div>
+          <div class="stat-item"><div class="stat-n">${a.bucket_count || 0}</div><div class="stat-l">近7天类目数</div></div>
+          <div class="stat-item"><div class="stat-n">${a.kw_count}</div><div class="stat-l">关联关键词数</div></div>
+          <div class="stat-item"><div class="stat-n">${a.article_count}</div><div class="stat-l">沉淀笔记数</div></div>
+</div>
+        <div class="kw-tags" style="margin-top:10px">${topicTags}</div>
+      </div>
+
+      <div class="card account-article-card">
+        <div class="card-title-row">
+          <span class="card-title">最近命中笔记 · 按发布时间</span>
+          <div class="acct-sort-tabs art-filter-tabs">
+            <button class="acct-sort-tab ${initArticleTab === 'top3' ? 'active' : ''}" onclick="setArticleFilterTab('top3')">时效 Top3</button>
+            <button class="acct-sort-tab ${initArticleTab === 'all' ? 'active' : ''}" onclick="setArticleFilterTab('all')">全部</button>
+          </div>
+        </div>
+        <div class="section-stack account-article-list" id="accountArticleList"></div>
+      </div>
+
+      <div class="card account-trend-card">
+        <div class="card-title">${MONITOR_DATA.window_days}天加权基础影响力趋势</div>
+        <div style="font-size:11px;color:#aaa;margin-bottom:8px">保留一个小趋势图，辅助判断这个号是不是最近持续出现。</div>
+        <div class="chart-wrap"><canvas id="detailChart"></canvas></div>
+      </div>
+
+      <details class="detail-fold">
+        <summary>按研究主题拆解</summary>
+        <div class="fold-body">${topicBlocks || '<div class="empty-block">暂无 topic 拆解数据</div>'}</div>
+      </details>
+
+      <details class="detail-fold">
+        <summary>关键词原始命中明细</summary>
+        <div class="fold-body">${kwBlocks}</div>
+      </details>
+    </div>`;
+
+  mountDetailChart(a.day_scores, '加权基础分');
+
+  // 标记今天在榜笔记：只从今天抓取的快照中提取该笔记上榜的标题
+  const todayDate = MONITOR_DATA?.generated_at?.slice(0, 10) || '';
+  const todayTitles = new Set();
+  for (const kw of ALL_KEYWORDS) {
+    for (const run of (kw.runs || [])) {
+      if (run.date !== todayDate) break;
+      for (const art of run.articles || []) {
+        if (art.account === a.name) {
+          todayTitles.add(art.title);
+        }
+      }
+    }
+  }
+  accountArticles.forEach(art => { art.is_today = todayTitles.has(art.title); });
+
+  // 笔记列表初始渲染
+  window._curAccountArticles = accountArticles;
+  window._curAccountName = a.name;
+  _renderArticleList(initArticleTab);
+  queueVisibleArticleCovers();
+}
+
+function _renderArticleList(tab) {
+  const articles = window._curAccountArticles || [];
+  const name = window._curAccountName || '';
+  const filtered = tab === 'top3'
+    ? articles.filter(art => (art.best_rank || 99) <= 3)
+    : articles;
+  const html = filtered.length
+    ? filtered.map(art => renderAccountArticleRow(art, name)).join('')
+    : `<div class="empty-block">${tab === 'top3' ? '近期暂无 Top3 笔记' : '该博主暂无可展示笔记'}</div>`;
+  const el = document.getElementById('accountArticleList');
+  if (el) { el.innerHTML = html; queueVisibleArticleCovers(); }
+  // 同步 tab active 状态
+  const tabs = document.querySelectorAll('.art-filter-tabs .acct-sort-tab');
+  tabs.forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.includes('Top3') ? tab === 'top3' : tab === 'all');
+  });
+}
+
+function setArticleFilterTab(tab) {
+  _renderArticleList(tab);
+}
+
+function refresh() {
+  window.__XHS_PERF__.render.start = performance.now();
+  syncModeUi();
+
+  if (mode === 'keywordManage') {
+    loadKeywordManageView();
+    return;
+  }
+
+  if (mode === 'articleList') {
+    if (window.alInit) window.alInit();
+    return;
+  }
+
+  renderList();
+  if (mode === 'keyword') {
+    if (!curKeyword && ALL_KEYWORDS[0]) curKeyword = ALL_KEYWORDS[0].keyword;
+    renderKeywordDetail(curKeyword);
+    return;
+  }
+  if (!curAccount && ALL_ACCOUNTS[0]) curAccount = ALL_ACCOUNTS[0].name;
+  renderAccountDetail(curAccount);
+  window.__XHS_PERF__.render.end = performance.now();
+}
+
+function setAccountSortMode(m) {
+  hideAccountScoreTooltip();
+  accountSortMode = m;
+  document.getElementById('sortTabScore').classList.toggle('active', m === 'score');
+  document.getElementById('sortTabTimeliness').classList.toggle('active', m === 'timeliness');
+  document.getElementById('sortTabToday').classList.toggle('active', m === 'today');
+  renderList();
+  if (curAccount) renderAccountDetail(curAccount);
+}
+
+function setMode(next) {
+  const modeChanged = mode !== next;
+  if (modeChanged) {
+    filter = '';
+    const search = document.getElementById('searchInput');
+    if (search) search.value = '';
+  }
+  mode = next;
+  if (modeChanged) {
+    closeDrawer();
+    closeMobileSidebar();
+    kmCloseSettingsModal();
+    kmCloseKeywordModal();
+  }
+  refresh();
+}
+
+function selectKeywordDate(kw, date) {
+  curKeyword = kw;
+  mode = 'keyword';
+  setKeywordDateState(kw, date);
+  refresh();
+}
+
+function openCustomKeywordDatePicker(kw) {
+  const input = document.getElementById(keywordDateInputId(kw));
+  if (!input) return;
+  if (typeof input.showPicker === 'function') {
+    input.showPicker();
+    return;
+  }
+  input.focus();
+  input.click();
+}
+
+function onCustomKeywordDateChange(kw, date) {
+  if (!date) return;
+  selectKeywordDate(kw, date);
+}
+
+function selectKeywordRun(kw, runId) {
+  const run = getKeywordRuns(kw).find(item => item.id === runId);
+  if (!run) return;
+  curKeyword = kw;
+  mode = 'keyword';
+  keywordRunState[kw] = { date: run.date, runId };
+  refresh();
+}
+
+function selectKeyword(kw) {
+  curKeyword = kw;
+  mode = 'keyword';
+  ensureKeywordRunState(kw);
+  collapseLeftOnMobile();
+  refresh();
+}
+
+function selectAccount(name) { /* XHS 博主 */
+  if (window.alSaveState) window.alSaveState();
+  curAccount = name;
+  mode = 'account';
+  collapseLeftOnMobile();
+  refresh();
+}
+
+function filterList(v) {
+  filter = v.trim();
+  refresh();
+}
+
+// 拉取分组数据 → 建 keyword_text → group_label 映射 → 注入 ALL_KEYWORDS._group → 渲染新筛选条
+async function loadGroups() {
+  try {
+    let data = typeof KM_DATA !== 'undefined' && KM_DATA ? KM_DATA : null;
+    if (!data) {
+      const resp = await fetch('/api/keyword-manage', { cache: 'no-cache' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      data = await resp.json();
+    }
+    const groups = (data && data.groups) || [];
+    kwGroupMap = {};
+    kwGroupOrder = [];
+    groups.forEach(g => {
+      if (g?.label) kwGroupOrder.push(g.label);
+      (g.keywords || []).forEach(kw => {
+        if (kw && kw.keyword_text) kwGroupMap[kw.keyword_text] = g.label || '';
+      });
+    });
+    kwGroupOrder = [...new Set(kwGroupOrder.filter(Boolean))];
+  } catch (e) {
+    kwGroupMap = {};
+    kwGroupOrder = [];
+  }
+  if (typeof ALL_KEYWORDS !== 'undefined' && ALL_KEYWORDS) {
+    ALL_KEYWORDS.forEach(k => { k._group = kwGroupMap[k.keyword] || ''; });
+  }
+  renderKeywordFilterBar();
+}
+
+function renderTikHubNoteDetail(detail, fallbackUrl, fallbackTitle) {
+  function _fmtNum(n) {
+    if (n == null) return '—';
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+    return n.toLocaleString();
+  }
+  const title = escapeHtml(detail.title || fallbackTitle || '');
+  const desc = detail.desc_full || detail.summary || '';
+  const authorName = escapeHtml(detail.creator_name || '');
+  const payload = detail.platform_payload || {};
+  const authorRedId = escapeHtml(payload.creator_red_id || '');
+  const ipLocation = escapeHtml(payload.ip_location || '');
+  const workType = detail.work_type === 'video' ? '🎬 视频' : '📷 图文';
+  const noteUrl = detail.url || fallbackUrl || '';
+  const publishedAt = detail.published_at || '';
+
+  // 互动数据
+  const metrics = [
+    { label: '点赞', value: detail.liked_count, icon: '👍' },
+    { label: '收藏', value: detail.collected_count, icon: '🔖' },
+    { label: '评论', value: detail.comment_count, icon: '💬' },
+    { label: '分享', value: detail.shared_count, icon: '🔗' },
+  ];
+  const metricsHtml = metrics.map(m => {
+    const v = m.value != null ? _fmtNum(m.value) : '—';
+    return '<span class="tk-metric"><b>' + m.icon + ' ' + v + '</b><small>' + m.label + '</small></span>';
+  }).join('');
+
+  // 图片
+  let imagesHtml = '';
+  if (detail.images_list && detail.images_list.length > 0) {
+    const imgs = detail.images_list.map(img => {
+      const src = escapeHtml(img.url_size_large || img.url || '');
+      return '<img class="tk-image" src="' + src + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">';
+    }).join('');
+    imagesHtml = '<div class="tk-images">' + imgs + '</div>';
+  }
+
+  // 原始链接
+  const linkHtml = noteUrl
+    ? '<a class="tk-link" href="' + escapeHtml(noteUrl) + '" target="_blank" rel="noopener">查看原文 →</a>'
+    : '';
+
+  // 正文（用 marked 渲染）
+  let bodyHtml = '';
+  if (desc.trim()) {
+    try {
+      bodyHtml = marked.parse(escapeHtml(desc)).replace(/<img\s/gi, '<img referrerpolicy="no-referrer" ');
+    } catch (_) {
+      bodyHtml = '<pre>' + escapeHtml(desc) + '</pre>';
+    }
+  }
+
+  return '<div class="tk-detail">' +
+    '<div class="tk-header">' +
+      '<h2 class="tk-title">' + title + '</h2>' +
+      '<div class="tk-meta">' +
+        '<span class="tk-author">✍️ ' + authorName + '</span>' +
+        (authorRedId ? '<span class="tk-red-id">小红书号 ' + authorRedId + '</span>' : '') +
+        '<span class="tk-type">' + workType + '</span>' +
+        (publishedAt ? '<span class="tk-date">' + escapeHtml(formatXhsDateTime(publishedAt)) + '</span>' : '') +
+        (ipLocation ? '<span class="tk-location">📍 ' + ipLocation + '</span>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="tk-metrics">' + metricsHtml + '</div>' +
+    imagesHtml +
+    '<div class="tk-body">' + bodyHtml + '</div>' +
+    '<div class="tk-footer">' + linkHtml + '</div>' +
+  '</div>';
+}
+
+async function openArtByUrl(url, title, contentPath, meta = {}) {
+  document.getElementById('drawerTitle').textContent = title;
+  document.getElementById('drawer').classList.add('open');
+  const body = document.getElementById('drawerBody');
+  body.innerHTML = '<div style="color:#bbb">正在加载…</div>';
+
+  const articleId = meta.article_id || contentPath || '';
+  const isTikHub = articleId.startsWith('xhs_tk_');
+
+  let html = '';
+  if (isTikHub) {
+    // 从 xhs_tk_<note_id> 中提取真实的 note_id
+    const noteId = articleId.replace('xhs_tk_', '');
+    const noteType = meta.work_type === 'video' ? 'video' : 'normal';
+    try {
+      const resp = await fetch(`${NOTE_DETAIL_API_URL}?note_id=${encodeURIComponent(noteId)}&note_type=${noteType}`, { cache: 'no-store' });
+      if (!resp.ok) {
+        if (resp.status === 404) throw new Error('TikHub 详情暂不可用');
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const detail = await resp.json();
+      html = renderTikHubNoteDetail(detail, url, title);
+    } catch (e) {
+      html = `<div style="color:#991b1b">无法加载笔记详情：${escapeHtml(e.message)}</div>`;
+      if (hasRealUrl(url)) {
+        html += `<div style="margin-top:8px;font-size:12px;color:#999">原文链接：<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></div>`;
+      }
+    }
+  } else if (contentPath) {
+    try {
+      const resp = await fetch(`${CONTENT_API_URL}?path=${encodeURIComponent(contentPath)}`, { cache: 'no-store' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const payload = await resp.json();
+      const md = preprocessArticleMarkdown(payload.markdown || '', title);
+      html = marked.parse(md).replace(/<img\s/gi, '<img referrerpolicy="no-referrer" ');
+    } catch (e) {
+      html = `<div style="color:#991b1b">无法加载正文：${escapeHtml(e.message)}</div>
+              <div style="margin-top:8px;font-size:12px;color:#999">路径：${escapeHtml(contentPath)}</div>`;
+    }
+  } else {
+    html = hasRealUrl(url)
+      ? `<div style="color:#bbb">本文未找到本地正文文件。</div>
+         <div style="margin-top:8px;font-size:12px;color:#999">原文链接：<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></div>`
+      : `<div style="color:#bbb">当前只有榜单快照，尚未抓取正文和原文链接。</div>
+         <div style="margin-top:8px;font-size:12px;color:#999">如果这个词后续升级为全文模式，抽屉会自动显示正文内容。</div>`;
+  }
+  body.innerHTML = html;
+
+  const footParts = [];
+  if (meta.read_count != null) footParts.push(`👁 阅读${meta.read_count}`);
+  if (meta.like_count != null) footParts.push(`👍 赞${meta.like_count}`);
+  if (meta.kw) footParts.push(escapeHtml(meta.kw));
+  if (meta.rank) footParts.push(`第${meta.rank}名`);
+  if (hasRealUrl(url)) footParts.push(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="color:#3b82f6">原文</a>`);
+  footParts.push(`<a href="${escapeHtml(articleHitDetailHref(meta, url))}" style="color:#3b82f6">命中详情</a>`);
+  document.getElementById('drawerFoot').innerHTML = footParts.map(p => `<span>${p}</span>`).join('');
+}
+
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+}
+
+async function toggleKeywordPin(event, keywordId, keyword, nextPinned) {
+  if (event) event.stopPropagation();
+  try {
+    const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/${nextPinned ? 'pin' : 'unpin'}`;
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword })
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    await loadData({ preserveSelection: true });
+    refresh();
+  } catch (e) {
+    window.alert(`置顶状态更新失败：${e.message}`);
+  }
+}
+
+async function saveKeywordTopic(keywordId, keyword) {
+  const input = document.getElementById(keywordTopicInputId(keywordId));
+  const topic = input ? input.value.trim() : '';
+  try {
+    const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/topic`;
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword, topic })
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    await loadData({ preserveSelection: true });
+    refresh();
+  } catch (e) {
+    window.alert(`topic 更新失败：${e.message}`);
+  }
+}
+
+async function resetKeywordTopic(keywordId, keyword) {
+  const input = document.getElementById(keywordTopicInputId(keywordId));
+  if (input) input.value = '';
+  await saveKeywordTopic(keywordId, keyword);
+}
+
+async function saveKeywordBucket(keywordId, keyword) {
+  const input = document.getElementById(keywordBucketInputId(keywordId));
+  const keyword_bucket = input ? input.value.trim() : '';
+  try {
+    const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/bucket`;
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword, keyword_bucket })
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    await loadData({ preserveSelection: true });
+    refresh();
+  } catch (e) {
+    window.alert(`类目更新失败：${e.message}`);
+  }
+}
+
+async function resetKeywordBucket(keywordId, keyword) {
+  const input = document.getElementById(keywordBucketInputId(keywordId));
+  if (input) input.value = '未分类';
+  await saveKeywordBucket(keywordId, keyword);
+}
+
+// ── 移动端侧栏抽屉 ───────────────────────────────────────
+function isMobile() {
+  return window.innerWidth <= 768;
+}
+
+function isSidebarOpen() {
+  return document.querySelector('.col-left')?.classList.contains('mobile-open');
+}
+
+function toggleMobileSidebar() {
+  if (isSidebarOpen()) { closeMobileSidebar(); }
+  else { openMobileSidebar(); }
+}
+
+function openMobileSidebar() {
+  const col = document.querySelector('.col-left');
+  const overlay = document.querySelector('.mobile-overlay');
+  if (col) col.classList.add('mobile-open');
+  if (overlay) overlay.classList.add('show');
+}
+
+function closeMobileSidebar() {
+  const col = document.querySelector('.col-left');
+  const overlay = document.querySelector('.mobile-overlay');
+  if (col) col.classList.remove('mobile-open');
+  if (overlay) overlay.classList.remove('show');
+}
+
+function collapseLeftOnMobile() {
+  if (!isMobile()) return;
+  closeMobileSidebar();
+}
+
+// ── 关键词管理（第三视角） ────────────────────────────────
+const KM_API = '/api/keyword-manage';
+const REFRESH_ALL_STATUS_URL = '/api/refresh-all/status';
+const REFRESH_ALL_LAUNCH_URL = '/api/refresh-all';
+const REFRESH_ALL_CANCEL_URL = '/api/refresh-all/cancel';
+const REFRESH_ALL_RESUME_URL = '/api/refresh-all/resume';
+const KM_REFRESH_BATCH_STORAGE_KEY = 'km-refresh-batch-state-v2';
+const KM_REFRESH_LEGACY_STORAGE_KEY = 'km-refresh-demo-state-v1';
+const KM_REFRESH_DONE_HOLD_MS = 8000;
+const KM_REFRESH_POLL_MS = 3000;
+let KM_DATA = null;
+let kmLoading = false;
+let kmLoaded = false;
+let kmFilter = '';
+let kmEditGroupId = null;
+let kmActiveKeywordId = null;
+let kmActiveSettingsGroupId = null;
+const kmCollapsedGroups = new Set();
+let kmRefreshInlineTimer = null;
+let kmCancelBatchPending = false;
+let kmActiveBatchId = null;
+let kmActiveBatchSnapshot = null;
+let kmActiveBatchFinishedAt = 0;
+let kmLastProcessedCount = -1;
+const kmRefreshedKeywords = new Set();
+
+function kmShowToast(msg, ok = true) {
+  const el = document.getElementById('kmToast');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.background = ok ? '#111' : '#dc2626';
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function kmClearLegacyDemoState() {
+  try {
+    localStorage.removeItem(KM_REFRESH_LEGACY_STORAGE_KEY);
+  } catch (_) {}
+}
+
+function kmReadBatchState() {
+  try {
+    const raw = localStorage.getItem(KM_REFRESH_BATCH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      batch_id: parsed.batch_id || null,
+      snapshot: parsed.snapshot || null,
+      finished_at: Number(parsed.finished_at || 0),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function kmWriteBatchState(batchId, snapshot, finishedAt = 0) {
+  try {
+    localStorage.setItem(KM_REFRESH_BATCH_STORAGE_KEY, JSON.stringify({
+      batch_id: batchId,
+      snapshot,
+      finished_at: finishedAt,
+    }));
+  } catch (_) {}
+}
+
+function kmClearBatchState() {
+  try {
+    localStorage.removeItem(KM_REFRESH_BATCH_STORAGE_KEY);
+  } catch (_) {}
+  kmActiveBatchId = null;
+  kmActiveBatchSnapshot = null;
+  kmActiveBatchFinishedAt = 0;
+  kmLastProcessedCount = -1;
+  kmCancelBatchPending = false;
+  kmRefreshedKeywords.clear();
+}
+
+function kmAdoptBatchSnapshot(snapshot, { persist = true, finishedAt = null } = {}) {
+  if (!snapshot) return;
+  const batchId = snapshot.batch_id || kmActiveBatchId;
+  if (batchId) kmActiveBatchId = batchId;
+  kmActiveBatchSnapshot = snapshot;
+  const isFinished = !!snapshot.is_finished;
+  if (isFinished) {
+    if (finishedAt != null) {
+      kmActiveBatchFinishedAt = finishedAt;
+    } else if (!kmActiveBatchFinishedAt) {
+      kmActiveBatchFinishedAt = Date.now();
+    }
+  } else {
+    kmActiveBatchFinishedAt = 0;
+  }
+  if (persist) {
+    kmWriteBatchState(kmActiveBatchId, snapshot, kmActiveBatchFinishedAt);
+  }
+}
+
+function kmBuildRefreshSnapshot(now = Date.now()) {
+  if ((!kmActiveBatchId || !kmActiveBatchSnapshot) && typeof localStorage !== 'undefined') {
+    const persisted = kmReadBatchState();
+    if (persisted && persisted.batch_id && persisted.snapshot) {
+      kmActiveBatchId = persisted.batch_id;
+      kmActiveBatchSnapshot = persisted.snapshot;
+      kmActiveBatchFinishedAt = persisted.finished_at || 0;
+    }
+  }
+
+  if (!kmActiveBatchId || !kmActiveBatchSnapshot) {
+    return { phase: 'idle' };
+  }
+
+  const s = kmActiveBatchSnapshot;
+  const total = Number(s.total || 0);
+  const success = Number(s.success_count || 0);
+  const failed = Number(s.failed_count || 0);
+  const processed = Number(
+    s.processed_count != null ? s.processed_count : (success + failed)
+  );
+  const bounded = total ? Math.min(processed, total) : processed;
+  const percent = total ? Math.max(2, Math.round((bounded / total) * 100)) : 4;
+  const isActive = !!s.is_active;
+  const isFinished = !!s.is_finished;
+  const status = s.status || (isActive ? 'running' : 'unknown');
+
+  if (isActive) {
+    return {
+      phase: 'running',
+      status,
+      total,
+      completed: bounded,
+      currentKeyword: s.current_keyword || '',
+      attempt: s.current_attempt || null,
+      percent,
+      success_count: success,
+      failed_count: failed,
+      pending_count: Number(s.pending_count || 0),
+      cancel_requested: !!s.cancel_requested,
+      batch_id: s.batch_id || kmActiveBatchId,
+    };
+  }
+
+  if (isFinished) {
+    return {
+      phase: 'done',
+      status,
+      total,
+      completed: total ? Math.min(bounded, total) : bounded,
+      currentKeyword: s.current_keyword || '',
+      percent: status === 'cancelled' ? percent : 100,
+      success_count: success,
+      failed_count: failed,
+      pending_count: Number(s.pending_count || 0),
+      cancel_requested: !!s.cancel_requested,
+      cancel_reason: s.cancel_reason || '',
+      batch_id: s.batch_id || kmActiveBatchId,
+      finished_at: s.finished_at || null,
+    };
+  }
+
+  return { phase: 'idle' };
+}
+
+function kmStartBatchPolling() {
+  if (kmRefreshInlineTimer) return;
+  kmRefreshInlineTimer = window.setInterval(kmPollBatchStatus, KM_REFRESH_POLL_MS);
+}
+
+function kmStopBatchPolling() {
+  if (kmRefreshInlineTimer) {
+    window.clearInterval(kmRefreshInlineTimer);
+    kmRefreshInlineTimer = null;
+  }
+}
+
+async function kmPollBatchStatus() {
+  if (!kmActiveBatchId) {
+    kmStopBatchPolling();
+    return;
+  }
+  const url = `${REFRESH_ALL_STATUS_URL}?batch_id=${encodeURIComponent(kmActiveBatchId)}`;
+  try {
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data || data.error) {
+      if (data && data.error === 'batch not found') {
+        kmClearBatchState();
+        kmSyncInlineRefreshUi();
+      }
+      return;
+    }
+    const wasActive = kmActiveBatchSnapshot && kmActiveBatchSnapshot.is_active;
+    const prevProcessed = kmLastProcessedCount;
+    kmAdoptBatchSnapshot(data, { persist: true });
+    if (data.cancel_requested || data.is_finished) {
+      kmCancelBatchPending = false;
+    }
+    kmSyncInlineRefreshUi();
+
+    // 逐词增量刷新：processed_count 增长时更新已刷新词集合并增量拉取数据
+    const curProcessed = Number(data.processed_count || 0);
+    if (data.completed_keywords && Array.isArray(data.completed_keywords)) {
+      data.completed_keywords.forEach(kw => kmRefreshedKeywords.add(kw));
+    }
+    if (prevProcessed >= 0 && curProcessed > prevProcessed && !data.is_finished) {
+      if (mode === 'keyword' || mode === 'account') {
+        kmIncrementalListRefresh();
+      }
+      if (mode === 'articleList' && window.alRefresh) {
+        window.alRefresh();
+      }
+    }
+    kmLastProcessedCount = curProcessed;
+
+    if (data.is_finished && wasActive) {
+      kmInitRefreshHistoryBtn();
+      setTimeout(() => {
+        kmRefreshMonitorWorkbench();
+        if (window.alRefresh) window.alRefresh();
+      }, 1500);
+    }
+  } catch (e) {
+    console.warn('refresh-all status poll failed', e);
+  }
+}
+
+async function kmBootstrapBatchStatus() {
+  kmClearLegacyDemoState();
+  // 只查一次：当前有没有活跃批次
+  // 有活跃批次 → 接管它（不管是本地记住的还是后端在跑的）
+  // 没有活跃批次 → 清掉旧状态，不显示进度条
+  // 逻辑：如果调度器后台已经跑完了新批次，说明用户已经不在页面上盯着了，
+  //       旧批次的进度条没有意义，直接清掉。只有正在跑的才需要显示。
+  try {
+    const resp = await fetch(REFRESH_ALL_STATUS_URL, { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && data.batch_id && data.is_active) {
+      kmAdoptBatchSnapshot(data, { persist: true });
+      kmLastProcessedCount = Number(data.processed_count || 0);
+      if (Array.isArray(data.completed_keywords)) {
+        data.completed_keywords.forEach(kw => kmRefreshedKeywords.add(kw));
+      }
+    } else {
+      // 没有活跃批次：如果本地记住的那个批次还没查过完成状态，查一次
+      const persisted = kmReadBatchState();
+      if (persisted && persisted.batch_id && persisted.snapshot && !persisted.snapshot.is_finished) {
+        try {
+          const batchResp = await fetch(
+            `${REFRESH_ALL_STATUS_URL}?batch_id=${encodeURIComponent(persisted.batch_id)}`,
+            { cache: 'no-store' }
+          );
+          if (batchResp.ok) {
+            const batchData = await batchResp.json();
+            if (batchData && !batchData.error && batchData.is_finished) {
+              kmAdoptBatchSnapshot(batchData, { persist: true, finishedAt: Date.now() });
+              kmLastProcessedCount = Number(batchData.processed_count || 0);
+              if (Array.isArray(batchData.completed_keywords)) {
+                batchData.completed_keywords.forEach(kw => kmRefreshedKeywords.add(kw));
+              }
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+      kmClearBatchState();
+    }
+  } catch (_) {}
+}
+
+function kmSyncInlineRefreshUi() {
+  const slot = document.getElementById('keywordRefreshSlot');
+  const trigger = document.getElementById('kwRefreshTrigger');
+  const progress = document.getElementById('kwInlineProgress');
+  const label = document.getElementById('kwInlineProgressLabel');
+  const bar = document.getElementById('kwInlineProgressBar');
+  const meta = document.getElementById('kwInlineProgressMeta');
+  const cancelBtn = document.getElementById('kwProgressCancel');
+  if (!slot || !trigger || !progress || !label || !bar || !meta || !cancelBtn) return;
+
+  const showSlot = mode === 'keyword';
+  slot.classList.toggle('active', showSlot);
+  if (!showSlot) {
+    kmStopBatchPolling();
+    return;
+  }
+
+  const snapshot = kmBuildRefreshSnapshot();
+  const isRunning = snapshot.phase === 'running';
+  const hasResult = snapshot.phase === 'done';
+  const isBusy = isRunning || hasResult;
+  const cancelRequested = !!snapshot.cancel_requested || kmCancelBatchPending;
+  // 已结束的旧批次不应永久遮住“刷新全部关键词”；此前取消后的状态
+  // 会让用户误以为按钮失效，必须先点“知道了”才能再次刷新。
+  trigger.classList.toggle('hidden', isRunning);
+  trigger.textContent = hasResult ? '再次刷新全部关键词' : '刷新全部关键词';
+  progress.classList.toggle('active', isBusy);
+  progress.classList.toggle('is-done', snapshot.phase === 'done');
+  progress.classList.toggle('is-cancelled', snapshot.status === 'cancelled');
+  cancelBtn.classList.toggle('visible', isRunning);
+  cancelBtn.disabled = cancelRequested;
+  cancelBtn.classList.toggle('is-pending', cancelRequested);
+  cancelBtn.textContent = cancelRequested ? '停止中…' : '停止';
+
+  if (!isBusy) {
+    label.textContent = '准备中…';
+    bar.style.width = '0%';
+    meta.textContent = '0 / 0';
+    kmStopBatchPolling();
+    return;
+  }
+
+  if (snapshot.phase === 'done') {
+    const failedText = snapshot.failed_count > 0 ? ` · 失败 ${snapshot.failed_count}` : '';
+    const finishedText = snapshot.finished_at ? ` · ${kmFormatFinishedTime(snapshot.finished_at)}` : '';
+    if (snapshot.status === 'failed') {
+      label.textContent = `批量刷新失败${finishedText}`;
+    } else if (snapshot.status === 'cancelled') {
+      const reason = snapshot.cancel_reason ? `（${snapshot.cancel_reason}）` : '';
+      label.textContent = `停止成功${reason} · 成功 ${snapshot.success_count}${failedText}${finishedText}`;
+    } else if (snapshot.status === 'completed_with_failures') {
+      label.textContent = `全部完成（含失败）· 成功 ${snapshot.success_count}${failedText}${finishedText}`;
+    } else {
+      label.textContent = `全部完成 · 成功 ${snapshot.success_count}${failedText}${finishedText}`;
+    }
+  } else {
+    if (cancelRequested) {
+      label.textContent = '停止中，等待当前关键词结束…';
+    } else {
+      const cur = snapshot.currentKeyword
+        ? `正在刷新：${snapshot.currentKeyword}`
+        : '正在准备下一个关键词…';
+      const attempt = snapshot.attempt ? ` · 第 ${snapshot.attempt} 次尝试` : '';
+      const stageLabel = snapshot.status === 'starting' ? '正在启动批量刷新…' : cur;
+      label.textContent = stageLabel + (snapshot.status === 'starting' ? '' : attempt);
+    }
+  }
+  bar.style.width = `${snapshot.percent}%`;
+  meta.textContent = `${snapshot.completed} / ${snapshot.total}`;
+
+  if (isRunning) {
+    kmStartBatchPolling();
+  } else {
+    kmStopBatchPolling();
+  }
+}
+
+async function kmProgressCancel() {
+  if (!kmActiveBatchId || kmCancelBatchPending) return;
+  const snapshot = kmBuildRefreshSnapshot();
+  if (snapshot.phase !== 'running') return;
+  const modal = document.getElementById('kmCancelConfirmModal');
+  if (modal) modal.classList.add('open');
+}
+
+function kmCloseCancelConfirm() {
+  const modal = document.getElementById('kmCancelConfirmModal');
+  if (modal) modal.classList.remove('open');
+}
+
+async function kmConfirmCancelAndClose() {
+  const btn = document.getElementById('kmCancelConfirmBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '停止中…';
+  }
+  kmCloseCancelConfirm();
+  if (!kmActiveBatchId || kmCancelBatchPending) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '确定停止';
+    }
+    return;
+  }
+  kmCancelBatchPending = true;
+  kmSyncInlineRefreshUi();
+  try {
+    const data = await kmApiFetch(REFRESH_ALL_CANCEL_URL, {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: kmActiveBatchId }),
+    });
+    if (data && data.batch) {
+      const finishedAt = data.batch.is_finished ? Date.now() : 0;
+      kmAdoptBatchSnapshot(data.batch, { persist: true, finishedAt });
+    }
+    kmCancelBatchPending = false;
+    kmSyncInlineRefreshUi();
+    kmShowToast(data.message || '停止信号已发送，当前关键词跑完后停止');
+  } catch (e) {
+    kmCancelBatchPending = false;
+    kmSyncInlineRefreshUi();
+    kmShowToast('停止失败：' + e.message, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '确定停止';
+    }
+  }
+}
+
+// ── 刷新历史 ────────────────────────────────────────────
+const REFRESH_HISTORY_URL = '/api/refresh-all/history';
+let kmRefreshHistoryLoaded = false;
+
+async function kmFetchRefreshHistory() {
+  try {
+    const r = await fetch(REFRESH_HISTORY_URL);
+    const data = await r.json();
+    if (!Array.isArray(data)) return [];
+    return data;
+  } catch (e) {
+    console.warn('fetch refresh history failed', e);
+    return [];
+  }
+}
+
+function kmFormatBatchStatus(status) {
+  if (status === 'completed') return { label: '成功', cls: 'ok' };
+  if (status === 'completed_with_failures') return { label: '部分失败', cls: 'warn' };
+  if (status === 'cancelled') return { label: '已停止', cls: 'warn' };
+  if (status === 'failed') return { label: '失败', cls: 'fail' };
+  if (status === 'running' || status === 'starting') return { label: '进行中', cls: 'running' };
+  return { label: status || '未知', cls: 'unknown' };
+}
+
+function kmFormatHistoryTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function kmFormatFinishedTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function kmFormatDuration(seconds) {
+  if (!seconds || seconds < 0) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h${m}m`;
+  return `${m}m`;
+}
+
+function kmCalcDuration(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) return '';
+  const s = new Date(startedAt).getTime();
+  const f = new Date(finishedAt).getTime();
+  if (isNaN(s) || isNaN(f) || f < s) return '';
+  return kmFormatDuration(Math.round((f - s) / 1000));
+}
+
+function kmCalcGap(prevFinishedAt, currStartedAt) {
+  if (!prevFinishedAt || !currStartedAt) return '';
+  const p = new Date(prevFinishedAt).getTime();
+  const c = new Date(currStartedAt).getTime();
+  if (isNaN(p) || isNaN(c) || c < p) return '';
+  return kmFormatDuration(Math.round((c - p) / 1000));
+}
+
+function kmRenderRefreshHistory(history) {
+  const list = document.getElementById('kmRefreshHistoryList');
+  if (!list) return;
+  if (!history.length) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:#999">暂无刷新记录</div>';
+    return;
+  }
+  list.innerHTML = history.map((item, i) => {
+    const st = kmFormatBatchStatus(item.status);
+    const reasons = (item.failure_reasons || []);
+    const failedKws = (item.failed_keywords || []);
+    const MAX_FAILED_DISPLAY = 5;
+    const failedKwsHtml = failedKws.length
+      ? (() => {
+          const shown = failedKws.slice(0, MAX_FAILED_DISPLAY);
+          const remaining = failedKws.length - shown.length;
+          let html = shown.map(f => `<div class="km-history-failed-kw">❌ ${escapeHtml(f.keyword)} — ${escapeHtml(f.reason)}，已跳过</div>`).join('');
+          if (remaining > 0) {
+            html += `<div class="km-history-failed-more">还有 ${remaining} 个关键词已跳过</div>`;
+          }
+          return `<div class="km-history-failed-keywords">${html}</div>`;
+        })()
+      : '';
+    const reasonsHtml = reasons.length
+      ? `<div class="km-history-reasons">${reasons.map(r => `<span class="km-history-reason">❌ ${escapeHtml(r)}</span>`).join('')}${failedKwsHtml}</div>`
+      : '';
+    const duration = kmCalcDuration(item.started_at, item.finished_at);
+    const prev = history[i + 1];
+    const gap = prev ? kmCalcGap(prev.finished_at, item.started_at) : '';
+    const isManual = item.source !== 'scheduler';
+    const sourceLabel = isManual ? '手动刷新' : '自动刷新';
+    const metaParts = [];
+    if (duration) metaParts.push(`耗时 ${duration}`);
+    if (gap) metaParts.push(`距上次 ${gap}`);
+    metaParts.push(sourceLabel);
+    if (item.provider) {
+      metaParts.push(
+        item.provider === 'tikhub_xhs'
+          ? 'TikHub'
+          : item.provider === 'legacy'
+            ? '旧版任务（不可恢复）'
+            : item.provider
+      );
+    }
+    if (item.autofix && item.autofix.status) {
+      const fixText = item.autofix.status === 'finished'
+        ? 'Claude 自动诊断已完成'
+        : item.autofix.status === 'running'
+          ? 'Claude 自动诊断中'
+          : `Claude 自动诊断：${item.autofix.status}`;
+      metaParts.push(fixText);
+    }
+    const metaHtml = `<div class="km-history-meta${isManual ? ' km-history-meta-manual' : ''}">${metaParts.join(' · ')}</div>`;
+    const resumeHtml = item.resumable
+      ? `<button class="km-history-resume" type="button" data-batch-id="${escapeHtml(item.batch_id)}">恢复未完成部分</button>`
+      : '';
+    return `<div class="km-history-row ${st.cls}">
+      <div class="km-history-row-head">
+        <span class="km-history-status km-history-status-${st.cls}">${st.label}</span>
+        <span class="km-history-time">${kmFormatHistoryTime(item.started_at)}</span>
+        <span class="km-history-counts">${item.success_count}/${item.total} 成功${item.failed_count ? ` · ${item.failed_count} 失败` : ''}</span>
+        ${resumeHtml}
+      </div>
+      ${metaHtml}
+      ${reasonsHtml}
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.km-history-resume[data-batch-id]').forEach((btn) => {
+    btn.addEventListener('click', () => kmResumeBatch(btn.dataset.batchId || ''));
+  });
+}
+
+function kmUpdateHistoryBtnState(history) {
+  const btn = document.getElementById('kwRefreshHistoryBtn');
+  if (!btn) return;
+  btn.classList.remove('has-failure', 'has-warn');
+  const last = history && history[0];
+  if (!last) return;
+  if (last.status === 'failed') btn.classList.add('has-failure');
+  else if (last.status === 'completed_with_failures') btn.classList.add('has-warn');
+}
+
+async function kmOpenRefreshHistory() {
+  const modal = document.getElementById('kmRefreshHistoryModal');
+  if (!modal) return;
+  modal.classList.add('open');
+  const list = document.getElementById('kmRefreshHistoryList');
+  if (list) list.innerHTML = '<div style="padding:24px;text-align:center;color:#999">加载中…</div>';
+  const history = await kmFetchRefreshHistory();
+  kmRenderRefreshHistory(history);
+}
+
+async function kmResumeBatch(batchId) {
+  if (!batchId) return;
+  try {
+    const data = await kmApiFetch(REFRESH_ALL_RESUME_URL, {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: batchId }),
+    });
+    kmCancelBatchPending = false;
+    kmAdoptBatchSnapshot(data, { persist: true, finishedAt: 0 });
+    kmSyncInlineRefreshUi();
+    kmStartBatchPolling();
+    kmShowToast('已恢复 TikHub 刷新，将继续未完成关键词');
+    const history = await kmFetchRefreshHistory();
+    kmRenderRefreshHistory(history);
+  } catch (e) {
+    kmShowToast('恢复失败：' + e.message, false);
+  }
+}
+
+function kmCloseRefreshHistory() {
+  const modal = document.getElementById('kmRefreshHistoryModal');
+  if (modal) modal.classList.remove('open');
+}
+
+async function kmInitRefreshHistoryBtn() {
+  const history = await kmFetchRefreshHistory();
+  kmUpdateHistoryBtnState(history);
+  kmRefreshHistoryLoaded = true;
+}
+
+async function kmApiFetch(url, opts = {}) {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+async function kmEnsureDataLoaded(options = {}) {
+  const silent = !!options.silent;
+  if (kmLoading) return false;
+  if (kmLoaded && KM_DATA) return true;
+  kmLoading = true;
+  try {
+    KM_DATA = await kmApiFetch(KM_API);
+    kmLoaded = true;
+    return true;
+  } catch (e) {
+    if (!silent) {
+      const wrap = document.getElementById('kmGroupsWrap');
+      if (wrap) wrap.innerHTML = `<div class="km-loading" style="color:#991b1b">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+    return false;
+  } finally {
+    kmLoading = false;
+  }
+}
+
+async function loadKeywordManageView() {
+  const ok = await kmEnsureDataLoaded();
+  if (ok) renderKeywordManageView();
+}
+
+async function reloadKeywordManageData() {
+  kmLoaded = false;
+  const ok = await kmEnsureDataLoaded();
+  if (ok) {
+    renderKeywordManageView();
+    if (document.getElementById('kmSettingsModal')?.classList.contains('open')) {
+      kmRenderSettingsGroups();
+    }
+  }
+}
+
+async function kmRefreshMonitorWorkbench() {
+  const ok = await loadData({ preserveSelection: true, skipManageReload: true });
+  if (ok && mode !== 'keywordManage') refresh();
+}
+
+async function kmIncrementalListRefresh() {
+  const ok = await loadData({ preserveSelection: true, skipManageReload: true });
+  if (ok && mode !== 'keywordManage') renderList();
+}
+
+// ── 刷新全部关键词（确认选择 → 左侧栏内联进度） ─────
+function kmBatchCheckboxes() {
+  const list = document.getElementById('kmRefreshKeywordList');
+  return list ? list.querySelectorAll('input[type="checkbox"]') : [];
+}
+
+function kmBatchSyncSelectedCount() {
+  const summary = document.getElementById('kmRefreshSelectedCount');
+  if (!summary) return;
+  const boxes = Array.from(kmBatchCheckboxes());
+  const total = boxes.length;
+  let checked = 0;
+  boxes.forEach(cb => { if (cb.checked) checked += 1; });
+  summary.textContent = total > 0
+    ? `已选 ${checked} / ${total}`
+    : '加载中…';
+}
+
+function kmBatchApplyChecked(checked) {
+  kmBatchCheckboxes().forEach(cb => { cb.checked = checked; });
+  kmBatchSyncSelectedCount();
+}
+
+function kmBatchSelectAll() {
+  kmBatchApplyChecked(true);
+}
+
+function kmBatchSelectNone() {
+  kmBatchApplyChecked(false);
+}
+
+function kmBatchSelectInvert() {
+  kmBatchCheckboxes().forEach(cb => { cb.checked = !cb.checked; });
+  kmBatchSyncSelectedCount();
+}
+
+function kmProgressRestart() {
+  kmClearBatchState();
+  kmStopBatchPolling();
+  kmSyncInlineRefreshUi();
+  kmOpenRefreshModal();
+}
+
+function kmProgressAck() {
+  kmClearBatchState();
+  kmStopBatchPolling();
+  kmSyncInlineRefreshUi();
+  kmInitRefreshHistoryBtn();
+}
+
+function kmBindRefreshUiEvents() {
+  const handlers = {
+    kwRefreshTrigger: () => kmOpenRefreshModal(),
+    kwRefreshHistoryBtn: () => kmOpenRefreshHistory(),
+    kwProgressCancel: () => kmProgressCancel(),
+    kwProgressRestart: () => kmProgressAck(),
+    kmBatchSelectAll: () => kmBatchSelectAll(),
+    kmBatchSelectNone: () => kmBatchSelectNone(),
+    kmBatchSelectInvert: () => kmBatchSelectInvert(),
+    kmRefreshModalClose: () => kmCloseRefreshModal(),
+    kmRefreshCancelBtn: () => kmCloseRefreshModal(),
+    kmRefreshConfirmBtn: () => kmConfirmRefresh(),
+    kmRefreshHistoryClose: () => kmCloseRefreshHistory(),
+    kmCancelConfirmDismiss: () => kmCloseCancelConfirm(),
+    kmCancelConfirmBtn: () => kmConfirmCancelAndClose(),
+  };
+  Object.entries(handlers).forEach(([id, handler]) => {
+    document.getElementById(id)?.addEventListener('click', handler);
+  });
+}
+
+async function kmOpenRefreshModal() {
+  const ok = await kmEnsureDataLoaded({ silent: true });
+  if (!ok || !KM_DATA) {
+    kmShowToast('关键词列表加载失败', false);
+    return;
+  }
+  const list = document.getElementById('kmRefreshKeywordList');
+  if (!list) return;
+  const groups = KM_DATA.groups || [];
+  let totalRows = 0;
+  const html = groups.map((group) => {
+    const keywordsList = Array.from(group.keywords || []);
+    const keywords = keywordsList.map(kw => {
+      return `<div class="km-refresh-row" data-kid="${escapeHtml(kw.keyword_id)}">
+        <label class="km-refresh-check">
+          <input type="checkbox" value="${escapeHtml(kw.keyword_id)}" data-text="${escapeHtml(kw.keyword_text)}" checked />
+          <span class="km-refresh-check-text">刷新</span>
+        </label>
+        <span class="km-refresh-text" title="${escapeHtml(kw.keyword_text)}">${escapeHtml(kw.keyword_text)}</span>
+        <button class="km-refresh-delete" data-kid="${escapeHtml(kw.keyword_id)}" data-text="${escapeHtml(kw.keyword_text)}" onclick="kmRefreshDeleteKeyword(this)" title="删除">删除</button>
+      </div>`;
+    }).join('');
+    totalRows += keywordsList.length;
+    const addRow = `<div class="km-refresh-add-row">
+      <input class="km-refresh-add-input" type="text" placeholder="+ 新增关键词" data-group="${escapeHtml(group.group_id)}" onkeydown="if(event.key==='Enter'){event.preventDefault();kmRefreshAddKeyword(this)}" />
+      <button class="km-refresh-add-btn" onclick="kmRefreshAddKeyword(this.previousElementSibling)">添加</button>
+    </div>`;
+    return `<div class="km-refresh-group" data-group="${escapeHtml(group.group_id)}">
+      <div class="km-refresh-group-header">
+        <span class="km-refresh-group-label">${escapeHtml(group.label)}</span>
+        <span class="km-refresh-group-count">${keywordsList.length} 词</span>
+      </div>
+      <div class="km-refresh-group-body">
+        ${keywords || '<div class="km-refresh-empty">暂无关键词</div>'}
+        ${addRow}
+      </div>
+    </div>`;
+  }).join('');
+  list.innerHTML = html;
+  const renderedRows = list.querySelectorAll('.km-refresh-row').length;
+  if (renderedRows !== totalRows) {
+    console.warn(`[kmOpenRefreshModal] 渲染异常: 期望 ${totalRows} 行, 实际 ${renderedRows} 行, groups=${groups.length}`);
+  }
+  console.info(`[kmOpenRefreshModal] groups=${groups.length} totalRows=${totalRows} rendered=${renderedRows} boot=${window.__KM_BOOT_ID || '?'}`);
+  list.onchange = (event) => {
+    if (event.target && event.target.matches('input[type="checkbox"]')) {
+      kmBatchSyncSelectedCount();
+    }
+  };
+  document.getElementById('kmRefreshModal')?.classList.add('open');
+  kmBatchSyncSelectedCount();
+}
+
+function kmCloseRefreshModal() {
+  document.getElementById('kmRefreshModal')?.classList.remove('open');
+}
+
+async function kmConfirmRefresh() {
+  const list = document.getElementById('kmRefreshKeywordList');
+  if (!list) return;
+  const checkboxes = list.querySelectorAll('input[type="checkbox"]:checked');
+  const keywordIds = Array.from(checkboxes).map(cb => cb.value).filter(Boolean);
+  if (!keywordIds.length) {
+    kmShowToast('未选择任何关键词', false);
+    return;
+  }
+  kmCloseRefreshModal();
+  try {
+    const resp = await fetch(REFRESH_ALL_LAUNCH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword_ids: keywordIds }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 409 && data && data.batch) {
+      kmCancelBatchPending = false;
+      const finishedAt = data.batch.is_finished ? Date.now() : 0;
+      kmAdoptBatchSnapshot(data.batch, { persist: true, finishedAt });
+      kmSyncInlineRefreshUi();
+      const batchState = data.batch.status || '';
+      if (batchState === 'single_refresh_running') {
+        const cur = data.batch.current_keyword || '某关键词';
+        kmShowToast(`当前正在单词刷新「${cur}」，请等待完成后再启动批量刷新`);
+      } else {
+        kmShowToast('已有批量刷新在运行中');
+      }
+      return;
+    }
+    if (!resp.ok) {
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    kmCancelBatchPending = false;
+    kmAdoptBatchSnapshot(data, { persist: true, finishedAt: 0 });
+    kmSyncInlineRefreshUi();
+    kmShowToast(`已启动批量刷新 · 共 ${keywordIds.length} 个关键词`);
+  } catch (e) {
+    kmCancelBatchPending = false;
+    kmShowToast('启动失败：' + e.message, false);
+  }
+}
+
+const KM_GROUP_COLORS = [
+  { bg:'#eef2ff', border:'#c7d2fe', header:'#4f46e5' },
+  { bg:'#fdf2f8', border:'#f9a8d4', header:'#db2777' },
+  { bg:'#f0fdf4', border:'#86efac', header:'#16a34a' },
+  { bg:'#fff7ed', border:'#fdba74', header:'#ea580c' },
+  { bg:'#f0f9ff', border:'#7dd3fc', header:'#0284c7' },
+  { bg:'#fefce8', border:'#fde047', header:'#ca8a04' },
+  { bg:'#fdf4ff', border:'#e879f9', header:'#a21caf' },
+  { bg:'#f0fdfa', border:'#5eead4', header:'#0d9488' },
+];
+
+function renderKeywordManageView() {
+  if (!KM_DATA) return;
+  kmRenderStats();
+  kmRenderBatchAddGroups();
+  const wrap = document.getElementById('kmGroupsWrap');
+  if (!wrap) return;
+  if (!KM_DATA.groups.length) {
+    wrap.innerHTML = `<div class="km-empty-group">暂无分组，请先在刷新弹窗或接口里创建一个分组。</div>`;
+    return;
+  }
+  wrap.innerHTML = KM_DATA.groups.map(group => kmRenderManageGroup(group)).join('');
+}
+
+function kmRenderBatchAddGroups() {
+  const select = document.getElementById('kmBatchAddGroup');
+  if (!select || !KM_DATA) return;
+  const groups = KM_DATA.groups || [];
+  select.innerHTML = groups.map(group => `
+    <option value="${escapeHtml(group.group_id)}">${escapeHtml(group.label || '未命名分组')}</option>
+  `).join('');
+}
+
+function kmRenderManageGroup(group) {
+  const keywords = group.keywords || [];
+  const rows = keywords.length
+    ? keywords.map(kw => kmRenderManageKeywordRow(group, kw)).join('')
+    : `<div class="km-empty-group compact">这个分组还没有关键词，可以先在上方批量添加。</div>`;
+  return `<section class="km-manage-group" id="km-main-group-${escapeHtml(group.group_id)}">
+    <div class="km-manage-group-head">
+      <div>
+        <div class="km-manage-group-title">${escapeHtml(group.label || '未命名分组')}</div>
+        <div class="km-manage-group-meta">${keywords.length} 个词${group.ranked_count ? ` · ${group.ranked_count} 个最近有排名` : ''}</div>
+      </div>
+      <button class="km-btn km-btn-ghost km-btn-sm" data-label="${escapeHtml(group.label || '')}" onclick="kmOpenRenameGroupModal('${escapeHtml(group.group_id)}', this.dataset.label)">改分组名</button>
+    </div>
+    <div class="km-manage-table">
+      ${rows}
+    </div>
+  </section>`;
+}
+
+function kmRenderManageKeywordRow(group, kw) {
+  const facts = [];
+  if (kw.today_best) facts.push(`最新第${kw.today_best}`);
+  if (kw.coverage_days) facts.push(`${kw.coverage_days} 天在榜`);
+  if (kw.article_count) facts.push(`${kw.article_count} 篇笔记`);
+  const factText = facts.length ? facts.join(' · ') : '暂无历史数据';
+  return `<div class="km-manage-row" id="kmrow-${escapeHtml(kw.keyword_id)}" data-kid="${escapeHtml(kw.keyword_id)}">
+    <div class="km-manage-keyword-main">
+      <input class="km-manage-keyword-input" type="text" value="${escapeHtml(kw.keyword_text)}" data-kid="${escapeHtml(kw.keyword_id)}" data-last-saved="${escapeHtml(kw.keyword_text)}" onblur="kmSaveKeywordText(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" />
+      <div class="km-manage-keyword-sub">${escapeHtml(group.label || '')} · ${escapeHtml(factText)}</div>
+    </div>
+    <div class="km-manage-note-cell">
+      <input id="kmnote-${escapeHtml(kw.keyword_id)}" class="km-note-input km-manage-note-input" type="text" value="${escapeHtml(kw.note || '')}" placeholder="点这里写备注" data-kid="${escapeHtml(kw.keyword_id)}" data-last-saved="${escapeHtml(kw.note || '')}" data-dirty="false" oninput="kmMarkNoteDirty(this)" onblur="kmSaveNote(this)" />
+      <div class="km-note-status" id="kmnote-status-${escapeHtml(kw.keyword_id)}"></div>
+    </div>
+    <div class="km-manage-actions" id="kmdelete-${escapeHtml(kw.keyword_id)}">
+      <button class="km-btn km-btn-ghost km-btn-sm" onclick="startKeywordRefresh(event, '${escapeHtml(kw.keyword_id)}', ${jsq(kw.keyword_text)})" id="refresh-btn-${escapeHtml(kw.keyword_id)}">刷新</button>
+      <button class="km-row-danger" data-kid="${escapeHtml(kw.keyword_id)}" data-text="${escapeHtml(kw.keyword_text)}" onclick="kmAskDeleteKeywordInline(this)">删除</button>
+    </div>
+  </div>`;
+}
+
+function kmParseBatchAddInput() {
+  const input = document.getElementById('kmBatchAddInput');
+  if (!input) return [];
+  const seen = new Set();
+  return input.value
+    .split(/\r?\n|,|，|;|；/)
+    .map(text => text.trim())
+    .filter(text => {
+      if (!text || seen.has(text)) return false;
+      seen.add(text);
+      return true;
+    });
+}
+
+function kmExistingKeywordTexts() {
+  const texts = new Set();
+  (KM_DATA?.groups || []).forEach(group => {
+    (group.keywords || []).forEach(kw => texts.add(String(kw.keyword_text || '').trim()));
+  });
+  return texts;
+}
+
+async function kmBatchAddKeywords(andRefresh = false) {
+  if (!KM_DATA) return;
+  const groupSelect = document.getElementById('kmBatchAddGroup');
+  const input = document.getElementById('kmBatchAddInput');
+  const groupId = groupSelect?.value || (KM_DATA.groups?.[0]?.group_id || '');
+  if (!groupId) {
+    kmShowToast('请先选择分组', false);
+    return;
+  }
+  const existing = kmExistingKeywordTexts();
+  const texts = kmParseBatchAddInput().filter(text => !existing.has(text));
+  if (!texts.length) {
+    kmShowToast('没有可添加的新关键词', false);
+    return;
+  }
+
+  const created = [];
+  const failed = [];
+  for (const text of texts) {
+    try {
+      const kw = await kmApiFetch(`${KM_API}/keywords`, {
+        method: 'POST',
+        body: JSON.stringify({ group_id: groupId, keyword_text: text }),
+      });
+      created.push(kw);
+      existing.add(text);
+    } catch (e) {
+      failed.push(`${text}：${e.message}`);
+    }
+  }
+
+  if (created.length) {
+    if (input) input.value = '';
+    await reloadKeywordManageData();
+    await kmRefreshMonitorWorkbench();
+  }
+
+  if (andRefresh && created.length) {
+    for (const kw of created) {
+      await startKeywordRefresh(null, kw.keyword_id, kw.keyword_text);
+    }
+  }
+
+  if (failed.length) {
+    kmShowToast(`已添加 ${created.length} 个，${failed.length} 个失败`, false);
+    console.warn('[kmBatchAddKeywords] failed', failed);
+    return;
+  }
+  kmShowToast(andRefresh ? `已添加并排队刷新 ${created.length} 个关键词` : `已添加 ${created.length} 个关键词`);
+}
+
+function kmAskDeleteKeywordInline(btn) {
+  const kid = btn.dataset.kid;
+  const text = btn.dataset.text || '';
+  const box = document.getElementById('kmdelete-' + kid);
+  if (!box) return;
+  box.innerHTML = `
+    <span class="km-delete-confirm-text">确定删除？</span>
+    <button class="km-row-danger" data-kid="${escapeHtml(kid)}" data-text="${escapeHtml(text)}" onclick="kmDeleteKeyword(this, this.dataset.text)">是</button>
+    <button class="km-btn km-btn-ghost km-btn-sm" onclick="renderKeywordManageView()">否</button>
+  `;
+}
+
+function kmFindGroup(groupId) {
+  return (KM_DATA?.groups || []).find(group => group.group_id === groupId) || null;
+}
+
+function kmOpenGroupSettings(groupId) {
+  kmActiveSettingsGroupId = groupId;
+  kmOpenSettingsModal(groupId);
+}
+
+function kmRenderSettingsGroups() {
+  const wrap = document.getElementById('kmSettingsGroupsWrap');
+  if (!wrap || !KM_DATA) return;
+  const group = kmFindGroup(kmActiveSettingsGroupId);
+  if (!group) {
+    wrap.innerHTML = `<div style="text-align:center;padding:32px;color:#bbb;">这个分组不存在或已删除</div>`;
+    return;
+  }
+  const title = document.getElementById('kmSettingsModalTitle');
+  if (title) title.textContent = `${group.label} · 设置`;
+  const desc = document.getElementById('kmSettingsModalDesc');
+  if (desc) desc.textContent = '只管理当前分类：添加关键词、删除关键词、改名或删除空分组。';
+  wrap.innerHTML = kmRenderSingleGroupSettings(group);
+}
+
+function kmRenderSingleGroupSettings(group) {
+  const keywords = group.keywords || [];
+  const stats = [
+    `<span class="km-group-meta-chip">${group.total} 个词</span>`,
+  ];
+  if (group.ranked_count) stats.push(`<span class="km-group-meta-chip ranked">${group.ranked_count} 有排名</span>`);
+  const rows = keywords.length
+    ? keywords.map(kw => `
+      <div class="km-settings-keyword-row" id="kmsetkwr-${kw.keyword_id}" data-text="${escapeHtml(kw.keyword_text)}">
+        <div class="km-settings-keyword-main" onclick="kmOpenKeywordModal('${kw.keyword_id}')">
+          <div class="km-settings-keyword-text">${escapeHtml(kw.keyword_text)}</div>
+          <div class="km-settings-keyword-sub">
+            ${kw.today_best ? `最新第${kw.today_best}` : '最新未命中'} · ${kw.coverage_days || 0} 天在榜 · ${kw.article_count || 0} 篇笔记
+          </div>
+        </div>
+        <button class="km-row-danger" data-kid="${kw.keyword_id}" data-text="${escapeHtml(kw.keyword_text)}" onclick="kmDeleteKeyword(this, this.dataset.text)" title="删除">删除</button>
+      </div>`).join('')
+    : `<div class="km-empty-group">这个分组还没有关键词。</div>`;
+  return `<div class="km-single-settings-card" id="kmgc-${group.group_id}">
+    <div class="km-single-settings-top">
+      <div class="km-single-settings-meta">${stats.join('')}</div>
+      <div class="km-single-settings-actions">
+        <button class="km-btn km-btn-ghost km-btn-sm" data-label="${escapeHtml(group.label)}" onclick="kmOpenRenameGroupModal('${group.group_id}', this.dataset.label)">改名</button>
+        <button class="km-btn km-btn-danger km-btn-sm" data-label="${escapeHtml(group.label)}" onclick="kmDeleteGroup('${group.group_id}', this.dataset.label)">删组</button>
+      </div>
+    </div>
+    <div class="km-single-add-row">
+      <input class="km-add-kw-input" placeholder="输入关键词，回车添加…" data-group="${group.group_id}" onkeydown="kmHandleAddKw(event, this)" />
+      <button class="km-btn km-btn-primary km-btn-sm" onclick="kmAddKeyword(this.previousElementSibling)">添加</button>
+    </div>
+    <div class="km-settings-keyword-list">${rows}</div>
+  </div>`;
+}
+
+function kmRenderStats() {
+  const stats = document.getElementById('kmStats');
+  if (!stats || !KM_DATA) return;
+  const parts = [
+    `<span class="km-stat-chip">词库 ${KM_DATA.total}</span>`,
+  ];
+  if (KM_DATA.ranked_total > 0) parts.push(`<span class="km-stat-chip ranked">最新快照有排名 ${KM_DATA.ranked_total}</span>`);
+  if (KM_DATA.not_ranked_total > 0) parts.push(`<span class="km-stat-chip">最新快照未命中 ${KM_DATA.not_ranked_total}</span>`);
+  stats.innerHTML = parts.join('');
+}
+
+function kmGroupMetaHtml(group) {
+  const meta = [
+    `<span class="km-group-meta-chip">${group.total} 个词</span>`
+  ];
+  if (group.ranked_count) meta.push(`<span class="km-group-meta-chip ranked">${group.ranked_count} 有排名</span>`);
+  return meta.join('');
+}
+
+function kmRenderGroup(group) {
+  const body = group.keywords.length
+    ? `<div class="km-group-grid" id="kmgrid-${group.group_id}">${group.keywords.map(kw => kmRenderKeyword(kw)).join('')}</div>`
+    : `<div class="km-empty-group">这个分组还没有词，先在上面输入后添加。</div>`;
+  const collapsedClass = kmCollapsedGroups.has(group.group_id) ? 'collapsed' : '';
+  const toggleClass = kmCollapsedGroups.has(group.group_id) ? '' : 'open';
+  return `<div class="km-group-card" id="kmgc-${group.group_id}">
+    <div class="km-group-header" onclick="kmToggleGroup('${group.group_id}')">
+      <span class="km-group-toggle ${toggleClass}" id="kmgt-${group.group_id}">▶</span>
+      <div class="km-group-title-wrap">
+        <span class="km-group-label" id="kmgl-${group.group_id}">${escapeHtml(group.label)}</span>
+        <span class="km-group-meta" id="kmgm-${group.group_id}">${kmGroupMetaHtml(group)}</span>
+      </div>
+      <div class="km-group-actions" onclick="event.stopPropagation()">
+        <button class="km-btn km-btn-ghost km-btn-sm" onclick="kmOpenRenameGroupModal('${group.group_id}', ${jsq(group.label)})">改名</button>
+        <button class="km-btn km-btn-danger km-btn-sm" onclick="kmDeleteGroup('${group.group_id}', ${jsq(group.label)})">删组</button>
+      </div>
+    </div>
+    <div class="km-group-body ${collapsedClass}" id="kmgb-${group.group_id}" data-label="${escapeHtml(group.label)}">
+      <div class="km-group-tools">
+        <div class="km-add-kw-row">
+        <input class="km-add-kw-input" placeholder="输入关键词，回车添加…" data-group="${group.group_id}" onkeydown="kmHandleAddKw(event, this)" />
+        <button class="km-btn km-btn-primary km-btn-sm km-add-kw-btn" onclick="kmAddKeyword(this.previousElementSibling)">添加</button>
+      </div>
+      </div>
+      ${body}
+    </div>
+  </div>`;
+}
+
+function kmKeywordFactsHtml(kw) {
+  const facts = [];
+  if (kw.coverage_days > 0) facts.push(`<span class="km-kw-fact">在榜 ${kw.coverage_days} 天</span>`);
+  if (kw.tracked_accounts > 0) facts.push(`<span class="km-kw-fact">${kw.tracked_accounts} 博主</span>`);
+  if (kw.article_count > 0) facts.push(`<span class="km-kw-fact">${kw.article_count} 笔记</span>`);
+  if (!facts.length) facts.push(`<span class="km-kw-fact muted">暂无历史沉淀</span>`);
+  return facts.join('');
+}
+
+function kmRenderKeyword(kw, color) {
+  const style = color ? `style="background:${color.bg};border-color:${color.border};color:${color.text};"` : '';
+  return `<div class="km-kw-card" id="kmkwr-${kw.keyword_id}" data-text="${escapeHtml(kw.keyword_text)}" onclick="kmOpenKeywordModal('${kw.keyword_id}')" onkeydown="kmHandleKeywordCardKey(event, '${kw.keyword_id}')" role="button" tabindex="0" ${style}>
+    <div class="km-kw-text">${escapeHtml(kw.keyword_text)}</div>
+  </div>`;
+}
+
+function kmHandleKeywordCardKey(event, keywordId) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  kmOpenKeywordModal(keywordId);
+}
+
+function kmFindKeyword(keywordId) {
+  if (!KM_DATA) return null;
+  for (const group of KM_DATA.groups || []) {
+    const keyword = (group.keywords || []).find(item => item.keyword_id === keywordId);
+    if (keyword) return { group, keyword };
+  }
+  return null;
+}
+
+function kmSyncKeywordModal(keyword) {
+  const modal = document.getElementById('kmKeywordModal');
+  if (!modal) return;
+  document.getElementById('kmKeywordModalTitle').textContent = keyword.keyword_text;
+  document.getElementById('kmKeywordModalMeta').innerHTML = [
+    keyword.today_best
+      ? `<span class="km-kw-seo ranked">最新快照第${keyword.today_best}</span>`
+      : `<span class="km-kw-seo not-ranked">最新快照未命中</span>`
+  ].join('');
+  document.getElementById('kmKeywordModalFacts').innerHTML = kmKeywordFactsHtml(keyword);
+  const noteInput = document.getElementById('kmKeywordModalNote');
+  noteInput.value = keyword.note || '';
+  noteInput.dataset.kid = keyword.keyword_id;
+  noteInput.dataset.lastSaved = keyword.note || '';
+  noteInput.dataset.dirty = 'false';
+  const status = document.getElementById('kmKeywordModalStatus');
+  status.className = 'km-note-status';
+  status.textContent = '';
+  const del = document.getElementById('kmKeywordModalDelete');
+  del.dataset.kid = keyword.keyword_id;
+  del.dataset.text = keyword.keyword_text;
+}
+
+function kmOpenKeywordModal(keywordId) {
+  const found = kmFindKeyword(keywordId);
+  if (!found) return;
+  kmActiveKeywordId = keywordId;
+  document.getElementById('kmKeywordModal').classList.add('open');
+  kmSyncKeywordModal(found.keyword);
+}
+
+function kmCloseKeywordModal() {
+  kmActiveKeywordId = null;
+  document.getElementById('kmKeywordModal').classList.remove('open');
+}
+
+function kmRefreshGroupMeta(groupId) {
+  if (!KM_DATA) return;
+  const group = (KM_DATA.groups || []).find(item => item.group_id === groupId);
+  if (!group) return;
+  const meta = document.getElementById('kmgm-' + groupId);
+  if (meta) meta.innerHTML = kmGroupMetaHtml(group);
+}
+
+function kmToggleGroup(groupId) {
+  const body = document.getElementById('kmgb-' + groupId);
+  if (!body) return;
+  const collapsed = body.classList.toggle('collapsed');
+  if (collapsed) kmCollapsedGroups.add(groupId);
+  else kmCollapsedGroups.delete(groupId);
+  const toggle = document.getElementById('kmgt-' + groupId);
+  if (toggle) toggle.classList.toggle('open', !collapsed);
+}
+
+async function kmOpenSettingsModal(groupId = null) {
+  if (groupId) kmActiveSettingsGroupId = groupId;
+  document.getElementById('kmSettingsModal')?.classList.add('open');
+  if (!kmLoaded || !KM_DATA) {
+    const ok = await kmEnsureDataLoaded();
+    if (!ok) return;
+    renderKeywordManageView();
+  }
+  kmRenderSettingsGroups();
+  setTimeout(() => document.querySelector('#kmSettingsGroupsWrap .km-add-kw-input')?.focus(), 50);
+}
+
+function kmCloseSettingsModal() {
+  document.getElementById('kmSettingsModal')?.classList.remove('open');
+}
+
+function kmApplySearch(q) {
+  kmFilter = q || '';
+  const s = kmFilter.trim().toLowerCase();
+  document.querySelectorAll('#kmSettingsGroupsWrap .km-group-card').forEach(card => {
+    const body = card.querySelector('.km-group-body');
+    const label = (body?.dataset.label || '').toLowerCase();
+    const cards = Array.from(card.querySelectorAll('.km-kw-card[data-text]'));
+    let visibleCount = 0;
+    const groupMatched = !!s && label.includes(s);
+    cards.forEach(item => {
+      const text = (item.dataset.text || '').toLowerCase();
+      const matched = !s || groupMatched || text.includes(s);
+      item.classList.toggle('hidden', !matched);
+      if (matched) visibleCount += 1;
+    });
+    card.classList.toggle('hidden', !!s && visibleCount === 0 && !groupMatched);
+  });
+}
+
+function kmMarkNoteDirty(input) {
+  input.dataset.dirty = 'true';
+  const status = input.id === 'kmKeywordModalNote'
+    ? document.getElementById('kmKeywordModalStatus')
+    : document.getElementById('kmnote-status-' + input.dataset.kid);
+  if (status) {
+    status.className = 'km-note-status';
+    status.textContent = '待保存';
+  }
+}
+
+async function kmSaveNote(input) {
+  const kid = input.dataset.kid;
+  const note = input.value.trim();
+  if (input.dataset.saving === 'true') return;
+  if (input.dataset.lastSaved === note && input.dataset.dirty !== 'true') return;
+  input.dataset.saving = 'true';
+  try {
+    await kmApiFetch(`${KM_API}/keywords/${encodeURIComponent(kid)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ note }),
+    });
+    input.dataset.lastSaved = note;
+    input.dataset.dirty = 'false';
+    if (KM_DATA) {
+      for (const group of KM_DATA.groups || []) {
+        const item = (group.keywords || []).find(keyword => keyword.keyword_id === kid);
+        if (item) {
+          item.note = note;
+          if (kmActiveKeywordId === kid) kmSyncKeywordModal(item);
+        }
+      }
+    }
+    const status = input.id === 'kmKeywordModalNote'
+      ? document.getElementById('kmKeywordModalStatus')
+      : document.getElementById('kmnote-status-' + kid);
+    if (status) {
+      status.className = 'km-note-status saved';
+      status.textContent = '已保存';
+    }
+  } catch (e) {
+    const status = input.id === 'kmKeywordModalNote'
+      ? document.getElementById('kmKeywordModalStatus')
+      : document.getElementById('kmnote-status-' + kid);
+    if (status) {
+      status.className = 'km-note-status error';
+      status.textContent = '保存失败';
+    }
+    kmShowToast('备注保存失败：' + e.message, false);
+  } finally {
+    input.dataset.saving = 'false';
+  }
+}
+
+async function kmSaveKeywordText(input) {
+  const kid = input.dataset.kid;
+  const text = (input.value || '').trim();
+  if (!text) { input.value = input.dataset.lastSaved || ''; return; }
+  if (text === input.dataset.lastSaved) return;
+  try {
+    const updated = await kmApiFetch(`${KM_API}/keywords/${encodeURIComponent(kid)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ keyword_text: text }),
+    });
+    input.dataset.lastSaved = updated.keyword_text;
+    if (KM_DATA) {
+      for (const group of KM_DATA.groups || []) {
+        const item = (group.keywords || []).find(kw => kw.keyword_id === kid);
+        if (item) item.keyword_text = updated.keyword_text;
+      }
+    }
+    await kmRefreshMonitorWorkbench();
+  } catch (e) {
+    input.value = input.dataset.lastSaved || '';
+    kmShowToast('改词失败：' + e.message, false);
+  }
+}
+
+async function kmDeleteKeyword(btn, text) {
+  const kid = btn.dataset.kid;
+  try {
+    if (kmActiveKeywordId === kid) kmCloseKeywordModal();
+    await kmApiFetch(`${KM_API}/keywords/${encodeURIComponent(kid)}`, { method: 'DELETE' });
+    await reloadKeywordManageData();
+    await kmRefreshMonitorWorkbench();
+    kmShowToast('已删除');
+  } catch (e) {
+    kmShowToast('删除失败：' + e.message, false);
+  }
+}
+
+async function deleteKeywordFromDetail(event, keywordId, keywordText) {
+  if (event) event.stopPropagation();
+  if (!confirm(`确认删除关键词「${keywordText}」？\n\n删除意味着此关键词不再被监控，会从左侧列表和词库管理中移除。\n但历史抓取数据不会被删除——之前搜到的笔记、排名、博主关联仍保留在底层数据库中。\n\n如果之后重新添加相同的关键词，系统会自动匹配回历史数据，之前的记录会恢复显示。\n\n确定要删除吗？`)) return;
+  try {
+    await kmApiFetch(`${KM_API}/keywords/${encodeURIComponent(keywordId)}`, { method: 'DELETE' });
+    await kmEnsureDataLoaded({ silent: true });
+    await kmRefreshMonitorWorkbench();
+    kmShowToast('已删除');
+  } catch (e) {
+    kmShowToast('删除失败：' + e.message, false);
+  }
+}
+
+async function kmRefreshDeleteKeyword(btn, text) {
+  const kid = btn.dataset.kid;
+  const deleteText = text || btn.dataset.text || '';
+  if (!confirm(`确认删除关键词「${deleteText}」？\n\n删除意味着此关键词不再被监控，会从左侧列表和词库管理中移除。\n但历史抓取数据不会被删除——之前搜到的笔记、排名、博主关联仍保留在底层数据库中。\n\n如果之后重新添加相同的关键词，系统会自动匹配回历史数据，之前的记录会恢复显示。\n\n确定要删除吗？`)) return;
+  try {
+    await kmApiFetch(`${KM_API}/keywords/${encodeURIComponent(kid)}`, { method: 'DELETE' });
+    if (KM_DATA) {
+      for (const group of KM_DATA.groups || []) {
+        const idx = (group.keywords || []).findIndex(k => k.keyword_id === kid);
+        if (idx > -1) {
+          group.keywords.splice(idx, 1);
+          break;
+        }
+      }
+      KM_DATA.total = (KM_DATA.groups || []).reduce((sum, g) => sum + (g.keywords || []).length, 0);
+    }
+    const row = btn.closest('.km-refresh-row');
+    if (row) row.remove();
+    const groupBody = btn.closest('.km-refresh-group-body');
+    if (groupBody) {
+      const remaining = groupBody.querySelectorAll('.km-refresh-row');
+      const emptyHint = groupBody.querySelector('.km-refresh-empty');
+      if (remaining.length === 0 && !emptyHint) {
+        groupBody.insertAdjacentHTML('afterbegin', '<div class="km-refresh-empty">暂无关键词</div>');
+      } else if (remaining.length > 0 && emptyHint) {
+        emptyHint.remove();
+      }
+      const groupHeader = btn.closest('.km-refresh-group').querySelector('.km-refresh-group-count');
+      if (groupHeader) {
+        const gid = btn.closest('.km-refresh-group').dataset.group;
+        const group = KM_DATA?.groups?.find(g => g.group_id === gid);
+        if (group) groupHeader.textContent = `${(group.keywords || []).length} 词`;
+      }
+    }
+    kmRenderStats();
+    renderKeywordManageView();
+    await kmRefreshMonitorWorkbench();
+    kmShowToast('已删除');
+  } catch (e) {
+    kmShowToast('删除失败：' + e.message, false);
+  }
+}
+
+async function kmRefreshAddKeyword(input) {
+  const text = input.value.trim();
+  if (!text) return;
+  const groupId = input.dataset.group;
+  try {
+    const kw = await kmApiFetch(`${KM_API}/keywords`, {
+      method: 'POST',
+      body: JSON.stringify({ group_id: groupId, keyword_text: text }),
+    });
+    input.value = '';
+    if (KM_DATA) {
+      const group = KM_DATA.groups.find(g => g.group_id === groupId);
+      if (group) {
+        group.keywords = group.keywords || [];
+        group.keywords.push(kw);
+        const groupBody = input.closest('.km-refresh-group-body');
+        if (groupBody) {
+          const emptyHint = groupBody.querySelector('.km-refresh-empty');
+          if (emptyHint) emptyHint.remove();
+          const row = document.createElement('div');
+          row.className = 'km-refresh-row';
+          row.dataset.kid = kw.keyword_id;
+          row.innerHTML = `
+            <label class="km-refresh-check">
+              <input type="checkbox" value="${escapeHtml(kw.keyword_id)}" data-text="${escapeHtml(kw.keyword_text)}" checked />
+              <span class="km-refresh-check-text">刷新</span>
+            </label>
+            <span class="km-refresh-text" title="${escapeHtml(kw.keyword_text)}">${escapeHtml(kw.keyword_text)}</span>
+            <button class="km-refresh-delete" data-kid="${escapeHtml(kw.keyword_id)}" data-text="${escapeHtml(kw.keyword_text)}" onclick="kmRefreshDeleteKeyword(this)" title="删除">删除</button>
+          `;
+          const addRow = groupBody.querySelector('.km-refresh-add-row');
+          if (addRow) {
+            groupBody.insertBefore(row, addRow);
+          } else {
+            groupBody.appendChild(row);
+          }
+          const groupHeader = groupBody.parentElement.querySelector('.km-refresh-group-count');
+          if (groupHeader) groupHeader.textContent = `${(group.keywords || []).length} 词`;
+        }
+      }
+      KM_DATA.total = (KM_DATA.groups || []).reduce((sum, g) => sum + (g.keywords || []).length, 0);
+    }
+    kmRenderStats();
+    renderKeywordManageView();
+    await kmRefreshMonitorWorkbench();
+    kmShowToast(`已添加「${kw.keyword_text}」`);
+  } catch (e) {
+    kmShowToast('添加失败：' + e.message, false);
+  }
+}
+
+function kmHandleAddKw(e, input) {
+  if (e.key === 'Enter') { e.preventDefault(); kmAddKeyword(input); }
+}
+
+async function kmAddKeyword(input) {
+  const text = input.value.trim();
+  if (!text) return;
+  const groupId = input.dataset.group;
+  try {
+    const kw = await kmApiFetch(`${KM_API}/keywords`, {
+      method: 'POST',
+      body: JSON.stringify({ group_id: groupId, keyword_text: text }),
+    });
+    input.value = '';
+    await reloadKeywordManageData();
+    await kmRefreshMonitorWorkbench();
+    kmShowToast(`已添加「${kw.keyword_text}」`);
+  } catch (e) {
+    kmShowToast('添加失败：' + e.message, false);
+  }
+}
+
+function kmOpenAddGroupModal() {
+  kmEditGroupId = null;
+  document.getElementById('kmModalTitle').textContent = '新增分组';
+  document.getElementById('kmModalInput').value = '';
+  document.getElementById('kmGroupModal').classList.add('open');
+  setTimeout(() => document.getElementById('kmModalInput').focus(), 50);
+}
+
+function kmOpenRenameGroupModal(groupId, label) {
+  kmEditGroupId = groupId;
+  document.getElementById('kmModalTitle').textContent = '修改分组名称';
+  document.getElementById('kmModalInput').value = label;
+  document.getElementById('kmGroupModal').classList.add('open');
+  setTimeout(() => document.getElementById('kmModalInput').focus(), 50);
+}
+
+function kmCloseGroupModal() {
+  document.getElementById('kmGroupModal').classList.remove('open');
+}
+
+async function kmConfirmGroupModal() {
+  const label = document.getElementById('kmModalInput').value.trim();
+  if (!label) return;
+  kmCloseGroupModal();
+  try {
+    if (kmEditGroupId) {
+      await kmApiFetch(`${KM_API}/groups/${encodeURIComponent(kmEditGroupId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ label }),
+      });
+      kmShowToast('分组已重命名');
+    } else {
+      await kmApiFetch(`${KM_API}/groups`, {
+        method: 'POST',
+        body: JSON.stringify({ label }),
+      });
+      kmShowToast('分组已创建');
+    }
+    await reloadKeywordManageData();
+    await kmRefreshMonitorWorkbench();
+  } catch (e) {
+    kmShowToast('操作失败：' + e.message, false);
+  }
+}
+
+async function kmDeleteGroup(groupId, label) {
+  if (!confirm(`确认删除分组「${label}」？\n注意：分组内必须没有关键词才可删除。`)) return;
+  try {
+    await kmApiFetch(`${KM_API}/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+    await reloadKeywordManageData();
+    await kmRefreshMonitorWorkbench();
+    kmShowToast('分组已删除');
+  } catch (e) {
+    kmShowToast('删除失败：' + e.message, false);
+  }
+}
+
+// 关闭 modal 点击遮罩
+document.addEventListener('click', e => {
+  const settingsMask = document.getElementById('kmSettingsModal');
+  if (settingsMask && e.target === settingsMask) kmCloseSettingsModal();
+  const mask = document.getElementById('kmGroupModal');
+  if (mask && e.target === mask) kmCloseGroupModal();
+  const keywordMask = document.getElementById('kmKeywordModal');
+  if (keywordMask && e.target === keywordMask) kmCloseKeywordModal();
+  const refreshMask = document.getElementById('kmRefreshModal');
+  if (refreshMask && e.target === refreshMask) kmCloseRefreshModal();
+});
+
+// ── 单词刷新 ─────────────────────────────────────────
+const _refreshJobs = {};  // keywordId -> jobId
+
+async function startKeywordRefresh(event, keywordId, keyword) {
+  if (event) event.stopPropagation();
+  const btn = document.getElementById(`refresh-btn-${keywordId}`);
+  if (btn) { btn.textContent = '搜索中…'; btn.disabled = true; }
+  try {
+    const resp = await fetch(`/api/keywords/${encodeURIComponent(keywordId)}/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword }),
+    });
+    const data = await resp.json();
+
+    if (resp.status === 202 && data.status === 'queued') {
+      const ahead = data.queued_ahead || 0;
+      const aheadText = ahead > 0 ? `，前面还有 ${ahead} 个排队` : '';
+      kmShowToast(`「${keyword}」已排队等待刷新（当前正在刷新「${data.current}」${aheadText}），完成后自动执行`);
+      if (btn) { btn.textContent = '排队中…'; btn.disabled = true; }
+      _refreshJobs[keywordId] = data.job_id;
+      _pollRefreshJob(keywordId, data.job_id);
+    } else if (resp.status === 409 && data.status === 'rejected') {
+      if (data.reason === 'batch_running') {
+        kmShowToast(`当前正在批量刷新「${data.current || '关键词'}」，无法同时启动单词刷新，请等待批量刷新完成后再试`, false);
+      } else {
+        kmShowToast('当前有刷新任务进行中，请稍后再试', false);
+      }
+      if (btn) { btn.textContent = '刷新数据'; btn.disabled = false; }
+    } else if (!resp.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'refresh failed');
+    } else {
+      _refreshJobs[keywordId] = data.job_id;
+      _pollRefreshJob(keywordId, data.job_id);
+    }
+  } catch (e) {
+    if (btn) { btn.textContent = '刷新失败'; btn.disabled = false; }
+    console.error('refresh failed', e);
+  }
+}
+
+function _pollRefreshJob(keywordId, jobId) {
+  const btn = document.getElementById(`refresh-btn-${keywordId}`);
+  const iv = setInterval(async () => {
+    try {
+      const resp = await fetch(`/api/refresh-status/${jobId}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.status === 'queued' || data.status === 'queued_to_running') {
+        if (btn) { btn.textContent = '排队中…'; btn.disabled = true; }
+        return;
+      }
+      if (data.status === 'running') {
+        if (btn) { btn.textContent = '搜索中…'; btn.disabled = true; }
+        return;
+      }
+      if (data.status === 'done') {
+        clearInterval(iv);
+        if (btn) { btn.textContent = '刷新数据'; btn.disabled = false; }
+        await loadData({ preserveSelection: true });
+        refresh();
+        kmShowToast(`「${data.keyword || keywordId}」刷新完成`);
+      } else if (data.status === 'failed') {
+        clearInterval(iv);
+        if (btn) { btn.textContent = '刷新失败'; btn.disabled = false; }
+        kmShowToast(`「${data.keyword || keywordId}」刷新失败`, false);
+      }
+    } catch (_) {}
+  }, 4000);
+}
+
+// ── 搜索词信号 → 添加关键词弹窗 ──────────────────────
+let _signalTermPending = null;
+
+function signalTermClick(term) {
+  _signalTermPending = term;
+  const modal = document.getElementById('signalTermModal');
+  if (!modal) return;
+  document.getElementById('signalTermText').textContent = term;
+
+  const select = document.getElementById('signalTermGroupSelect');
+  select.innerHTML = '';
+  const groups = KM_DATA?.groups || [];
+  if (!groups.length) {
+    select.innerHTML = '<option value="">（暂无分组，请先在词库管理创建）</option>';
+  } else {
+    groups.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.group_id;
+      opt.textContent = g.label;
+      select.appendChild(opt);
+    });
+  }
+
+  const existing = (KM_DATA?.groups || []).some(g =>
+    (g.keywords || []).some(kw => kw.keyword_text === term)
+  );
+  const confirmBtn = document.getElementById('signalTermConfirmBtn');
+  if (existing) {
+    confirmBtn.textContent = '已存在';
+    confirmBtn.disabled = true;
+  } else {
+    confirmBtn.textContent = '确认添加';
+    confirmBtn.disabled = false;
+  }
+
+  modal.classList.add('open');
+}
+
+function signalTermClose() {
+  _signalTermPending = null;
+  document.getElementById('signalTermModal')?.classList.remove('open');
+}
+
+async function signalTermConfirm() {
+  if (!_signalTermPending) return;
+  const term = _signalTermPending;
+  const groupId = document.getElementById('signalTermGroupSelect').value;
+  if (!groupId) { kmShowToast('请先选择分类', false); return; }
+
+  const confirmBtn = document.getElementById('signalTermConfirmBtn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = '添加中…';
+
+  try {
+    await kmApiFetch(`${KM_API}/keywords`, {
+      method: 'POST',
+      body: JSON.stringify({ group_id: groupId, keyword_text: term }),
+    });
+    await reloadKeywordManageData();
+    signalTermClose();
+    kmShowToast(`已添加「${term}」`);
+
+    await loadData({ preserveSelection: false });
+    curKeyword = term;
+    refresh();
+
+    if (confirm(`关键词「${term}」已添加成功。\n\n是否立即刷新该关键词的数据？\n（如果上一个关键词还在刷新中，系统会自动排队处理，不会冲突。）`)) {
+      const kw = (KM_DATA?.groups || []).flatMap(g => g.keywords || []).find(k => k.keyword_text === term);
+      if (kw) {
+        startKeywordRefresh(null, kw.keyword_id, term);
+      }
+    }
+  } catch (e) {
+    kmShowToast('添加失败：' + e.message, false);
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '确认添加';
+  }
+}
+
+(async () => {
+  kmBindRefreshUiEvents();
+  initAccountScoreTooltip();
+  await kmBootstrapBatchStatus();
+  kmInitRefreshHistoryBtn();
+  const ok = await loadData();
+  if (ok) refresh();
+})();

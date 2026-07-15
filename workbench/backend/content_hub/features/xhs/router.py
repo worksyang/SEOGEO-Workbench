@@ -15,8 +15,8 @@ def _service(request: Request) -> XhsService:
 
 
 @router.get("/bootstrap")
-def bootstrap(request: Request) -> dict[str, Any]:
-    return {"ok": True, "data": _service(request).bootstrap()}
+def bootstrap(request: Request, summary: bool = Query(default=False)) -> dict[str, Any]:
+    return {"ok": True, "data": _service(request).bootstrap(summary=summary)}
 
 
 @router.get("/keywords/{keyword_id}")
