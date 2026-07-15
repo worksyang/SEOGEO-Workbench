@@ -59,6 +59,18 @@ def _payload_data(payload: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else payload
 
 
+def _auth_state(payload: Any) -> tuple[bool | None, bool]:
+    data = _payload_data(payload)
+    logged_in = data.get("logged_in")
+    if logged_in is None:
+        logged_in = data.get("authenticated")
+    status = data.get("wechat_status") if isinstance(data.get("wechat_status"), dict) else {}
+    if logged_in is None:
+        logged_in = status.get("logged_in")
+    inconsistent = status.get("inconsistent") is True or data.get("inconsistent") is True
+    return (logged_in if isinstance(logged_in, bool) else None), inconsistent
+
+
 class MpService:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
@@ -92,6 +104,31 @@ class MpService:
                         (self.adapter.base_url, status, now, '["read","account_flags","jobs","auth_check","markdown_import"]', _json(details)),
                     )
 
+    def _connection_snapshot(self) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            row = con.execute(
+                "SELECT status,last_checked_at FROM system_connections WHERE system_key='wechat-mp'"
+            ).fetchone()
+        if row is None:
+            return {
+                "status": "unknown",
+                "source": "live_http",
+                "checked_at": None,
+                "verified": False,
+            }
+        return {
+            "status": str(row["status"] or "unknown"),
+            "source": "live_http",
+            "checked_at": row["last_checked_at"],
+            "verified": False,
+        }
+
+    def _connection_for_import_failure(self, status: str, *, error: str) -> None:
+        snapshot = self._connection_snapshot()
+        if snapshot["status"] in {"blocked", "degraded", "offline"}:
+            return
+        self._connection(status, error=error)
+
     @staticmethod
     def _remote_category_names(payload: Any) -> set[str]:
         rows = _rows(payload, "categories", "items")
@@ -123,6 +160,7 @@ class MpService:
         runtime = _payload_data(live.get("runtime"))
         wechat_status = runtime.get("wechat_status") if isinstance(runtime.get("wechat_status"), dict) else {}
         declared_inconsistent = wechat_status.get("inconsistent") is True
+        checked_at = _now()
         if not errors and not declared_inconsistent:
             source_status = {"status": "healthy", "source": "live_http", "inconsistent": False}
             self._connection("healthy")
@@ -139,6 +177,16 @@ class MpService:
         else:
             source_status = {"status": "offline", "source": "live_http", "inconsistent": True, "errors": errors}
             self._connection("offline", error="公众号监控上游不可用")
+        source_status["evidence"] = {
+            "base_url": self.adapter.base_url,
+            "checked_at": checked_at,
+            "runtime_endpoint": "/api/runtime/overview",
+            "auth_endpoint": "/api/auth/wechat/check",
+            "read_only_root": str(self.adapter.root),
+            "metadata_root": str(self.adapter.metadata_root),
+        }
+        if source_status["status"] != "healthy":
+            source_status["operation_hint"] = "请在旧公众号监控控制台完成 WeRSS 登录并重新检查；工作台不会自动扫码或伪造成功。"
         accounts = _rows(live.get("accounts"), "accounts", "items")
         categories = _rows(live.get("categories"), "categories", "items")
         jobs = _rows(live.get("jobs"), "jobs", "items")
@@ -177,7 +225,7 @@ class MpService:
             records, manifest = self.adapter.scan(limit=limit)
         except MpSourceError as exc:
             if not dry_run:
-                self._connection("offline", error=str(exc))
+                self._connection_for_import_failure("offline", error=str(exc))
             raise ConflictError(f"{exc.kind}: {exc}") from exc
         manifest_id = hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         batch_id = _id("batch", f"wechat-mp:{manifest_id}:{limit if limit is not None else 'full'}")
@@ -190,18 +238,57 @@ class MpService:
         except MpSourceError:
             pass
         live_accounts = _rows(accounts_result, "accounts", "items")
-        report = {"manifest_id": manifest_id, "manifest": manifest, "rejected": [], "rejected_articles": manifest.get("rejected_articles", {}), "reconcile": manifest.get("reconcile", {})}
-        counts = {"articles": len(all_records), "markdown_articles": len(records), "csv_only": len(csv_records), "creators": len(live_accounts)}
+        rejected = list(manifest.get("rejected") or [])
+        rejected.extend({"source": item.get("path"), "reason": item.get("reason")} for item in manifest.get("skipped", []))
+        rejected_articles = manifest.get("rejected_articles") or {}
+        if rejected_articles.get("rows"):
+            rejected.append({
+                "source": rejected_articles.get("path"),
+                "reason": "rejected_articles",
+                "rows": rejected_articles.get("rows"),
+            })
+        rejected_count = sum(int(item.get("rows") or 1) for item in rejected)
+        report = {"manifest_id": manifest_id, "manifest": manifest, "rejected": rejected, "rejected_articles": manifest.get("rejected_articles", {}), "reconcile": manifest.get("reconcile", {})}
+        counts = {"articles": len(all_records), "markdown_articles": len(records), "csv_only": len(csv_records), "creators": len(live_accounts), "accepted": 0, "rejected": rejected_count, "processed": len(all_records) + rejected_count}
+        history_import = {
+            "status": "dry_run" if dry_run else "pending",
+            "source": "markdown",
+            "manifest_id": manifest_id,
+            "batch_id": batch_id,
+        }
+        source_status = self._connection_snapshot()
         if dry_run:
-            return {"dry_run": True, "source": "markdown", "batch_id": batch_id, "counts": counts, "audit": report}
+            report["accepted"] = 0
+            report["processed"] = counts["processed"]
+            history_import["status"] = "dry_run"
+            return {
+                "dry_run": True,
+                "source": "markdown",
+                "batch_id": batch_id,
+                "counts": counts,
+                "source_status": source_status,
+                "history_import": history_import,
+                "audit": report,
+            }
         now = _now()
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
                 with transaction(con):
                     self._write(con, all_records, live_accounts, batch_id, report, now)
-        self._connection("degraded" if report["rejected"] else "healthy", error=f"{len(report['rejected'])} rejected" if report["rejected"] else None)
+        counts["accepted"] = int(report.get("accepted", 0))
+        history_import["status"] = "partial_failed" if report["rejected"] else "succeeded"
+        history_import["accepted"] = counts["accepted"]
+        history_import["rejected"] = counts["rejected"]
         self._audit("wechat-mp.import", "failed" if report["rejected"] else "succeeded", details={"batch_id": batch_id, "counts": counts, "audit": report})
-        return {"dry_run": False, "source": "markdown", "batch_id": batch_id, "counts": counts, "audit": report}
+        return {
+            "dry_run": False,
+            "source": "markdown",
+            "batch_id": batch_id,
+            "counts": counts,
+            "source_status": source_status,
+            "history_import": history_import,
+            "audit": report,
+        }
 
     @staticmethod
     def _csv_record(row: dict[str, Any]) -> dict[str, Any]:
@@ -364,14 +451,36 @@ class MpService:
             accepted += 1
         report["accepted"] = accepted
         finished_at = _now()
-        con.execute("UPDATE ingestion_batches SET status='succeeded',finished_at=?,records_seen=?,records_written=?,records_failed=0,error_json=?,payload_json=? WHERE batch_id=?", (finished_at, len(records), accepted, "[]", _json(report), batch_id))
+        rejected_count = sum(int(item.get("rows") or 1) for item in report["rejected"])
+        con.execute("UPDATE ingestion_batches SET status=?,finished_at=?,records_seen=?,records_written=?,records_failed=?,error_json=?,payload_json=? WHERE batch_id=?", ("succeeded" if not report["rejected"] else "partial_failed", finished_at, len(records) + rejected_count, accepted, rejected_count, _json(report["rejected"]), _json(report), batch_id))
         con.execute("INSERT INTO ingestion_checkpoints(adapter_key,checkpoint_key,cursor_value,source_hash,last_success_at,batch_id,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(adapter_key,checkpoint_key) DO UPDATE SET cursor_value=excluded.cursor_value,source_hash=excluded.source_hash,last_success_at=excluded.last_success_at,batch_id=excluded.batch_id,payload_json=excluded.payload_json", ("wechat-mp", "markdown", finished_at, report["manifest_id"], finished_at, batch_id, _json(report)))
 
     def accounts(self): return self._remote(self.adapter.accounts)
     def categories(self): return self._remote(self.adapter.categories_remote)
     def jobs(self): return self._remote(self.adapter.jobs)
     def job(self, job_id: str): return self._remote(lambda: self.adapter.job(job_id))
-    def auth_check(self): return self._remote(self.adapter.auth_check)
+    def auth_check(self):
+        response = self._remote(self.adapter.auth_check)
+        logged_in, inconsistent = _auth_state(response.payload)
+        if inconsistent or logged_in is False:
+            status = "degraded" if inconsistent else "blocked"
+            self._connection(status, error="WeRSS 登录状态不可用或与运行时不一致")
+            payload = _scrub(response.payload)
+            payload["source_status"] = {
+                "status": status,
+                "source": "live_http",
+                "logged_in": logged_in,
+                "inconsistent": inconsistent,
+                "operation_hint": "请在旧公众号监控控制台重新完成 WeRSS 登录后再执行采集。",
+                "evidence": {
+                    "base_url": self.adapter.base_url,
+                    "endpoint": "/api/auth/wechat/check",
+                    "checked_at": _now(),
+                },
+            }
+            return type(response)(payload, response.status)
+        self._connection("healthy")
+        return response
     def auth_qrcode(self):
         response = self._remote(self.adapter.auth_qrcode)
         payload = response.payload
@@ -422,6 +531,20 @@ class MpService:
             raise ValidationAppError("创建公众号任务必须明确传入 confirm=true。")
         clean = dict(payload)
         clean.pop("confirm", None)
+        try:
+            auth = self.adapter.auth_check()
+            runtime = self.adapter.runtime_overview()
+        except MpSourceError as exc:
+            self._audit("wechat-mp.job_create", "blocked", details={"reason": exc.kind, "status": exc.status})
+            self._connection("degraded" if exc.status else "offline", error=str(exc))
+            raise ConflictError("旧公众号监控上游当前不可用，任务未创建；请先恢复 WeRSS 登录并重新检查。") from exc
+        logged_in, auth_inconsistent = _auth_state(auth.payload)
+        runtime_data = _payload_data(runtime.payload)
+        runtime_status = runtime_data.get("wechat_status") if isinstance(runtime_data.get("wechat_status"), dict) else {}
+        if auth_inconsistent or runtime_status.get("inconsistent") is True or logged_in is False or runtime_status.get("logged_in") is False:
+            self._audit("wechat-mp.job_create", "blocked", details={"reason": "login_inconsistent"})
+            self._connection("degraded", error="WeRSS 登录状态不可用或与运行时不一致")
+            raise ConflictError("WeRSS 登录状态不可用或与运行时不一致，任务未创建；请在旧控制台完成登录后重试。")
         return self._remote(lambda: self.adapter.create_job(_scrub(clean)))
 
     def cancel_job(self, job_id: str, confirm: bool):

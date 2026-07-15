@@ -3694,3 +3694,304 @@ a:focus-visible {
     gap: 8px;
     align-items: center;
 }
+
+/* Final demo-aligned shell: keep the React modules inside the same visual contract. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--chrome);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.app-shell {
+  height: 100dvh;
+  min-height: 0;
+  grid-template-columns: 176px minmax(0, 1fr);
+  background: var(--chrome);
+}
+
+.sidebar {
+  height: 100dvh;
+  padding: 20px 13px 15px;
+  background: transparent;
+  color: var(--ink);
+}
+
+.brand {
+  display: block;
+  padding: 0 6px 15px;
+  border-bottom: 1px solid #dddde0;
+}
+
+.brand strong {
+  font-size: 15px;
+  letter-spacing: -.03em;
+}
+
+.brand small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0;
+}
+
+.sidebar nav {
+  gap: 2px;
+  margin-top: 0;
+}
+
+.nav-group {
+  margin-top: 0;
+}
+
+.nav-label {
+  padding: 15px 7px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .08em;
+}
+
+.nav-item {
+  min-height: 34px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 9px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: var(--ink2);
+  font-size: 11px;
+}
+
+.nav-item:hover {
+  background: #e7e7e9;
+  color: var(--ink);
+}
+
+.nav-item.active {
+  background: #dedfe3;
+  color: var(--ink);
+  font-weight: 720;
+}
+
+.nav-icon {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  opacity: 1;
+}
+
+.nav-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.nav-state {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.nav-state-healthy { color: var(--green); }
+.nav-state-degraded { color: var(--amber); }
+.nav-state-offline { color: var(--red); }
+
+.sidebar-footer {
+  display: block;
+  margin-top: auto;
+  padding: 12px 6px 0;
+  border-top: 1px solid #dddde0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.65;
+}
+
+.sidebar-footer > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.workspace {
+  height: calc(100dvh - 26px);
+  min-height: 0;
+  margin: 13px 13px 13px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--rl);
+  background: var(--paper);
+  box-shadow: var(--shadow-panel);
+}
+
+.topbar {
+  height: 47px;
+  padding: 0 16px;
+  gap: 10px;
+  background: var(--paper);
+}
+
+.topbar-title strong {
+  font-size: 12px;
+}
+
+.topbar-title small {
+  margin-left: 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.topbar-actions {
+  gap: 6px;
+}
+
+.secondary-button,
+.error-banner button {
+  height: 29px;
+  padding: 0 10px;
+  border-color: var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink2);
+  font-size: 10px;
+}
+
+.secondary-button.primary {
+  border-color: var(--dark);
+  background: var(--dark);
+  color: #fff;
+}
+
+.overview-page,
+.module-frame,
+.geo-page,
+.wechat-page,
+.mp-page,
+.xhs-page {
+  height: calc(100% - 47px);
+  min-height: 0;
+  overflow: auto;
+  background: var(--canvas);
+}
+
+.overview-page {
+  padding: 18px;
+}
+
+.hero-panel,
+.panel,
+.metric-card,
+.module-placeholder,
+.publishing-form,
+.publishing-preview > *,
+.publishing-result {
+  border-color: var(--line);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.hero-panel {
+  min-height: 0;
+  padding: 18px;
+  background: var(--paper);
+}
+
+.hero-panel h2 {
+  font-size: 20px;
+}
+
+.hero-copy {
+  font-size: 11px;
+}
+
+.metric-grid {
+  gap: 0;
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.metric-card {
+  padding: 13px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.metric-card strong {
+  margin: 3px 0;
+  font-size: 20px;
+}
+
+.two-column {
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.panel {
+  padding: 13px;
+}
+
+.module-frame {
+  padding: 12px 14px 24px;
+  gap: 10px;
+}
+
+.module-top {
+  min-height: 43px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.module-top .module-logo {
+  font-size: 12px;
+}
+
+.module-top .module-meta,
+.module-top .module-right {
+  font-size: 9px;
+}
+
+.module-top .module-switch .pill {
+  padding: 0 10px;
+  height: 25px;
+  font-size: 9px;
+}
+
+.module-placeholder,
+.empty-state,
+.module-empty,
+.module-error,
+.geo-state {
+  min-height: 150px;
+  padding: 18px;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.error-banner {
+  margin: 10px 18px 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 74px minmax(0, 1fr);
+  }
+
+  .workspace {
+    margin: 7px 7px 7px 0;
+    height: calc(100dvh - 14px);
+  }
+}

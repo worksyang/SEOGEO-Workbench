@@ -239,7 +239,8 @@ class MpAdapter:
                 parsed = json.loads(raw.decode("utf-8")) if raw else {}
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = {"message": raw.decode("utf-8", "replace")}
-            raise MpSourceError(f"公众号监控上游返回 HTTP {exc.code}", status=exc.code, kind="remote_http", payload=parsed) from exc
+            kind = "upstream_auth_invalid" if exc.code in {401, 403} else "remote_http"
+            raise MpSourceError(f"公众号监控上游返回 HTTP {exc.code}", status=exc.code, kind=kind, payload=parsed) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise MpSourceError(f"公众号监控上游不可用：{exc}", kind="timeout" if isinstance(exc, TimeoutError) else "source_unavailable") from exc
         try:
@@ -348,6 +349,8 @@ class MpAdapter:
                         normalized["_source_row"] = index
                         normalized["_source_mtime_ns"] = path.stat().st_mtime_ns
                         normalized["_source_mtime_at"] = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+                        raw_url = normalized.get("url", "")
+                        normalized["_invalid_url"] = bool(raw_url and _trusted_url(raw_url) is None)
                         raw_rows.append(normalized)
             except (OSError, UnicodeDecodeError, csv.Error):
                 continue
@@ -404,7 +407,17 @@ class MpAdapter:
                 if limit is not None and len(records) >= limit:
                     break
         rejected = _rejected_report(self.rejected_csv_path, root)
-        csv_only = [row for row in metadata_rows if str(row["_identity"]) not in matched_metadata]
+        csv_only = [row for row in metadata_rows if str(row["_identity"]) not in matched_metadata and not row.get("_invalid_url")]
+        rejected_metadata = [
+            {
+                "source": row.get("_source_path"),
+                "row": row.get("_source_row"),
+                "title": row.get("title") or None,
+                "reason": "invalid_url",
+            }
+            for row in metadata_rows
+            if row.get("_invalid_url")
+        ]
         manifest = {
             "root": str(root),
             "categories": list(self.categories),
@@ -421,6 +434,7 @@ class MpAdapter:
             },
             "files": [{k: row[k] for k in ("relative_path", "file_hash", "content_hash", "mtime_ns", "size")} for row in records],
             "skipped": skipped[:100],
+            "rejected": rejected_metadata[:100],
             "rejected_articles": rejected,
         }
         return records, manifest

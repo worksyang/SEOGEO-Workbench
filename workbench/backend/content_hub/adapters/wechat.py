@@ -54,6 +54,7 @@ _SOURCE_SCHEMAS: dict[str, dict[str, Any]] = {
     "hits": {"type": "array", "items": {"type": "object", "required": ["snapshot_id", "rank"], "properties": {"snapshot_id": {"type": "string"}, "rank": {"type": "integer"}}}},
     "terms": {"type": "array", "items": {"type": "object", "required": ["snapshot_id", "term_type", "position", "term_text"], "properties": {"snapshot_id": {"type": "string"}, "term_type": {"type": "string"}, "position": {"type": "integer"}, "term_text": {"type": "string"}}}},
     "observations": {"type": "array", "items": {"type": "object", "required": ["observation_id", "article_id", "observed_at"], "properties": {"observation_id": {"type": "string"}, "article_id": {"type": "string"}, "observed_at": {"type": ["string", "null"]}}}},
+    "keyword_deltas": {"type": "array", "items": {"type": "object", "required": ["keyword_id", "keyword", "window_end", "status", "daily_read_delta_points"], "properties": {"keyword_id": {"type": "string"}, "keyword": {"type": "string"}, "window_end": {"type": "string"}, "status": {"enum": ["ok", "insufficient_data"]}, "daily_read_delta_points": {"type": "array"}}}},
     "registry": {"type": "object", "additionalProperties": {"type": "object"}},
 }
 SCHEMA_BY_FILENAME = {
@@ -65,6 +66,7 @@ SCHEMA_BY_FILENAME = {
     "ranking_hits.json": "hits",
     "snapshot_terms.json": "terms",
     "article_metric_observations.json": "observations",
+    "keyword_read_deltas.json": "keyword_deltas",
 }
 ARTICLE_LIST_RE = re.compile(r"^####\s+文章列表\s*$", re.MULTILINE)
 MAX_MARKDOWN_SCAN_BYTES = 1024 * 1024
@@ -87,6 +89,7 @@ class WechatAdapter:
         "terms": "normalized/snapshot_terms.json",
         "observations": "normalized/article_metric_observations.json",
     }
+    OPTIONAL_FILES = {"keyword_read_deltas": "normalized/keyword_read_deltas.json"}
 
     def __init__(self, settings: Any) -> None:
         self.settings = settings
@@ -96,9 +99,11 @@ class WechatAdapter:
 
     def file_manifest(self) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
-        for key, relative in self.FILES.items():
+        for key, relative in {**self.FILES, **self.OPTIONAL_FILES}.items():
             path = self.root / relative
             if not path.is_file():
+                if key in self.OPTIONAL_FILES:
+                    continue
                 raise WechatSourceError(f"本地微信事实文件不存在：{path}")
             digest = hashlib.sha256()
             with path.open("rb") as handle:
@@ -153,6 +158,10 @@ class WechatAdapter:
     def local_json(self, relative: str, *, required: bool = True) -> Any:
         path = self.root / relative
         try:
+            path.resolve().relative_to(self.root.resolve())
+        except (OSError, ValueError) as exc:
+            raise WechatSourceError(f"微信源路径越界：{relative}", kind="path_not_allowed") from exc
+        try:
             stat = path.stat()
         except FileNotFoundError:
             if required: raise WechatSourceError(f"本地微信事实文件不存在：{path}")
@@ -176,6 +185,25 @@ class WechatAdapter:
         with self._cache_lock:
             self._json_cache[cache_key] = (fingerprint, value)
         return value
+
+    def read_markdown(self, relative: str) -> str:
+        """只读读取旧系统正文，禁止绝对路径、越界路径和软链接逃逸。"""
+        if not relative or Path(str(relative)).is_absolute():
+            raise WechatSourceError("正文路径必须是旧系统根目录下的相对路径", kind="path_not_allowed", status=403)
+        try:
+            resolved = (self.root / str(relative)).resolve()
+            resolved.relative_to(self.root.resolve())
+            if not resolved.exists():
+                raise FileNotFoundError(str(resolved))
+            if not resolved.is_file():
+                raise FileNotFoundError(str(resolved))
+            return resolved.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise WechatSourceError(f"微信正文不存在：{relative}", kind="content_not_found", status=404) from exc
+        except ValueError as exc:
+            raise WechatSourceError(f"微信正文路径越界：{relative}", kind="path_not_allowed", status=403) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WechatSourceError(f"读取微信正文失败：{relative}: {exc}", kind="content_read_failed") from exc
 
     @classmethod
     def clear_cache_for_root(cls, root: Path | str) -> None:
@@ -206,6 +234,7 @@ class WechatAdapter:
 
     def all_records(self) -> dict[str, Any]:
         loaded = {key: self.local_json(path) for key, path in self.FILES.items()}
+        loaded["keyword_read_deltas"] = self.local_json(self.OPTIONAL_FILES["keyword_read_deltas"], required=False) or []
         if isinstance(loaded["monitor"], dict): loaded["keywords"] = loaded["monitor"].get("keywords", [])
         else: loaded["keywords"] = loaded["monitor"]
         return loaded

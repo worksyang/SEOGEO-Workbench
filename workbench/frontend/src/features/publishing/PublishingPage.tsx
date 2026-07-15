@@ -17,26 +17,14 @@ function text(value: unknown, fallback = ''): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback
 }
 
-const SAMPLE_BODY = `# 香港储蓄险的三个常见盲点
-
-## 流动性锁定
-储蓄险前期流动性差，短于 5 年退保可能产生本金损失。
-
-## 分红演示 ≠ 保证
-非保证分红受保司投资策略影响，需要看多年的分红实现率。
-
-## 跨境成本
-汇率、缴费路径和后续资金调拨都会影响实际收益。
-`
-
 export default function PublishingPage() {
   const [state, setState] = useState<PageState>('loading')
   const [error, setError] = useState('')
   const [accounts, setAccounts] = useState<Account[]>([])
   const [selected, setSelected] = useState('')
   const [contentId, setContentId] = useState('')
-  const [body, setBody] = useState(SAMPLE_BODY)
-  const [tab, setTab] = useState<'preview' | 'dry-run' | 'publish'>('preview')
+  const [body, setBody] = useState('')
+  const [tab, setTab] = useState<'preview' | 'dry-run'>('preview')
   const [previewHtml, setPreviewHtml] = useState('')
   const [sensitive, setSensitive] = useState<Array<Record<string, unknown>>>([])
   const [warnings, setWarnings] = useState<string[]>([])
@@ -73,7 +61,7 @@ export default function PublishingPage() {
       const res = await apiRequest<{ok: boolean; data: Record<string, unknown>}>(
         '/api/v1/publishing/preview',
         'POST',
-        {content_id: contentId || 'demo', body},
+        {content_id: contentId || undefined, body},
       )
       const data = record(res?.data)
       setPreviewHtml(text(data.html))
@@ -94,25 +82,7 @@ export default function PublishingPage() {
       const res = await apiRequest<{ok: boolean; data: Record<string, unknown>}>(
         '/api/v1/publishing/dry-run',
         'POST',
-        {account_id: selected, content_id: contentId || 'demo', body},
-      )
-      setResult(record(res?.data))
-    } catch (err) {
-      setResult({error: err instanceof Error ? err.message : String(err)})
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const publishReal = async () => {
-    if (!selected) return
-    setSubmitting(true)
-    setResult(null)
-    try {
-      const res = await apiRequest<{ok: boolean; data: Record<string, unknown>}>(
-        '/api/v1/publishing/publish',
-        'POST',
-        {account_id: selected, content_id: contentId || 'demo', body, confirm: true},
+        {account_id: selected, content_id: contentId || undefined, body},
       )
       setResult(record(res?.data))
     } catch (err) {
@@ -137,11 +107,8 @@ export default function PublishingPage() {
           <button className={`pill ${tab === 'dry-run' ? 'active' : ''}`} onClick={() => setTab('dry-run')}>
             Dry-run
           </button>
-          <button className={`pill ${tab === 'publish' ? 'active' : ''}`} onClick={() => setTab('publish')}>
-            真发布
-          </button>
         </div>
-        <span className="module-right">Cookie 不进入前端；真发布需 confirm=true</span>
+        <span className="module-right">仅展示预览与 dry-run；真发布未开放</span>
       </header>
 
       {state === 'offline' && (
@@ -183,11 +150,6 @@ export default function PublishingPage() {
               {submitting ? '执行中…' : '执行 dry-run'}
             </button>
           )}
-          {tab === 'publish' && (
-            <button type="button" className="mini-btn primary danger" onClick={publishReal} disabled={submitting || !selected}>
-              {submitting ? '执行中…' : '确认并真发布'}
-            </button>
-          )}
         </div>
       </section>
 
@@ -224,9 +186,9 @@ export default function PublishingPage() {
         </section>
       )}
 
-      {(tab === 'dry-run' || tab === 'publish') && result && (
+      {tab === 'dry-run' && result && (
         <section className="publishing-result">
-          <h3>{tab === 'dry-run' ? 'Dry-run 报告' : '真发布回执'}</h3>
+          <h3>Dry-run 报告</h3>
           <pre>{JSON.stringify(result, null, 2)}</pre>
         </section>
       )}

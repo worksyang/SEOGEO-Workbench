@@ -16,6 +16,20 @@ from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
 from content_hub.validation.urls import canonicalize_url
 
 SOURCE_TZ = ZoneInfo("Asia/Shanghai")
+CANONICAL_METRIC_KEYS = {
+    "read_delta_estimated": ("wechat.keyword.read_delta_estimated", "关键词阅读增量估算"),
+    "read_delta_raw": ("wechat.keyword.read_delta_raw", "关键词原始阅读增量"),
+    "steady_read_median": ("wechat.keyword.steady_read_median", "关键词稳定阅读中位数"),
+    "confidence_score": ("wechat.keyword.confidence_score", "关键词阅读增量置信度"),
+    "trend_signal": ("wechat.keyword.trend_signal", "关键词趋势信号"),
+    "daily_read_delta": ("wechat.keyword.daily_read_delta", "关键词日阅读增量"),
+}
+ARTICLE_METRIC_KEYS = {
+    "read_count": ("wechat.article.read_count", "微信文章阅读数"),
+    "like_count": ("wechat.article.like_count", "微信文章点赞数"),
+    "friends_follow_count": ("wechat.article.friends_follow_count", "微信文章在看数"),
+    "original_article_count": ("wechat.article.original_article_count", "微信文章原创数"),
+}
 def _id(prefix: str, value: Any) -> str:
     return f"{prefix}_{hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:20]}"
 
@@ -61,6 +75,18 @@ def _safe_url(value: Any) -> str | None:
 
 def _is_placeholder_url(value: Any) -> bool:
     return str(value or "").strip().lower().startswith("placeholder://")
+
+
+def _legacy_keyword_status(row: dict[str, Any]) -> str:
+    if row.get("status") in {"active", "paused", "archived"}:
+        return str(row["status"])
+    if row.get("status") in {"inactive", "disabled", "deleted"}:
+        return "archived"
+    if row.get("is_active") is False or row.get("active") is False or row.get("enabled") is False:
+        return "archived"
+    if row.get("archived") is True or row.get("deleted") is True:
+        return "archived"
+    return "active"
 
 
 def _utc_now() -> str:
@@ -123,7 +149,7 @@ class WechatService:
             "keyword_id": item.get("keyword_id"),
             "keyword": item.get("keyword") or item.get("keyword_text"),
             "group": item.get("group") or bucket,
-            "status": item.get("status") or "active",
+            "status": _legacy_keyword_status(item),
             "topic": item.get("topic") or item.get("keyword"),
             "bucket": bucket,
             "keyword_bucket": bucket,
@@ -348,6 +374,21 @@ class WechatService:
         views = self._snapshot_views(snapshot_rows, records)
         return {"source_status": {"status": "degraded", "source": "legacy_normalized"}, "article": article, "snapshots": views, "hits": hits, "articles": [article], "features": {"content": content, "canonical_url": _safe_url(article.get("normalized_url") or article.get("raw_url"))}, "observations": obs}
 
+    def article_content(self, article_id: str) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            row = con.execute("SELECT title,md_path FROM contents WHERE content_id=?", (article_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("微信文章", article_id)
+        if not row["md_path"]:
+            raise NotFoundError("微信正文", article_id)
+        try:
+            content = self.adapter.read_markdown(row["md_path"])
+        except WechatSourceError as exc:
+            if exc.status == 404:
+                raise NotFoundError("微信正文", article_id) from exc
+            raise ConflictError(str(exc)) from exc
+        return {"article_id": article_id, "title": row["title"], "path": row["md_path"], "content": content}
+
     def refresh(self, keyword_id: str, confirm: bool) -> dict[str, Any]:
         if confirm is not True: raise ValidationAppError("刷新必须明确传入 confirm=true。")
         try:
@@ -415,11 +456,19 @@ class WechatService:
             "metric_collision_same_value_count": 0,
             "metric_collision_value_diff_count": 0,
             "metric_collisions": [],
+            "full_sync": limit is None,
+            "metric_compatibility": {
+                "canonical_prefix": "wechat.article./wechat.keyword.",
+                "legacy_keys_preserved": True,
+                "policy": "只新增规范 key，不静默改写已有历史观测",
+            },
         }
         if dry_run:
             with connect(self.settings, readonly=True) as con:
                 ids, snapshot_map = self._metric_context(con, records)
                 self._prepare_metric_facts(con, records, ids, snapshot_map, report, planned_snapshot_ids=set(snapshot_map.values()))
+                self._prepare_keyword_delta_facts(records, report)
+            report["reconcile"] = self._reconcile_summary(records, limit=limit, dry_run=True)
             self._connection_status("healthy", success_at=_utc_now())
             self._audit("wechat.import", "succeeded", details={"dry_run": True, "batch_id": batch_id, "counts": counts, "audit": report})
             return {"dry_run": True, "source": "legacy_normalized", "counts": counts, "batch_id": batch_id, "audit": report}
@@ -427,16 +476,92 @@ class WechatService:
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
                 with transaction(con): self._write(con, records, batch_id, report, now)
+        report["reconcile"] = self._reconcile_summary(records)
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute("UPDATE ingestion_batches SET payload_json=? WHERE batch_id=?", (_json(report), batch_id))
+                    con.execute(
+                        "UPDATE ingestion_checkpoints SET payload_json=? WHERE adapter_key='wechat-search' AND checkpoint_key='normalized'",
+                        (_json(report),),
+                    )
+        reconciliation = report["reconcile"]
         if report["rejected"]:
             self._connection_status("degraded", error=f"{len(report['rejected'])} rows rejected", success_at=now)
+        elif reconciliation["status"] == "mismatch":
+            self._connection_status("degraded", error="reconciliation_mismatch", success_at=now)
         else:
             self._connection_status("healthy", success_at=now)
-        self._audit("wechat.import", "failed" if report["rejected"] else "succeeded", details={"batch_id": batch_id, "counts": counts, "audit": report})
-        return {"dry_run": False, "source": "legacy_normalized", "counts": counts, "batch_id": batch_id, "audit": report}
+        outcome = "failed" if report["rejected"] or reconciliation["status"] == "mismatch" else "succeeded"
+        self._audit("wechat.import", outcome, details={"batch_id": batch_id, "counts": counts, "audit": report})
+        return {"dry_run": False, "source": "legacy_normalized", "counts": counts, "batch_id": batch_id, "job_id": batch_id, "checkpoint": {"adapter_key": "wechat-search", "checkpoint_key": "normalized", "source_hash": report["manifest_id"]}, "audit": report}
+
+    def _reconcile_summary(self, records: dict[str, Any], *, limit: int | None = None, dry_run: bool = False) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            hub = {
+                "keywords": con.execute("SELECT COUNT(*) FROM keywords WHERE platform='wechat-search'").fetchone()[0],
+                "contents": con.execute("SELECT COUNT(*) FROM contents WHERE content_id IN (SELECT content_id FROM content_identifiers WHERE namespace='wechat_article')").fetchone()[0],
+                "snapshots": con.execute("SELECT COUNT(*) FROM search_snapshots WHERE platform='wechat-search'").fetchone()[0],
+                "hits": con.execute("SELECT COUNT(*) FROM search_hits WHERE snapshot_id IN (SELECT snapshot_id FROM search_snapshots WHERE platform='wechat-search')").fetchone()[0],
+                "metric_observations": con.execute("SELECT COUNT(*) FROM metric_observations WHERE metric_key LIKE 'wechat.%'").fetchone()[0],
+            }
+        metric_keys: set[tuple[str, str, str, str | None]] = set()
+        for row in records.get("observations") or []:
+            observed = _source_time(row.get("observed_at"))
+            article_id = str(row.get("article_id") or "")
+            snapshot_id = str(row.get("source_snapshot_id")) if row.get("source_snapshot_id") else None
+            if not article_id or observed is None:
+                continue
+            for field, (metric_key, _) in ARTICLE_METRIC_KEYS.items():
+                if _number(row.get(field)) is not None:
+                    metric_keys.add(("content", article_id, metric_key, f"{observed}:{snapshot_id}"))
+        for row in records.get("keyword_read_deltas") or []:
+            keyword_id = str(row.get("keyword_id") or "")
+            observed = _source_time(row.get("window_end"))
+            if not keyword_id or observed is None:
+                continue
+            for field, (metric_key, _) in CANONICAL_METRIC_KEYS.items():
+                if _number(row.get(field)) is not None:
+                    metric_keys.add(("keyword", keyword_id, metric_key, observed))
+        source = {
+            "keywords": len(records.get("keywords") or []),
+            "contents": len(records.get("articles") or []),
+            "snapshots": len(records.get("snapshots") or []),
+            "hits": len(records.get("hits") or []),
+            "metric_observations": len(metric_keys),
+        }
+        difference = {key: hub[key] - source[key] for key in source}
+        match = {key: source[key] == hub[key] for key in source}
+        dimensions = {
+            key: {"source": source[key], "hub": hub[key], "difference": difference[key], "match": match[key]}
+            for key in source
+        }
+        if dry_run:
+            status = "not_comparable"
+            note = "dry-run 未写入 Hub，不能进行双向精确对账"
+        elif limit is not None:
+            status = "partial"
+            note = "limit 导入只覆盖源选择集，不能与 Hub 全量闭包做双向精确对账"
+        elif not all(match.values()):
+            status = "mismatch"
+            note = "完整同步后的 source 与 Hub 计数不一致，已成功写入的事实保留"
+        else:
+            status = "matched"
+            note = "完整同步后的 source 与 Hub 各维度计数完全一致"
+        return {
+            "source": source,
+            "hub": hub,
+            "difference": difference,
+            "match": match,
+            "dimensions": dimensions,
+            "status": status,
+            "verified": status == "matched",
+            "note": note,
+        }
 
     @staticmethod
     def _counts(records: dict[str, Any]) -> dict[str, int]:
-        return {"keywords": len(records["keywords"]), "creators": len(records["accounts"]), "contents": len(records["articles"]), "search_snapshots": len(records["snapshots"]), "search_hits": len(records["hits"]), "snapshot_terms": len(records["terms"]), "metric_observations": len(records["observations"])}
+        return {"keywords": len(records["keywords"]), "creators": len(records["accounts"]), "contents": len(records["articles"]), "search_snapshots": len(records["snapshots"]), "search_hits": len(records["hits"]), "snapshot_terms": len(records["terms"]), "metric_observations": len(records["observations"]), "keyword_read_deltas": len(records.get("keyword_read_deltas") or [])}
 
     def _write(self, con: sqlite3.Connection, records: dict[str, Any], batch_id: str, report: dict[str, Any], now: str) -> None:
         records_seen = sum(len(v) for v in records.values() if isinstance(v, list))
@@ -449,8 +574,16 @@ class WechatService:
         for row in records["keywords"]:
             kid, keyword = str(row.get("keyword_id") or _id("kw", row.get("keyword"))), str(row.get("keyword") or "").strip()
             if not keyword: report["rejected"].append({"kind": "keyword", "row": row, "reason": "missing keyword"}); continue
-            con.execute("INSERT INTO keywords(keyword_id,platform,keyword,status,topic,keyword_bucket,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(keyword_id) DO UPDATE SET keyword=excluded.keyword,status=excluded.status,topic=excluded.topic,keyword_bucket=excluded.keyword_bucket,updated_at=excluded.updated_at,payload_json=excluded.payload_json", (kid,"wechat-search",keyword,row.get("status") or "active",row.get("topic") or keyword,row.get("keyword_bucket") or row.get("bucket"),_source_time(row.get("first_seen_at")) or now,_source_time(row.get("updated_at")) or now,_json(row)))
+            con.execute("INSERT INTO keywords(keyword_id,platform,keyword,status,topic,keyword_bucket,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(keyword_id) DO UPDATE SET keyword=excluded.keyword,status=excluded.status,topic=excluded.topic,keyword_bucket=excluded.keyword_bucket,updated_at=excluded.updated_at,payload_json=excluded.payload_json", (kid,"wechat-search",keyword,_legacy_keyword_status(row),row.get("topic") or keyword,row.get("keyword_bucket") or row.get("bucket"),_source_time(row.get("first_seen_at")) or now,_source_time(row.get("updated_at")) or now,_json(row)))
             accept("keywords", kid)
+        if report["full_sync"]:
+            active_source_ids = {str(row.get("keyword_id")) for row in records["keywords"] if row.get("keyword_id")}
+            con.execute(
+                "UPDATE keywords SET status='archived',updated_at=? WHERE platform='wechat-search' AND keyword_id NOT IN ({})".format(
+                    ",".join("?" for _ in active_source_ids) or "''"
+                ),
+                (now, *sorted(active_source_ids)),
+            )
         for row in records["accounts"]:
             aid = str(row.get("account_id") or _id("creator", row.get("canonical_name")))
             con.execute("INSERT INTO creators(creator_id,canonical_name,platform,external_id,profile_url,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(creator_id) DO UPDATE SET canonical_name=excluded.canonical_name,updated_at=excluded.updated_at,payload_json=excluded.payload_json", (aid,row.get("canonical_name"),"wechat-search",aid,None,_source_time(row.get("first_seen_at")) or now,_source_time(row.get("last_seen_at")) or now,_json(row)))
@@ -518,6 +651,9 @@ class WechatService:
         for fact in facts:
             self._write_metric_fact(con, fact)
             accept("observations", fact["source_observation_id"])
+        for fact in self._prepare_keyword_delta_facts(records, report):
+            self._write_metric_fact(con, fact)
+            accept("keyword_read_deltas", fact["source_observation_id"])
         records_failed = len(report["rejected"])
         records_written = sum(len(values) for values in accepted_rows.values())
         batch_status = "partial_failed" if records_failed else "succeeded"
@@ -578,7 +714,7 @@ class WechatService:
     def _prepare_metric_facts(self, con: sqlite3.Connection, records: dict[str, Any], ids: dict[str, str], snapshot_map: dict[str, str], report: dict[str, Any], *, planned_snapshot_ids: set[str] | None = None) -> list[dict[str, Any]]:
         planned_snapshot_ids = planned_snapshot_ids or set()
         groups: dict[tuple[str, str, str, str, str | None], list[dict[str, Any]]] = {}
-        labels = (("read_count", "微信阅读数"), ("like_count", "微信点赞数"), ("friends_follow_count", "微信在看数"), ("original_article_count", "微信原创数"))
+        labels = tuple((key, label) for key, (_, label) in ARTICLE_METRIC_KEYS.items())
         for row in records["observations"]:
             cid = ids.get(str(row.get("article_id")))
             observed = _source_time(row.get("observed_at"))
@@ -596,13 +732,14 @@ class WechatService:
                 if value is None:
                     report["rejected"].append({"kind": "metric", "source_observation_id": source_oid, "metric": key, "value": row.get(key), "reason": "invalid_numeric"})
                     continue
-                metric_key = f"wechat.{key}"
+                metric_key, _ = ARTICLE_METRIC_KEYS[key]
                 raw_observed_at = row.get("raw_observed_at") or row.get("observed_at")
                 source_precision = row.get("observed_at_precision") or self._time_precision(raw_observed_at)
                 source_origin = row.get("observed_at_source")
                 source_file_path = row.get("source_file_path") or row.get("source_ref")
                 canonical_row_json = _json(row)
-                oid = f"{source_oid}:{metric_key}" if source_oid else _id("observation", f"{cid}:{metric_key}:{observed}:{snapshot_id}:{canonical_row_json}")
+                # 保留旧 observation_id 的可追溯后缀；metric_key 本身统一写入规范命名。
+                oid = f"{source_oid}:wechat.{key}" if source_oid else _id("observation", f"{cid}:{metric_key}:{observed}:{snapshot_id}:{canonical_row_json}")
                 fact = {
                     "observation_id": oid, "source_observation_id": source_oid, "subject_id": cid,
                     "metric_key": metric_key, "metric_label": label, "observed_at": observed,
@@ -654,12 +791,56 @@ class WechatService:
         report["metric_collision_value_diff_count"] = sum(1 for x in report["metric_collisions"] if not x["same_value"])
         return winners
 
+    def _prepare_keyword_delta_facts(self, records: dict[str, Any], report: dict[str, Any]) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        for row in records.get("keyword_read_deltas") or []:
+            kid = str(row.get("keyword_id") or "")
+            observed = _source_time(row.get("window_end"))
+            if not kid or observed is None:
+                report["rejected"].append({"kind": "keyword_read_delta", "row": row, "reason": "invalid_keyword_id/window_end"})
+                continue
+            common = {"keyword_id": kid, "keyword": row.get("keyword"), "status": row.get("status"), "window_start": row.get("window_start"), "window_end": row.get("window_end")}
+            for source_field in ("read_delta_estimated", "read_delta_raw", "steady_read_median", "confidence_score", "trend_signal"):
+                value = _number(row.get(source_field))
+                if value is None:
+                    continue
+                metric_key, label = CANONICAL_METRIC_KEYS[source_field]
+                facts.append({
+                    "observation_id": f"{kid}:{observed}:{metric_key}",
+                    "source_observation_id": f"{kid}:{observed}:{source_field}",
+                    "subject_id": kid, "metric_key": metric_key, "metric_label": label,
+                    "observed_at": observed, "numeric_value": value, "snapshot_id": None,
+                    "source_ref": "normalized/keyword_read_deltas.json",
+                    "source_file_path": "normalized/keyword_read_deltas.json",
+                    "row": {**common, source_field: row.get(source_field)},
+                })
+            for point in row.get("daily_read_delta_points") or []:
+                date = _source_time(point.get("date"))
+                value = _number(point.get("read_delta"))
+                if date is None or value is None:
+                    report["rejected"].append({"kind": "keyword_read_delta", "row": point, "reason": "invalid_daily_point"})
+                    continue
+                metric_key, label = CANONICAL_METRIC_KEYS["daily_read_delta"]
+                facts.append({
+                    "observation_id": f"{kid}:{date}:{metric_key}",
+                    "source_observation_id": f"{kid}:{date}:daily_read_delta",
+                    "subject_id": kid, "metric_key": metric_key, "metric_label": label,
+                    "observed_at": date, "numeric_value": value, "snapshot_id": None,
+                    "source_ref": "normalized/keyword_read_deltas.json",
+                    "source_file_path": "normalized/keyword_read_deltas.json",
+                    "row": {**common, "daily_point": point},
+                })
+        report["keyword_delta_fact_count"] = len(facts)
+        return facts
+
     @staticmethod
     def _write_metric_fact(con: sqlite3.Connection, fact: dict[str, Any]) -> None:
-        con.execute("INSERT OR IGNORE INTO metric_definitions(metric_key,platform,subject_type,display_name,value_type,unit,accumulation_mode,description) VALUES(?,?,?,?,?,?,?,?)", (fact["metric_key"], "wechat-search", "content", fact["metric_label"], "number", "count", "gauge", "旧微信 normalized 事实"))
+        subject_type = "keyword" if fact["metric_key"].startswith("wechat.keyword.") else "content"
+        accumulation_mode = "delta" if fact["metric_key"].endswith(("read_delta", "read_delta_estimated", "read_delta_raw")) else "gauge"
+        con.execute("INSERT OR IGNORE INTO metric_definitions(metric_key,platform,subject_type,display_name,value_type,unit,accumulation_mode,description) VALUES(?,?,?,?,?,?,?,?)", (fact["metric_key"], "wechat-search", subject_type, fact["metric_label"], "number", "count", accumulation_mode, "旧微信 normalized 事实；规范 key"))
         key = (fact["subject_id"], fact["metric_key"], fact["observed_at"], fact["snapshot_id"])
-        con.execute("DELETE FROM metric_observations WHERE subject_type='content' AND subject_id=? AND metric_key=? AND observed_at=? AND COALESCE(snapshot_id,'no-snapshot')=COALESCE(?,'no-snapshot') AND observation_id<>?", (*key, fact["observation_id"]))
+        con.execute("DELETE FROM metric_observations WHERE subject_type=? AND subject_id=? AND metric_key=? AND observed_at=? AND COALESCE(snapshot_id,'no-snapshot')=COALESCE(?,'no-snapshot') AND observation_id<>?", (subject_type, *key, fact["observation_id"]))
         existing = con.execute("SELECT subject_type,subject_id,metric_key,observed_at,snapshot_id FROM metric_observations WHERE observation_id=?", (fact["observation_id"],)).fetchone()
-        if existing and tuple(existing) != ("content", *key):
+        if existing and tuple(existing) != (subject_type, *key):
             con.execute("DELETE FROM metric_observations WHERE observation_id=?", (fact["observation_id"],))
-        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(observation_id) DO UPDATE SET subject_type=excluded.subject_type,subject_id=excluded.subject_id,metric_key=excluded.metric_key,observed_at=excluded.observed_at,numeric_value=excluded.numeric_value,snapshot_id=excluded.snapshot_id,source_ref=excluded.source_ref,payload_json=excluded.payload_json", (fact["observation_id"], "content", fact["subject_id"], fact["metric_key"], fact["observed_at"], fact["numeric_value"], fact["snapshot_id"], fact["source_ref"], _json({**fact["row"], "source_observation_id": fact["source_observation_id"]})))
+        con.execute("INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,snapshot_id,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(observation_id) DO UPDATE SET subject_type=excluded.subject_type,subject_id=excluded.subject_id,metric_key=excluded.metric_key,observed_at=excluded.observed_at,numeric_value=excluded.numeric_value,snapshot_id=excluded.snapshot_id,source_ref=excluded.source_ref,payload_json=excluded.payload_json", (fact["observation_id"], subject_type, fact["subject_id"], fact["metric_key"], fact["observed_at"], fact["numeric_value"], fact["snapshot_id"], fact["source_ref"], _json({**fact["row"], "source_observation_id": fact["source_observation_id"]})))

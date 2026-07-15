@@ -465,3 +465,75 @@ def test_mp_flags_strict_whitelist_and_types(settings, monkeypatch):
     with pytest.raises(Exception):
         service.update_flags("mp-1", {"category_name": "热门产品"}, True)
     assert captured == {"monitor_enabled": True, "category_name": "港险"}
+
+
+def test_mp_auth_invalid_is_blocked_with_safe_evidence(settings, monkeypatch):
+    monkeypatch.setattr(MpAdapter, "auth_check", lambda self: RemoteResponse(
+        {"logged_in": False, "token": "secret", "message": "cookie invalid"}, 200
+    ))
+    result = MpService(settings).auth_check()
+    assert result.payload["source_status"]["status"] == "blocked"
+    assert result.payload["source_status"]["operation_hint"]
+    assert "secret" not in json.dumps(result.payload)
+
+
+def test_mp_history_import_does_not_fake_live_health_after_auth_failure(settings, tmp_path, monkeypatch):
+    configured = _configured(settings, tmp_path)
+    monkeypatch.setattr(MpAdapter, "auth_check", lambda self: RemoteResponse(
+        {"logged_in": False, "token": "secret", "message": "cookie invalid"}, 200
+    ))
+    service = MpService(configured)
+    auth_result = service.auth_check()
+    assert auth_result.payload["source_status"]["status"] == "blocked"
+
+    monkeypatch.setattr(MpAdapter, "accounts", lambda self: RemoteResponse(
+        {"accounts": [{"mp_id": "mp1", "mp_name": "测试号", "password": "never"}]}, 200
+    ))
+    result = service.import_history(dry_run=False, limit=None)
+
+    with connect(configured, readonly=True) as con:
+        content_count = con.execute("SELECT COUNT(*) FROM contents").fetchone()[0]
+        connection = con.execute(
+            "SELECT status FROM system_connections WHERE system_key='wechat-mp'"
+        ).fetchone()
+    assert content_count == 1
+    assert connection["status"] == "blocked"
+    assert result["source_status"]["status"] == "blocked"
+    assert result["history_import"]["status"] == "succeeded"
+    assert result["history_import"]["source"] == "markdown"
+    assert result["source_status"]["verified"] is False
+    assert "healthy" not in json.dumps(result["source_status"])
+    assert "secret" not in json.dumps(result)
+
+
+def test_mp_job_is_blocked_when_runtime_login_is_inconsistent(settings, monkeypatch):
+    monkeypatch.setattr(MpAdapter, "auth_check", lambda self: RemoteResponse({"logged_in": False}, 200))
+    monkeypatch.setattr(MpAdapter, "runtime_overview", lambda self: RemoteResponse(
+        {"wechat_status": {"inconsistent": True, "logged_in": False, "display_status": "未登录"}}, 200
+    ))
+    called = False
+    def create_job(_self, _payload):
+        nonlocal called
+        called = True
+        return RemoteResponse({"created": True}, 200)
+    monkeypatch.setattr(MpAdapter, "create_job", create_job)
+    with pytest.raises(Exception, match="登录状态"):
+        MpService(settings).create_job({"type": "sync"}, True)
+    assert called is False
+
+
+def test_mp_invalid_metadata_url_is_rejected_and_not_written(settings, tmp_path):
+    configured = _configured(settings, tmp_path)
+    (configured.mp_metadata_root / "bad.csv").write_text(
+        "title,publish_time,mp_name,url,mp_id,id\n"
+        "坏链接,2026-07-01 10:00:00,测试号,http://evil.example/a,mp-bad,bad-1\n",
+        encoding="utf-8",
+    )
+    result = MpService(configured).import_history(dry_run=False, limit=None)
+    assert result["counts"]["accepted"] == 1
+    assert result["counts"]["rejected"] == 1
+    assert result["counts"]["processed"] == 2
+    assert any(item["reason"] == "invalid_url" for item in result["audit"]["rejected"])
+    with connect(configured, readonly=True) as con:
+        assert con.execute("SELECT COUNT(*) FROM contents WHERE title='坏链接'").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM search_hits").fetchone()[0] == 0

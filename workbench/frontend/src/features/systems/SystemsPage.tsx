@@ -44,8 +44,8 @@ export default function SystemsPage() {
   const [state, setState] = useState<PageState>('loading')
   const [error, setError] = useState('')
   const [data, setData] = useState<StatusResponse['data'] | null>(null)
-  const [signalSummary, setSignalSummary] = useState<Record<string, number>>({})
-  const [jobsCount, setJobsCount] = useState(0)
+  const [signalSummary, setSignalSummary] = useState<Record<string, number> | null>(null)
+  const [jobsCount, setJobsCount] = useState<number | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -109,12 +109,12 @@ export default function SystemsPage() {
             </article>
             <article>
               <span>信号累计</span>
-              <b>{Object.values(signalSummary).reduce((a, b) => a + b, 0)}</b>
+              <b>{signalSummary ? Object.values(signalSummary).reduce((a, b) => a + b, 0) : '—'}</b>
               <small>last 200 from /signals</small>
             </article>
             <article>
               <span>持久任务</span>
-              <b>{jobsCount}</b>
+              <b>{jobsCount ?? '—'}</b>
               <small>queued / running / completed</small>
             </article>
             <article>

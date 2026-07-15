@@ -16,7 +16,6 @@ import type {
 
 type ViewState = 'loading' | 'ready' | 'empty' | 'offline' | 'error'
 type SortMode = 'published' | 'title'
-type ActionResult = JsonRecord & {result?: JsonRecord; job_id?: string; status?: string}
 
 const EMPTY_COUNTS: XhsCounts = {
   keywords: 0,
@@ -126,11 +125,6 @@ function externalUrl(value: unknown): string {
   }
 }
 
-function findJobId(data: ActionResult): string {
-  const result = record(data.result)
-  return text(data.job_id || result.job_id || result.id || data.id)
-}
-
 function metricLabel(key: string): string {
   return ({liked: '点赞', collected: '收藏', comment: '评论', shared: '分享'}[key] ?? key)
 }
@@ -172,7 +166,6 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
   const [actionMessage, setActionMessage] = useState('')
   const [busy, setBusy] = useState('')
   const [importResult, setImportResult] = useState<JsonRecord | null>(null)
-  const refreshTimer = useRef<number | null>(null)
   const articleControllerRef = useRef<AbortController | null>(null)
   const accountControllerRef = useRef<AbortController | null>(null)
   const articleRequestRef = useRef(0)
@@ -217,7 +210,6 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
   }, [])
 
   useEffect(() => () => {
-    if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current)
     articleControllerRef.current?.abort()
     accountControllerRef.current?.abort()
   }, [])
@@ -363,56 +355,6 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
     }
   }
 
-  const pollRefresh = (jobId: string) => {
-    if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current)
-    const poll = async () => {
-      try {
-        const response = await apiGet<XhsApiEnvelope<JsonRecord>>(`/api/v1/xhs/refresh-status/${encodeURIComponent(jobId)}`)
-        const result = record(response.data?.result ?? response.data)
-        const status = text(result.status || result.state).toLowerCase()
-        if (['queued', 'running', 'pending', 'processing', 'started', 'in_progress'].includes(status)) {
-          refreshTimer.current = window.setTimeout(poll, 1800)
-          return
-        }
-        setActionMessage(`刷新任务已结束：${status || '上游已返回终态'}。`)
-        await refreshData()
-        setBusy('')
-      } catch (reason) {
-        setActionError(errorText(reason, '刷新状态读取失败'))
-        setBusy('')
-      }
-    }
-    refreshTimer.current = window.setTimeout(poll, 900)
-  }
-
-  const refreshKeyword = async () => {
-    if (!selectedKeywordId || !window.confirm('确认刷新该小红书关键词？此操作会请求真实上游。')) return
-    if (refreshTimer.current !== null) {
-      window.clearTimeout(refreshTimer.current)
-      refreshTimer.current = null
-    }
-    setBusy('refresh')
-    setActionError('')
-    setActionMessage('')
-    try {
-      const response = await apiRequest<XhsApiEnvelope<ActionResult>>(`/api/v1/xhs/keywords/${encodeURIComponent(selectedKeywordId)}/refresh`, 'POST', {confirm: true})
-      const data = response.data ?? {}
-      const result = record(data.result ?? data) as ActionResult
-      const status = text(result.status).toLowerCase()
-      setActionMessage(status === 'running' ? '上游已确认运行中。' : status === 'queued' ? '上游已排队，正在等待终态。' : '刷新已收到上游成功回执。')
-      const jobId = findJobId(result)
-      if (jobId) pollRefresh(jobId)
-      else {
-        await refreshData()
-        setBusy('')
-      }
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.status === 409) setActionError('上游拒绝刷新：当前任务冲突或正在运行。')
-      else setActionError(errorText(reason, '刷新未获得成功回执'))
-      setBusy('')
-    }
-  }
-
   const runImport = async (dryRun: boolean) => {
     if (!dryRun && !window.confirm('确认执行小红书历史正式导入？该操作会写入 Hub。')) return
     setBusy(dryRun ? 'dry-run' : 'import')
@@ -456,7 +398,7 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
         <strong className="module-logo">小红书关键词监测</strong>
         <span className="sep" />
         <span className="module-meta">真实来源 · <b>{pageState === 'loading' ? '检查中' : statusLabel(source)}</b></span>
-        <div className="module-switch"><button className="mini-btn" type="button" onClick={() => void runImport(true)} disabled={busy !== ''}>dry-run 导入</button><button className="mini-btn primary" type="button" onClick={() => void runImport(false)} disabled={busy !== ''}>正式导入</button></div>
+        <div className="module-switch"><button className="mini-btn" type="button" onClick={() => void runImport(true)} disabled={busy !== ''}>dry-run 导入</button></div>
         <span className="module-right">{source.source ?? '等待来源回执'}</span>
         <button className="mini-btn" type="button" onClick={() => void refreshData()} disabled={busy !== ''}>重新读取</button>
       </header>
@@ -477,7 +419,7 @@ export default function XhsPage({onSourceStatus}: {onSourceStatus: (status: stri
 
         <main className="monitor-right">
           <section className="card keyword-hero">
-            <div className="kh-top"><div><strong className="kh-title">{text(selectedKeyword?.keyword, '选择一个关键词')}</strong><p className="kh-sub">{selectedKeyword ? `${text(selectedKeyword.topic, '无真实主题')} · ${text(selectedKeyword.keyword_bucket, '无真实分组')}` : '从左侧列表选择真实关键词观测对象。'}</p></div><div className="kh-actions"><button className="mini-btn primary" type="button" onClick={() => void refreshKeyword()} disabled={!selectedKeywordId || busy !== ''}>刷新关键词</button></div></div>
+            <div className="kh-top"><div><strong className="kh-title">{text(selectedKeyword?.keyword, '选择一个关键词')}</strong><p className="kh-sub">{selectedKeyword ? `${text(selectedKeyword.topic, '无真实主题')} · ${text(selectedKeyword.keyword_bucket, '无真实分组')}` : '从左侧列表选择真实关键词观测对象。'}</p></div><span className="subtle">只读观测</span></div>
             <div className="stat-row"><div className="stat"><b>{snapshots.length || '—'}</b><span>历史快照</span></div><div className="stat"><b>{selectedHits.length || '—'}</b><span>排名命中</span></div><div className="stat"><b>{asArray(selectedFeatures.suggestions).length || '—'}</b><span>建议词</span></div><div className="stat"><b>{asArray(selectedFeatures.related).length || '—'}</b><span>关联词</span></div></div>
           </section>
 

@@ -8,6 +8,7 @@ import type {
 
 type AnyRecord = Record<string, unknown>
 type LoadState = 'loading' | 'ready' | 'empty' | 'offline' | 'error'
+type RefreshState = 'idle' | 'loading' | 'success' | 'error'
 
 interface KeywordRow {
   id: string | null
@@ -142,9 +143,20 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const body = await response.json().catch(() => null)
   if (!response.ok) {
     const error = record(body).error
-    throw new Error(firstText(record(error), ['message']) || `请求失败（${response.status}）`)
+    throw new Error(firstText(record(error), ['message', 'reason']) || firstText(record(body), ['detail', 'message', 'reason']) || `请求失败（${response.status}）`)
   }
   return body as T
+}
+
+class ApiError extends Error {
+  status: number
+  body: unknown
+
+  constructor(status: number, body: unknown, fallback: string) {
+    super(firstText(record(record(body).error), ['message', 'reason']) || firstText(record(body), ['detail', 'message', 'reason']) || firstText(record(record(body).data), ['message', 'error', 'reason']) || firstText(record(record(record(body).data).result), ['message', 'error', 'detail', 'reason']) || fallback)
+    this.status = status
+    this.body = body
+  }
 }
 
 function detailValue(data: AnyRecord, keys: string[]): unknown {
@@ -203,10 +215,13 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
   const [keywordState, setKeywordState] = useState<LoadState>('loading')
   const [selectedSlice, setSelectedSlice] = useState('')
   const [articleData, setArticleData] = useState<AnyRecord | null>(null)
+  const [articleContent, setArticleContent] = useState<AnyRecord | null>(null)
+  const [articleContentState, setArticleContentState] = useState<LoadState>('empty')
+  const [articleContentError, setArticleContentError] = useState('')
+  const [refreshState, setRefreshState] = useState<RefreshState>('idle')
+  const [refreshMessage, setRefreshMessage] = useState('')
   const articleRequestRef = useRef(0)
   const articleControllerRef = useRef<AbortController | null>(null)
-  const [refreshState, setRefreshState] = useState<'idle' | 'running' | 'queued' | 'success' | 'rejected' | 'failure'>('idle')
-  const [refreshMessage, setRefreshMessage] = useState('')
 
   const loadBootstrap = (signal?: AbortSignal) => {
     setState('loading')
@@ -326,70 +341,71 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
   const openArticle = (article: ArticleRow) => {
     if (!article.id) return
     setArticleData(null)
+    setArticleContent(null)
+    setArticleContentState('loading')
+    setArticleContentError('')
     articleControllerRef.current?.abort()
     const requestId = articleRequestRef.current + 1
     articleRequestRef.current = requestId
     const controller = new AbortController()
     articleControllerRef.current = controller
-    getJson<WechatArticleResponse>(`/api/v1/wechat/articles/${encodeURIComponent(article.id)}`, controller.signal)
+    const contentRequest = getJson<WechatArticleResponse>(`/api/v1/wechat/articles/${encodeURIComponent(article.id)}/content`, controller.signal)
+    const metadataRequest = getJson<WechatArticleResponse>(`/api/v1/wechat/articles/${encodeURIComponent(article.id)}`, controller.signal)
+    metadataRequest
       .then((response) => {
         if (requestId === articleRequestRef.current) {
-          articleControllerRef.current = null
           setArticleData(response?.data ?? {})
         }
       })
       .catch((reason: unknown) => {
         if (requestId === articleRequestRef.current && !(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setArticleData({error: reason instanceof Error ? reason.message : '文章元数据读取失败'})
+        }
+      })
+    contentRequest
+      .then((response) => {
+        if (requestId === articleRequestRef.current) {
           articleControllerRef.current = null
-          setArticleData({error: reason instanceof Error ? reason.message : '正文详情读取失败'})
+          setArticleContent(response?.data ?? {})
+          setArticleContentState(response?.data ? 'ready' : 'empty')
+        }
+      })
+      .catch((reason: unknown) => {
+        if (requestId === articleRequestRef.current && !(reason instanceof DOMException && reason.name === 'AbortError')) {
+          articleControllerRef.current = null
+          setArticleContent(null)
+          setArticleContentState('error')
+          setArticleContentError(reason instanceof Error ? reason.message : '受控 Markdown 正文读取失败')
+          setArticleData((current) => current ?? {})
         }
       })
   }
 
-  const refresh = () => {
-    if (!selectedId) return
-    const repeatSubmission = refreshState === 'running' || refreshState === 'queued'
-    if (!window.confirm(`${repeatSubmission ? '确认再次提交刷新' : '确认刷新'}关键词“${selectedKeyword?.name ?? selectedId}”？${repeatSubmission ? '这会再次触发' : '这会触发'}真实数据源请求。`)) return
-    setRefreshState('running')
-    setRefreshMessage('正在向数据源发起刷新，请等待服务回执…')
-    fetch(`/api/v1/wechat/keywords/${encodeURIComponent(selectedId)}/refresh`, {
-      method: 'POST',
-      headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-      body: JSON.stringify({confirm: true}),
-    })
-      .then(async (response) => {
-        const body = await response.json().catch(() => null)
-        const bodyRecord = record(body)
-        const errorRecord = record(bodyRecord.error)
-        const dataRecord = record(bodyRecord.data)
-        const resultRecord = {...dataRecord, ...record(dataRecord.result)}
-        const reason = firstText(errorRecord, ['reason', 'message']) || firstText(resultRecord, ['reason', 'message'])
-        if (response.status === 409) {
-          setRefreshState('rejected')
-          setRefreshMessage(reason || '刷新被拒绝：已有批次正在运行。')
-          return
-        }
-        if (!response.ok || bodyRecord.ok === false) throw new Error(reason || `刷新失败（${response.status}）`)
-        const returnedStatus = (firstText(resultRecord, ['status', 'state']) || (response.status === 202 ? 'queued' : 'running')).toLowerCase()
-        if (returnedStatus === 'queued') {
-          setRefreshState('queued')
-          setRefreshMessage(reason || '刷新已排队，等待数据源处理。')
-        } else if (returnedStatus === 'running') {
-          setRefreshState('running')
-          setRefreshMessage(reason || '刷新正在进行，新的快照将在任务完成后出现。')
-        } else if (['rejected', 'reject', 'failed', 'failure'].includes(returnedStatus)) {
-          setRefreshState('rejected')
-          setRefreshMessage(reason || '刷新被数据源拒绝。')
-        } else {
-          setRefreshState('success')
-          setRefreshMessage(firstText(resultRecord, ['message', 'status']) || '刷新请求已被服务接受。')
-        }
-        loadBootstrap()
+  const refreshSelectedKeyword = async () => {
+    if (!selectedId || refreshState === 'loading') return
+    if (!window.confirm(`确认刷新“${selectedKeyword?.name ?? '当前关键词'}”数据？此操作会调用旧数据源并可能产生真实上游请求。`)) return
+    setRefreshState('loading')
+    setRefreshMessage('')
+    try {
+      const response = await fetch(`/api/v1/wechat/keywords/${encodeURIComponent(selectedId)}/refresh`, {
+        method: 'POST',
+        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+        body: JSON.stringify({confirm: true}),
       })
-      .catch((reason: unknown) => {
-        setRefreshState('failure')
-        setRefreshMessage(reason instanceof Error ? reason.message : '刷新失败，未收到有效回执')
-      })
+      const body = await response.json().catch(() => null)
+      if (!response.ok || record(body).ok === false) throw new ApiError(response.status, body, `刷新请求失败（${response.status}）`)
+      const result = record(record(body).data).result
+      const status = firstText(record(result), ['status', 'state']).toLowerCase()
+      if (['blocked', 'degraded', 'failed', 'error', 'rejected'].includes(status)) {
+        throw new ApiError(response.status, body, `刷新未完成：${status}`)
+      }
+      setRefreshState('success')
+      setRefreshMessage(status === 'running' ? '刷新已受理，任务运行中。' : status === 'queued' || response.status === 202 ? '刷新已受理，任务已排队。' : '刷新已受理。')
+      loadBootstrap()
+    } catch (reason: unknown) {
+      setRefreshState('error')
+      setRefreshMessage(reason instanceof Error ? reason.message : '刷新请求失败')
+    }
   }
 
   const observedMetrics: Array<[string, unknown]> = ([
@@ -413,7 +429,7 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
         <span className="sep" />
         <span className="module-meta">真实来源 · <b>{sourceLabel(bootstrap?.source_status)}</b></span>
         <span className="module-right">更新于 {formatDate(bootstrap?.updated_at ?? summary.generated_at)}</span>
-        <button className="mini-btn" type="button" onClick={() => loadBootstrap()}>重新读取</button>
+        <button className="mini-btn" type="button" onClick={() => loadBootstrap()} disabled={state === 'loading'} aria-busy={state === 'loading'}>重新读取</button>
       </header>
 
       <div className="monitor-layout">
@@ -435,9 +451,11 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
         <main className="monitor-right">
           {(state === 'error' || state === 'offline') && <div className="module-notice error" role="alert"><strong>{state === 'offline' ? '旧服务离线' : '接口读取失败'}</strong><span>{error || '暂时没有可用回执。'}</span><button type="button" onClick={() => loadBootstrap()}>重试</button></div>}
           {state === 'empty' && <div className="module-notice"><strong>暂无关键词数据</strong><span>服务已响应，但当前没有可展示的关键词或快照。</span></div>}
+          <span id="wechat-refresh-help" className="subtle">选择关键词后可刷新；操作会调用旧数据源。</span>
+          {refreshMessage && <div className={`module-notice ${refreshState === 'error' ? 'error' : ''}`} role={refreshState === 'error' ? 'alert' : 'status'}><strong>{refreshState === 'error' ? '刷新未完成' : '刷新已受理'}</strong><span>{refreshMessage}</span></div>}
 
           <section className="card keyword-hero">
-            <div className="kh-top"><div><strong className="kh-title">{selectedKeyword?.name ?? '选择一个关键词'}</strong><p className="kh-sub">{selectedKeyword ? `${selectedKeyword.group} · ${sourceLabel(selectedKeyword.status)}` : '从左侧关键词列表选择真实观测对象。'}</p></div><div className="kh-actions"><button className="mini-btn primary" type="button" disabled={!selectedId} onClick={refresh}>{refreshState === 'running' || refreshState === 'queued' ? '再次提交刷新' : '刷新数据'}</button></div></div>
+            <div className="kh-top"><div><strong className="kh-title">{selectedKeyword?.name ?? '选择一个关键词'}</strong><p className="kh-sub">{selectedKeyword ? `${selectedKeyword.group} · ${sourceLabel(selectedKeyword.status)}` : '从左侧关键词列表选择真实观测对象。'}</p></div><div className="kh-actions"><button className="mini-btn primary" type="button" onClick={() => void refreshSelectedKeyword()} disabled={!selectedId || refreshState === 'loading'} aria-busy={refreshState === 'loading'} aria-describedby="wechat-refresh-help">{refreshState === 'loading' ? '正在刷新…' : '刷新数据'}</button></div></div>
             <div className="stat-row"><div className="stat"><b>{snapshots.length || '—'}</b><span>历史快照</span></div><div className="stat"><b>{articleRows.length || '—'}</b><span>排名文章</span></div><div className="stat"><b>{visibleRelatedTerms.length || '—'}</b><span>关联词</span></div><div className="stat"><b>{selectedSnapshot ? formatDate(firstText(selectedSnapshot, ['captured_at', 'observed_at', 'date', 'created_at'])) : '—'}</b><span>当前切片</span></div></div>
           </section>
 
@@ -452,11 +470,11 @@ export default function WechatPage({onSourceStatus}: {onSourceStatus: (status: s
             <div className="article-list">{articleRows.length ? articleRows.map((article, index) => <button type="button" className="article-row" key={article.id ?? `${article.title}-${index}`} disabled={!article.id} onClick={() => openArticle(article)}><span className="article-rank">{article.rank || '—'}</span><span className="article-main"><b>{article.title}</b><span>{[article.account, article.url].filter(Boolean).join(' · ') || '来源信息不可用'}</span></span><span className="article-score">{article.id ? <b>查看</b> : <span>无 ID</span>}</span></button>) : <div className="compact-empty">当前快照没有排名文章。</div>}</div>
           </section>
 
-          {(refreshState !== 'idle' || keywordState === 'loading' || keywordState === 'error') && <div className={`module-notice ${keywordState === 'error' || refreshState === 'failure' || refreshState === 'rejected' ? 'error' : ''}`} role="status"><strong>{keywordState === 'loading' ? '正在读取关键词详情' : refreshState === 'idle' ? '详情读取状态' : '刷新回执'}</strong><span>{keywordState === 'error' ? error : refreshMessage || '等待真实接口回执。'}</span></div>}
+          {(keywordState === 'loading' || keywordState === 'error') && <div className={`module-notice ${keywordState === 'error' ? 'error' : ''}`} role="status"><strong>{keywordState === 'loading' ? '正在读取关键词详情' : '详情读取失败'}</strong><span>{keywordState === 'error' ? error : '等待真实接口回执。'}</span></div>}
 
           {(keywordFacts.length || visibleRelatedTerms.length) ? <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">附加事实</strong><span className="subtle">不改变主观测顺序</span></div>{keywordFacts.length ? <div className="keyword-facts">{keywordFacts.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div> : null}{visibleRelatedTerms.length ? <div className="term-list">{visibleRelatedTerms.map(([kind, item], index) => <span key={`${kind}-${text(item)}-${index}`}><b>{kind}</b>{text(item) || firstText(record(item), ['term', 'keyword', 'name']) || '未命名词项'}</span>)}</div> : null}</section> : null}
 
-          {articleData ? <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">{firstText({...articleData, ...record(articleData.article)}, ['title', 'name', 'headline']) || '文章详情'}</strong><button className="mini-btn" type="button" onClick={() => setArticleData(null)}>关闭</button></div>{articleData.error ? <div className="compact-empty">{text(articleData.error)}</div> : <div className="article-detail-content"><p>{firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path']) ? `Markdown：${firstText({...articleData, ...record(articleData.article)}, ['markdown_path', 'md_path', 'path', 'content_file_path'])}` : '正文不可用，接口未返回 Markdown 路径。'}</p>{safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url'])) ? <a href={safeExternalUrl(firstText({...articleData, ...record(articleData.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url']))} target="_blank" rel="noreferrer">打开原文</a> : null}</div>}</section> : null}
+          {articleData || articleContentState !== 'empty' ? <section className="card monitor-extra-card"><div className="card-head"><strong className="card-title">{firstText({...articleData, ...record(articleData?.article)}, ['title', 'name', 'headline']) || firstText(articleContent ?? {}, ['title']) || '文章详情'}</strong><button className="mini-btn" type="button" onClick={() => { setArticleData(null); setArticleContent(null); setArticleContentState('empty'); setArticleContentError('') }}>关闭</button></div>{articleData?.error ? <div className="compact-empty">{text(articleData.error)}</div> : null}{articleContentState === 'loading' && <div className="compact-empty" role="status">正在读取受控 Markdown 正文…</div>}{articleContentState === 'error' && <div className="module-notice error" role="alert"><strong>正文读取失败</strong><span>{articleContentError || '受控 Markdown 正文读取失败。'}</span></div>}{articleContentState === 'ready' && articleContent ? <div className="article-detail-content"><p>{text(articleContent.content) || '正文接口已响应，但未返回可展示 Markdown。'}</p>{safeExternalUrl(firstText({...articleData, ...record(articleData?.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url'])) ? <a href={safeExternalUrl(firstText({...articleData, ...record(articleData?.article)}, ['url', 'article_url', 'link', 'normalized_url', 'raw_url']))} target="_blank" rel="noreferrer">打开原文</a> : null}</div> : null}</section> : null}
         </main>
       </div>
     </div>

@@ -201,6 +201,64 @@ def test_wechat_limit_and_full_have_distinct_batches_and_consistency_gate(settin
         raise AssertionError("必须拒绝读中变更的源文件")
 
 
+def test_wechat_reconciliation_verified_only_for_exact_full_match(settings, tmp_path, monkeypatch):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    from content_hub.db.migrations import migrate
+
+    migrate(configured)
+    service = WechatService(configured)
+    matched = service.import_history(dry_run=False, limit=None)
+    assert matched["audit"]["reconcile"]["verified"] is True
+    assert matched["audit"]["reconcile"]["status"] == "matched"
+    assert all(
+        set(dimension) == {"source", "hub", "difference", "match"}
+        for dimension in matched["audit"]["reconcile"]["dimensions"].values()
+    )
+
+    original = service._reconcile_summary
+
+    def mismatched(records, **kwargs):
+        result = original(records, **kwargs)
+        result["hub"]["contents"] += 1
+        result["difference"]["contents"] = 1
+        result["match"]["contents"] = False
+        result["dimensions"]["contents"] = {
+            "source": result["source"]["contents"],
+            "hub": result["hub"]["contents"],
+            "difference": 1,
+            "match": False,
+        }
+        result["status"] = "mismatch"
+        result["verified"] = False
+        return result
+
+    monkeypatch.setattr(service, "_reconcile_summary", mismatched)
+    mismatch = service.import_history(dry_run=False, limit=None)
+    assert mismatch["audit"]["reconcile"]["verified"] is False
+    assert mismatch["audit"]["reconcile"]["status"] == "mismatch"
+    with connect(configured, readonly=True) as connection:
+        status = connection.execute(
+            "SELECT status, details_json FROM system_connections WHERE system_key='wechat-search'"
+        ).fetchone()
+        assert status[0] == "degraded"
+        assert "reconciliation_mismatch" in status[1]
+
+
+def test_wechat_reconciliation_limit_and_dry_run_are_not_verified(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+
+    service = WechatService(configured)
+    limited = service.import_history(dry_run=True, limit=1)
+    assert limited["audit"]["reconcile"]["verified"] is False
+    assert limited["audit"]["reconcile"]["status"] == "not_comparable"
+
+    full_dry_run = service.import_history(dry_run=True, limit=None)
+    assert full_dry_run["audit"]["reconcile"]["verified"] is False
+    assert full_dry_run["audit"]["reconcile"]["status"] == "not_comparable"
+
+
 def test_wechat_rejected_metrics_and_status_time(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
     root = configured.wechat_source_root / "normalized/article_metric_observations.json"
@@ -567,3 +625,55 @@ def test_wechat_placeholder_url_is_warning_but_invalid_url_is_rejected(settings,
         assert con.execute(
             "SELECT status FROM system_connections WHERE system_key='wechat-search'"
         ).fetchone()[0] == "degraded"
+
+
+def test_wechat_full_sync_archives_keyword_missing_from_current_source(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    from content_hub.features.wechat.service import WechatService
+    service = WechatService(configured)
+    service.import_history(dry_run=False, limit=None)
+    monitor = configured.wechat_source_root / "normalized/monitor-data.json"
+    payload = json.loads(monitor.read_text(encoding="utf-8"))
+    payload["keywords"] = []
+    monitor.write_text(json.dumps(payload), encoding="utf-8")
+    service.import_history(dry_run=False, limit=None)
+    with connect(configured, readonly=True) as con:
+        assert con.execute("SELECT status FROM keywords WHERE keyword_id='kw_1'").fetchone()[0] == "archived"
+
+
+def test_wechat_keyword_read_delta_uses_canonical_metric_keys(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    path = configured.wechat_source_root / "normalized/keyword_read_deltas.json"
+    path.write_text(json.dumps([{
+        "keyword_id": "kw_1", "keyword": "港险", "window_end": "2026-07-15T00:00:00",
+        "status": "ok", "read_delta_estimated": 12, "confidence_score": 0.8,
+        "daily_read_delta_points": [{"date": "2026-07-14", "read_delta": 3}],
+    }]), encoding="utf-8")
+    from content_hub.features.wechat.service import WechatService
+    result = WechatService(configured).import_history(dry_run=False, limit=None)
+    with connect(configured, readonly=True) as con:
+        rows = con.execute(
+            "SELECT subject_type,metric_key,numeric_value FROM metric_observations WHERE subject_id='kw_1' ORDER BY metric_key"
+        ).fetchall()
+    assert {(row[0], row[1], row[2]) for row in rows} == {
+        ("keyword", "wechat.keyword.confidence_score", 0.8),
+        ("keyword", "wechat.keyword.daily_read_delta", 3.0),
+        ("keyword", "wechat.keyword.read_delta_estimated", 12.0),
+    }
+    assert result["audit"]["metric_compatibility"]["legacy_keys_preserved"] is True
+
+
+def test_wechat_markdown_path_is_confined_and_missing_is_404(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+    article_path = configured.wechat_source_root / "正文.md"
+    article_path.write_text("# 正文", encoding="utf-8")
+    from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
+    adapter = WechatAdapter(configured)
+    assert adapter.read_markdown("正文.md") == "# 正文"
+    with pytest.raises(WechatSourceError) as escaped:
+        adapter.read_markdown("../outside.md")
+    assert escaped.value.kind == "path_not_allowed"
+    article_path.unlink()
+    with pytest.raises(WechatSourceError) as missing:
+        adapter.read_markdown("正文.md")
+    assert missing.value.status == 404

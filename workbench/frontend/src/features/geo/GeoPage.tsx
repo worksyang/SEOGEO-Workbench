@@ -1,11 +1,10 @@
 import {useEffect, useMemo, useRef, useState} from 'react'
-import {ApiError, apiGet, apiRequest} from '../../api/client'
+import {apiGet} from '../../api/client'
 import type {
   GeoAnswer,
   GeoBootstrapData,
   GeoQuestion,
   GeoQuestionDetail,
-  GeoRefreshResult,
   GeoSnapshot,
   GeoSourceOverview,
 } from '../../types'
@@ -250,8 +249,6 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
   const [sourcePlatform, setSourcePlatform] = useState('')
   const [sourceAuthor, setSourceAuthor] = useState('')
   const [citationTypeFilter, setCitationTypeFilter] = useState('all')
-  const [refreshState, setRefreshState] = useState<'idle' | 'previewing' | 'confirming' | 'done' | 'blocked' | 'error'>('idle')
-  const [refreshResult, setRefreshResult] = useState<GeoRefreshResult | null>(null)
   const detailRequest = useRef(0)
   const answerRequest = useRef(0)
 
@@ -365,26 +362,6 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
 
   const openSources = () => { setView('sources'); setSourceState('empty') }
   const openQuestions = () => setView('questions')
-  const refresh = async () => {
-    if (!selectedSnapshot?.id || refreshState === 'previewing' || refreshState === 'confirming') return
-    setRefreshState('previewing'); setRefreshResult(null)
-    try {
-      const response = await apiRequest<{data?: GeoRefreshResult}>(`/api/v1/geo/answers/${encodeURIComponent(selectedSnapshot.id)}/refresh/preview`, 'POST')
-      const result = dataOf<GeoRefreshResult>(response)
-      setRefreshResult(result)
-      if (result.available === true) {
-        if (!window.confirm(result.message || '确认提交真实 GEO 刷新？该操作可能产生计费。')) { setRefreshState('idle'); return }
-        setRefreshState('confirming')
-        const confirmed = await apiRequest<{data?: GeoRefreshResult}>(`/api/v1/geo/answers/${encodeURIComponent(selectedSnapshot.id)}/refresh/confirm`, 'POST', {confirm: true})
-        setRefreshResult(dataOf<GeoRefreshResult>(confirmed)); setRefreshState('done')
-      } else {
-        setRefreshState('blocked')
-      }
-    } catch (reason) {
-      setRefreshState('error'); setRefreshResult({message: reason instanceof ApiError || reason instanceof Error ? reason.message : '刷新预览失败'})
-    }
-  }
-
   const answerRecord = record(answer)
   const citationCounts = countsFrom(answer?.citation_type_counts)
   const citationTypes = Object.keys(citationCounts)
@@ -441,10 +418,9 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
           </section>
 
           <section className="card snapshot-card geo-snapshot-card">
-            <div className="card-head"><strong className="card-title">采集快照</strong><button className="mini-btn primary" type="button" onClick={() => void refresh()} disabled={!selectedSnapshot?.id || refreshState === 'previewing' || refreshState === 'confirming'}>{refreshState === 'previewing' ? '检查刷新条件…' : '预览刷新'}</button></div>
+            <div className="card-head"><strong className="card-title">采集快照</strong><span className="subtle">只读回执</span></div>
             <div className="snap-strip" role="tablist" aria-label="GEO回答快照">{snapshots.length ? snapshots.map((snapshot) => <button key={snapshot.id} type="button" role="tab" aria-selected={selectedSnapshot?.id === snapshot.id} className={`geo-snap ${selectedSnapshot?.id === snapshot.id ? 'active' : ''}`} onClick={() => setSelectedSnapshotId(snapshot.id)}><b>{dateText(snapshot.captured_at)}</b><span>{statusLabel(snapshot.status)}</span><span>{snapshot.markdown_available ? '有 Markdown' : '缺 Markdown'}</span></button>) : <span className="subtle">暂无回答快照</span>}</div>
             <div className="source-rail">{platformSummary.length || creatorSummary.length ? <>{platformSummary.map((item, index) => { const row = record(item); return <div className="source-pill" key={`platform-${index}`}><div className="source-logo">{first(row, ['canonical_platform', 'platform', 'name'], '—').slice(0, 2)}<i>{displayValue(valueFrom(row, ['relation_count', 'citation_count', 'count']))}</i></div><span>{first(row, ['canonical_platform', 'platform', 'name'], '未知平台')}</span></div> })}{creatorSummary.map((item, index) => { const row = record(item); const profile = safeUrl(row.profile_url || row.homepage || row.url); const name = first(row, ['author', 'name', 'creator_name'], '未知作者'); return <div className="source-pill" key={`creator-${index}`}><div className="source-logo">{name.slice(0, 2)}</div><span>{profile ? <a href={profile} target="_blank" rel="noreferrer">{name}</a> : name}</span></div> })}</> : <span className="subtle">当前快照暂无平台或作者来源。</span>}</div>
-            {refreshResult && <div className={`geo-refresh-receipt ${refreshState === 'blocked' || refreshState === 'error' ? 'is-error' : ''}`} role="status"><strong>{refreshResult.blocked_reason ? `刷新受阻：${refreshResult.blocked_reason}` : refreshState === 'done' ? '刷新请求已由上游确认' : '刷新预览结果'}</strong><span>{refreshResult.message || '上游未提供说明。'}</span></div>}
           </section>
 
           <section className="card answer-card">

@@ -36,7 +36,7 @@ export default function WritingPage() {
   const [forgePurpose, setForgePurpose] = useState('')
   const [batchTopic, setBatchTopic] = useState('')
   const [batchKeywords, setBatchKeywords] = useState('')
-  const [batchCount, setBatchCount] = useState(3)
+  const [batchCount, setBatchCount] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [lastMessage, setLastMessage] = useState('')
 
@@ -75,10 +75,10 @@ export default function WritingPage() {
     try {
       const payload =
         mode === 'mother_forge'
-          ? {mode, topic: forgeTopic || '未命名母文章', purpose: forgePurpose}
+          ? {mode, topic: forgeTopic, purpose: forgePurpose}
           : {
               mode: 'batch_production',
-              topic: batchTopic || '未命名批次',
+              topic: batchTopic,
               keywords: batchKeywords.split(/[,，\s]+/).filter(Boolean),
               target_article_count: Math.max(1, batchCount),
               source: 'manual',
@@ -163,7 +163,7 @@ export default function WritingPage() {
           </label>
           <label>
             <span>写作目的</span>
-            <textarea value={forgePurpose} onChange={(e) => setForgePurpose(e.target.value)} placeholder="给 Fake Provider 描述本篇文章将回答的核心问题" />
+          <textarea value={forgePurpose} onChange={(e) => setForgePurpose(e.target.value)} placeholder="填写本篇文章要回答的核心问题" />
           </label>
           <div className="form-actions">
             <button type="button" className="mini-btn primary" disabled={submitting} onClick={() => submit('mother_forge')}>

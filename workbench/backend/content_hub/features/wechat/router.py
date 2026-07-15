@@ -30,6 +30,11 @@ def article(article_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "data": _service(request).article(article_id)}
 
 
+@router.get("/articles/{article_id}/content")
+def article_content(article_id: str, request: Request) -> dict[str, Any]:
+    return {"ok": True, "data": _service(request).article_content(article_id)}
+
+
 @router.post("/keywords/{keyword_id}/refresh")
 def refresh(keyword_id: str, request: Request, body: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = body or {}

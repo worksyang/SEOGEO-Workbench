@@ -38,6 +38,24 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+function statusLabel(value: string | undefined, loading = false): string {
+  if (loading) return '检查中'
+  if (!value) return '未检查'
+  return ({
+    healthy: '健康', ready: '健康', online: '健康',
+    degraded: '降级', partial: '降级', blocked: '受阻',
+    offline: '离线', unavailable: '离线', error: '错误', unknown: '未知',
+  }[value.toLowerCase()] ?? value)
+}
+
+function statusTone(value: string | undefined): string {
+  if (!value) return 'unknown'
+  if (['healthy', 'ready', 'online'].includes(value.toLowerCase())) return 'healthy'
+  if (['degraded', 'partial', 'blocked'].includes(value.toLowerCase())) return 'degraded'
+  if (['offline', 'unavailable', 'error'].includes(value.toLowerCase())) return 'offline'
+  return 'unknown'
+}
+
 function NavIcon({name}: {name: NavKey}) {
   const paths: Record<string, React.ReactNode> = {
     overview: <><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></>,
@@ -61,20 +79,15 @@ export default function App() {
   const [xhsSourceStatus, setXhsSourceStatus] = useState('unknown')
   const [geoSourceStatus, setGeoSourceStatus] = useState('unknown')
   const {overview, status, loading, error, reload} = useWorkbenchData()
-  const wechatNavStatus = active === 'wechat' && wechatSourceStatus === 'unknown'
-    ? '检查中'
-    : active === 'wechat'
-      ? ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[wechatSourceStatus] ?? wechatSourceStatus)
-      : '待接入'
-  const mpNavStatus = mpSourceStatus === 'unknown'
-    ? '未检查'
-      : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[mpSourceStatus] ?? mpSourceStatus)
-  const xhsNavStatus = xhsSourceStatus === 'unknown'
-    ? '未检查'
-      : ({healthy: '健康', ready: '健康', online: '健康', degraded: '历史回放', partial: '历史回放', offline: '离线', unavailable: '离线'}[xhsSourceStatus] ?? xhsSourceStatus)
-  const geoNavStatus = geoSourceStatus === 'unknown'
-    ? '检查中'
-    : ({healthy: '健康', ready: '健康', online: '健康', degraded: '降级', partial: '降级', offline: '离线', unavailable: '离线'}[geoSourceStatus] ?? geoSourceStatus)
+  const navStatuses: Partial<Record<NavKey, string>> = {
+    wechat: wechatSourceStatus,
+    mp: mpSourceStatus,
+    xhs: xhsSourceStatus,
+    geo: geoSourceStatus,
+    systems: status?.database.status,
+    governance: status?.database.integrity === 'ok' ? 'healthy' : status?.database.integrity ? 'degraded' : undefined,
+  }
+  const dataState = overview?.data_state ?? 'unknown'
 
   return (
     <div className="app-shell">
@@ -96,7 +109,7 @@ export default function App() {
                 >
                   <span className="nav-icon"><NavIcon name={key} /></span>
                   <span>{label}</span>
-                  {key !== 'overview' && <span className={`nav-state ${key === 'wechat' ? `nav-state-${wechatSourceStatus}` : key === 'mp' ? `nav-state-${mpSourceStatus}` : key === 'xhs' ? `nav-state-${xhsSourceStatus}` : key === 'geo' ? `nav-state-${geoSourceStatus}` : ''}`}>{key === 'wechat' ? wechatNavStatus : key === 'mp' ? mpNavStatus : key === 'xhs' ? xhsNavStatus : key === 'geo' ? geoNavStatus : key === 'systems' ? status?.database.status === 'healthy' ? '健康' : '降级' : key === 'governance' ? (status?.database.integrity === 'ok' ? '健康' : '降级') : '待接入'}</span>}
+                  {key !== 'overview' && <span className={`nav-state nav-state-${statusTone(navStatuses[key])}`}>{statusLabel(navStatuses[key], key === 'wechat' && active === 'wechat' && wechatSourceStatus === 'unknown')}</span>}
                 </button>
               ))}
             </div>
@@ -104,8 +117,8 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <div><span>运行状态</span><span className={`status-dot ${status?.database.status ?? 'unknown'}`} /></div>
-          <small>七套系统结构保留</small>
-          <small>统一灰色外壳 · 本地工作台</small>
+          <small>七套系统入口已统一</small>
+          <small>灰色外壳 · 本地工作台</small>
         </div>
       </aside>
 
@@ -143,10 +156,10 @@ export default function App() {
                 </p>
               </div>
               <div className="hero-status">
-                <span className={`status-dot large ${status?.database.status ?? 'unknown'}`} />
+                <span className={`status-dot large ${statusTone(status?.database.status)}`} />
                 <div>
-                  <strong>{loading ? '正在检查' : status?.database.status === 'healthy' ? '数据底座正常' : '数据底座异常'}</strong>
-                  <small>{status?.database.integrity ? `integrity: ${status.database.integrity}` : '等待数据库回执'}</small>
+                  <strong>{loading ? '正在检查' : status ? statusLabel(status.database.status) : error ? '离线' : '等待回执'}</strong>
+                  <small>{status?.database.integrity ? `integrity: ${status.database.integrity}` : error ?? '等待数据库回执'}</small>
                 </div>
               </div>
             </section>
@@ -155,8 +168,8 @@ export default function App() {
               {COUNT_CARDS.map(([key, label]) => (
                 <article className="metric-card" key={key}>
                   <span>{label}</span>
-                  <strong>{loading ? '—' : formatNumber(overview?.counts[key] ?? 0)}</strong>
-                  <small>{overview?.data_state === 'empty' ? '等待历史导入' : '来自 Hub 实时查询'}</small>
+                  <strong>{loading ? '—' : overview ? (dataState === 'empty' ? '暂无' : formatNumber(overview.counts[key])) : '—'}</strong>
+                  <small>{error ? '读取失败' : dataState === 'empty' ? 'API 已返回空数据' : overview ? '来自 Hub 实时查询' : '等待 API 回执'}</small>
                 </article>
               ))}
             </section>
@@ -168,7 +181,7 @@ export default function App() {
                     <p className="eyebrow">连接状态</p>
                     <h3>七套系统适配器</h3>
                   </div>
-                  <span className="count-pill">{status?.connections.length ?? 0} 已登记</span>
+                  <span className="count-pill">{status ? `${status.connections.length} 已登记` : '未返回连接数据'}</span>
                 </div>
                 {status?.connections.length ? (
                   <div className="connection-list">
