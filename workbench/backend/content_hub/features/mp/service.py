@@ -11,6 +11,7 @@ from content_hub.adapters.mp import MpAdapter, MpSourceError, _scrub, _source_da
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.services.mp_runtime import MpCollectionRuntime
 
 
 def _json(value: Any) -> str:
@@ -529,12 +530,13 @@ class MpService:
                 raise ValidationAppError("category_name 不是上游当前返回的账号分类。")
         return self._remote(lambda: self.adapter.update_flags(mp_id, _scrub(clean)))
 
-    def create_job(self, payload: dict[str, Any], confirm: bool):
+    def create_job(self, payload: dict[str, Any], confirm: bool, *, idempotency_key: str = ""):
         if confirm is not True:
             self._audit("wechat-mp.job_create", "blocked", details={"reason": "confirm_required"})
             raise ValidationAppError("创建公众号任务必须明确传入 confirm=true。")
         clean = dict(payload)
         clean.pop("confirm", None)
+        clean.pop("idempotency_key", None)
         try:
             auth = self.adapter.auth_check()
             runtime = self.adapter.runtime_overview()
@@ -549,7 +551,46 @@ class MpService:
             self._audit("wechat-mp.job_create", "blocked", details={"reason": "login_inconsistent"})
             self._connection("degraded", error="WeRSS 登录状态不可用或与运行时不一致")
             raise ConflictError("WeRSS 登录状态不可用或与运行时不一致，任务未创建；请在旧控制台完成登录后重试。")
-        return self._remote(lambda: self.adapter.create_job(_scrub(clean)))
+        runtime_store = MpCollectionRuntime(self.settings)
+        runtime_key = idempotency_key or f"legacy-mp:{_now()}"
+        command = runtime_store.begin(
+            actor_id="user",
+            idempotency_key=runtime_key,
+            settings_json={
+                "account_count": len(clean.get("accounts") or clean.get("mp_ids") or []),
+                "request": _compact(clean),
+            },
+        )
+        if not command["created"]:
+            payload = {
+                "hub_collection_job_id": command["collection_job_id"],
+                "hub_command_id": command["command_id"],
+                "status": command["status"],
+                "replayed": True,
+            }
+            return type(auth)(payload, 200)
+        try:
+            response = self._remote(lambda: self.adapter.create_job(_scrub(clean)))
+        except MpSourceError as exc:
+            runtime_store.finish(
+                command["collection_job_id"],
+                status="failed",
+                error={"kind": exc.kind, "status": exc.status, "message": str(exc)},
+            )
+            raise
+        upstream = _compact(response.payload)
+        raw_status = str(_payload_data(upstream).get("status") or "").lower()
+        status = "queued" if raw_status in {"queued", "pending"} else "running" if raw_status in {"running", "processing"} else "succeeded"
+        runtime_store.finish(command["collection_job_id"], status=status, result=upstream)
+        response_payload = dict(upstream) if isinstance(upstream, dict) else {"upstream": upstream}
+        response_payload.update(
+            {
+                "hub_collection_job_id": command["collection_job_id"],
+                "hub_command_id": command["command_id"],
+                "hub_status": status,
+            }
+        )
+        return type(response)(response_payload, response.status)
 
     def cancel_job(self, job_id: str, confirm: bool):
         if confirm is not True:

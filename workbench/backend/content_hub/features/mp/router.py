@@ -68,7 +68,17 @@ def jobs(request: Request): return _call(lambda: _service(request).jobs())
 @router.post("/jobs")
 def create_job(request: Request, body: dict[str, Any] | None = None):
     payload = body or {}
-    return _call(lambda: _service(request).create_job(payload, payload.get("confirm") is True))
+    return _call(
+        lambda: _service(request).create_job(
+            payload,
+            payload.get("confirm") is True,
+            idempotency_key=str(
+                payload.get("idempotency_key")
+                or request.headers.get("X-Idempotency-Key")
+                or ""
+            ),
+        )
+    )
 
 
 @router.get("/jobs/{job_id}")

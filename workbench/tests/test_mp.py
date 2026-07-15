@@ -532,6 +532,28 @@ def test_mp_job_is_blocked_when_runtime_login_is_inconsistent(settings, monkeypa
     assert called is False
 
 
+def test_mp_job_command_is_persisted_before_upstream_collection(settings, monkeypatch):
+    monkeypatch.setattr(MpAdapter, "auth_check", lambda self: RemoteResponse({"logged_in": True}, 200))
+    monkeypatch.setattr(MpAdapter, "runtime_overview", lambda self: RemoteResponse(
+        {"wechat_status": {"logged_in": True, "inconsistent": False}}, 200
+    ))
+    monkeypatch.setattr(MpAdapter, "create_job", lambda self, payload: RemoteResponse(
+        {"status": "queued", "legacy_job_id": "old-1", "payload": payload}, 202
+    ))
+    result = MpService(settings).create_job(
+        {"type": "sync", "accounts": ["mp-a"]},
+        True,
+        idempotency_key="test-mp-command-1",
+    )
+    assert result.payload["hub_collection_job_id"].startswith("mpj_")
+    with connect(settings, readonly=True) as con:
+        row = con.execute(
+            "SELECT status, account_count FROM mp_collection_jobs WHERE collection_job_id=?",
+            (result.payload["hub_collection_job_id"],),
+        ).fetchone()
+    assert tuple(row) == ("queued", 1)
+
+
 def test_mp_invalid_metadata_url_is_rejected_and_not_written(settings, tmp_path):
     configured = _configured(settings, tmp_path)
     (configured.mp_metadata_root / "bad.csv").write_text(
