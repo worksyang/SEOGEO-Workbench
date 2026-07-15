@@ -129,8 +129,16 @@ class XhsService:
                         """INSERT INTO system_connections(system_key,display_name,base_url,status,last_checked_at,capabilities_json,details_json)
                         VALUES('xhs-search','小红书',?,?,?,?,?)
                         ON CONFLICT(system_key) DO UPDATE SET base_url=excluded.base_url,status=excluded.status,
-                        last_checked_at=excluded.last_checked_at,details_json=excluded.details_json""",
-                        (self.adapter.base_url, status, checked, '["read","history_import","keyword_refresh"]', _json(details)),
+                        last_checked_at=excluded.last_checked_at,
+                        capabilities_json=excluded.capabilities_json,
+                        details_json=excluded.details_json""",
+                        (
+                            self.adapter.base_url,
+                            status,
+                            checked,
+                            '["read","history_import","keyword_refresh_dry_run"]',
+                            _json(details),
+                        ),
                     )
 
     def _audit(self, action: str, outcome: str, details: dict[str, Any], subject_id: str | None = None) -> None:
@@ -681,28 +689,40 @@ class XhsService:
     def refresh(self, keyword_id: str, confirm: bool) -> dict[str, Any]:
         if confirm is not True:
             raise ValidationAppError("刷新必须明确传入 confirm=true。")
-        remote_id = keyword_id
         keyword_text = None
         with connect(self.settings, readonly=True) as con:
             row = con.execute("SELECT keyword,payload_json FROM keywords WHERE keyword_id=? AND platform='xiaohongshu'", (keyword_id,)).fetchone()
             if row:
                 payload = json.loads(row["payload_json"] or "{}")
-                remote_id = str(payload.get("source_keyword_id") or keyword_id)
                 keyword_text = str(row["keyword"] or payload.get("keyword_text") or "").strip()
         if not keyword_text:
             raise NotFoundError("小红书关键词", keyword_id)
-        try:
-            response = self.adapter.refresh(remote_id, keyword_text)
-            self._connection("healthy" if response.status < 400 else "degraded")
-            result = _scrub_payload(response.payload)
-            job_id = result.get("job_id") if isinstance(result, dict) else None
-            return {"http_status": response.status, "source_status": {"status": "healthy" if response.status < 400 else "degraded", "source": "legacy_http"}, "job_id": job_id, "result": result}
-        except XhsSourceError as exc:
-            self._connection("degraded" if exc.status else "offline", error=str(exc))
-            if exc.status in {202, 409}:
-                result = _scrub_payload(exc.payload)
-                return {"http_status": exc.status, "source_status": {"status": "degraded", "source": "legacy_http"}, "job_id": result.get("job_id") if isinstance(result, dict) else None, "result": result}
-            raise ConflictError(f"{exc.kind}: {exc}") from exc
+        # 旧小红书服务的 refresh 是有副作用的写接口。统一工作台当前只把旧
+        # normalized/HTTP 服务当作读取事实源，不能因为原版按钮仍在就把写入
+        # 偷渡回旧系统；等 Hub 自己的采集 Provider 接入后，再在这里落任务。
+        details = {
+            "keyword_id": keyword_id,
+            "keyword": keyword_text,
+            "upstream_called": False,
+            "reason_code": "xhs.legacy_refresh_blocked",
+            "message": "小红书旧系统刷新属于外部写操作，当前版本只读旧事实源；未向旧系统发起请求。",
+        }
+        self._connection("degraded", error=details["reason_code"])
+        self._audit("xhs.refresh", "blocked", details, subject_id=keyword_id)
+        return {
+            "http_status": 409,
+            "source_status": {
+                "status": "degraded",
+                "source": "hub_policy",
+                "mode": "blocked",
+            },
+            "blocked": True,
+            "upstream_called": False,
+            "keyword_id": keyword_id,
+            "keyword": keyword_text,
+            "reason_code": details["reason_code"],
+            "message": details["message"],
+        }
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
         try:

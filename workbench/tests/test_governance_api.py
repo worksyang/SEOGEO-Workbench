@@ -20,7 +20,13 @@ def client(tmp_path: Path):
     db = tmp_path / "h.sqlite"
     settings = Settings.load()
     from dataclasses import replace
-    settings = replace(settings, database_path=db, host="127.0.0.1", port=18799)
+    settings = replace(
+        settings,
+        database_path=db,
+        asset_store_path=tmp_path / "asset_store",
+        host="127.0.0.1",
+        port=18799,
+    )
     migrate(settings)
     app = create_app(settings)
 
@@ -143,6 +149,147 @@ def test_t180_governance_reconcile_returns_total_count(client):
     assert "total" in data
     assert "results" in data
     assert isinstance(data["results"], list)
+
+
+def test_writing_router_runs_default_fake_provider_and_persists_artifact(client):
+    created = _post(
+        client,
+        "/api/v1/writing/jobs",
+        json={
+            "mode": "mother_forge",
+            "topic": "API Fake Provider 自检",
+            "purpose": "验证任务提交、运行回执与产物登记",
+        },
+    )
+    assert created.status_code == 200
+    payload = created.json()["data"]
+    assert payload["provider_kind"] == "fake"
+    assert payload["demo"] is True
+
+    ran = _post(client, f"/api/v1/writing/jobs/{payload['job_id']}/run")
+    assert ran.status_code == 200
+    result = ran.json()["data"]
+    assert result["status"] == "demo_only"
+    assert result["demo"] is True
+    assert result["asset_ref"].startswith("generated/")
+
+    detail = _get(client, f"/api/v1/writing/jobs/{payload['job_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["data"]["status"] == "blocked"
+
+    listed = _get(client, "/api/v1/writing/jobs")
+    assert listed.status_code == 200
+    assert any(item["job_id"] == payload["job_id"] for item in listed.json()["data"]["items"])
+
+
+def test_publishing_router_draft_dry_run_and_attempt_history_are_replayable(client):
+    draft = _post(
+        client,
+        "/api/v1/publishing/draft",
+        json={"account_id": "demo", "content_id": "api-draft", "body": "# 草稿\n\n正文"},
+    )
+    assert draft.status_code == 200
+    assert draft.json()["data"]["status"] == "draft_only"
+
+    dry_run = _post(
+        client,
+        "/api/v1/publishing/dry-run",
+        json={"account_id": "demo", "content_id": "api-preview", "body": "# 预览\n\n正文"},
+    )
+    assert dry_run.status_code == 200
+    assert dry_run.json()["data"]["status"] == "dry_run_only"
+
+    attempts = _get(client, "/api/v1/publishing/attempts")
+    assert attempts.status_code == 200
+    modes = {item["mode"] for item in attempts.json()["data"]["items"]}
+    assert {"draft", "dry_run"} <= modes
+
+
+def test_writing_mutations_persist_legacy_island_state_and_events(client):
+    created = _post(
+        client,
+        "/api/v1/writing/jobs",
+        json={"mode": "mother_forge", "topic": "持久化岛屿", "purpose": "原始目的"},
+    )
+    job_id = created.json()["data"]["job_id"]
+
+    purpose = _post(
+        client,
+        f"/api/v1/writing/jobs/{job_id}/mutate",
+        json={"action": "purpose", "value": {"purpose": "修改后的目的"}},
+    )
+    assert purpose.status_code == 200
+
+    url = _post(
+        client,
+        f"/api/v1/writing/jobs/{job_id}/mutate",
+        json={
+            "action": "add_url",
+            "value": {"url": "https://mp.weixin.qq.com/s/example", "note": "客户资料"},
+        },
+    )
+    assert url.status_code == 200
+    detail = _get(client, f"/api/v1/writing/jobs/{job_id}").json()["data"]
+    assert detail["payload"]["purpose"] == "修改后的目的"
+    assert detail["payload"]["url_materials"][0]["parseStatus"] == "received"
+    event_ids = [event["event_id"] for event in detail["events"]]
+    assert len(event_ids) == len(set(event_ids))
+
+
+def test_writing_batch_queue_mutations_are_replayable(client):
+    created = _post(
+        client,
+        "/api/v1/writing/jobs",
+        json={
+            "mode": "batch_production",
+            "topic": "持久批次",
+            "source": "manual",
+            "requirements": {"brief": "批次测试"},
+            "keywords": ["关键词 A"],
+            "target_article_count": 1,
+        },
+    )
+    job_id = created.json()["data"]["job_id"]
+    state = {
+        "name": "持久批次",
+        "source": "manual",
+        "brief": "批次测试",
+        "output_dir": "Hub/test/",
+        "stage": "batch-config",
+        "status": "pending",
+        "keywords": [
+            {
+                "id": "kw-1",
+                "keyword": "关键词 A",
+                "purpose": "测试目的",
+                "count": 2,
+                "recommendedCount": 2,
+                "readiness": "ready",
+                "motherMatches": [{"motherId": "mother-1"}],
+            }
+        ],
+        "queue": [],
+    }
+    updated = _post(
+        client,
+        f"/api/v1/writing/jobs/{job_id}/mutate",
+        json={"action": "batch_state", "value": {"state": state}},
+    )
+    assert updated.status_code == 200
+    queued = _post(
+        client,
+        f"/api/v1/writing/jobs/{job_id}/mutate",
+        json={"action": "batch_confirm_queue", "value": {}},
+    )
+    assert queued.status_code == 200
+    queued_payload = queued.json()["data"]["payload"]["batch_state"]
+    assert len(queued_payload["queue"]) == 2
+
+    ran = _post(client, f"/api/v1/writing/jobs/{job_id}/run")
+    assert ran.status_code == 200
+    detail = _get(client, f"/api/v1/writing/jobs/{job_id}").json()["data"]
+    assert detail["payload"]["stage"] == "done"
+    assert all(item["status"] == "done" for item in detail["payload"]["batch_state"]["queue"])
 
 
 def test_governance_backup_endpoints_show_verified_state_and_isolated_drill(client):

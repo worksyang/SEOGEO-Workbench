@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from ..domain.ids import generate_ulid_like
 from ..ingestion.markdown_store import MarkdownStore
@@ -110,6 +111,16 @@ class WritingService:
             "urls": list(urls),
             "recommended_mothers": list(recommended_mothers),
             "mode": "mother_forge",
+            "stage": "decision",
+            "materials": [],
+            "url_materials": [],
+            "templates": [],
+            "plan": {
+                "titleDirection": "等待真实写作决策回执",
+                "core": "等待素材、模板与方案确认。",
+                "outline": ["读取已持久化任务输入", "等待真实 Provider 或人工确认", "通过审计后进入下一阶段"],
+                "close": "真实生成完成后再进入发布链路。",
+            },
         }
         job_id = self._jobs.create(
             job_type="mother_forge",
@@ -146,6 +157,31 @@ class WritingService:
             "target_article_count": target_article_count,
             "matched_articles": matched_list,
             "mode": "batch_production",
+            "stage": "batch-config",
+            "batch_state": {
+                "name": topic,
+                "source": source,
+                "brief": str(requirements.get("brief") or ""),
+                "output_dir": str(requirements.get("output_dir") or ""),
+                "publish_handoff": False,
+                "stage": "batch-config",
+                "keywords": [
+                    {
+                        "id": f"kw-{index}",
+                        "keyword": keyword,
+                        "purpose": "",
+                        "count": 1,
+                        "recommendedCount": 1,
+                        "signal": "medium",
+                        "signalReason": "Hub 任务输入",
+                        "hookId": "hook-plan",
+                        "motherMatches": [],
+                        "readiness": "needs-mother",
+                    }
+                    for index, keyword in enumerate(keyword_list)
+                ],
+                "queue": [],
+            },
         }
         job_id = self._jobs.create(
             job_type="batch_production",
@@ -202,6 +238,16 @@ class WritingService:
                 written = self._run_batch(job)
             else:
                 raise ValueError(f"不支持的 job_type={job.job_type}")
+            self._update_payload(
+                job.job_id,
+                {
+                    "stage": "done",
+                    "outputs": written.get("outputs") or [written.get("asset_ref")] if written else [],
+                    "output_content_id": written.get("content_id", ""),
+                },
+                event_type="writing.output_persisted",
+                operator=operator,
+            )
             self._jobs.complete(job_id, output_content_id=written.get("content_id", ""), status="blocked")
             details = self._safe_provider_details(
                 mode=job.job_type,
@@ -274,7 +320,17 @@ class WritingService:
         outputs: list[str] = []
         keywords = job.payload.get("keywords") or []
         mothers = job.payload.get("matched_articles") or []
-        target = max(1, int(job.payload.get("target_article_count") or len(keywords) or 1))
+        state = self._batch_state(job.payload)
+        queue = list(state.get("queue") or [])
+        planned = len(queue) or sum(
+            max(0, int(item.get("count") or 0))
+            for item in state.get("keywords", [])
+            if isinstance(item, dict)
+        )
+        # 批量页的每个关键词行都带有明确的 count；不能让创建任务时的
+        # target_article_count 默认值 1 覆盖页面上已经确认的 0..N 计划，
+        # 否则会出现“计划 2 篇但只写出 1 篇”的假完成队列。
+        target = max(1, planned or int(job.payload.get("target_article_count") or 0) or len(keywords) or 1)
         for index in range(target):
             keyword = keywords[index % len(keywords)] if keywords else f"{job.topic}-{index + 1}"
             prompt = f"{job.topic} - {keyword}"
@@ -308,25 +364,360 @@ class WritingService:
                 f"batch.article.{index + 1}",
                 {"asset_ref": asset_ref, "content_id": self._last_content_id(asset_ref)},
             )
+        if not queue:
+            for index, keyword in enumerate(keywords or [job.topic]):
+                queue.append(
+                    {
+                        "id": f"{job.job_id}-kw-{index}",
+                        "keywordId": f"kw-{index}",
+                        "title": f"【{keyword}】第1篇",
+                        "status": "done",
+                        "outputFile": outputs[index] if index < len(outputs) else "",
+                    }
+                )
+        else:
+            for index, item in enumerate(queue):
+                item["status"] = "done"
+                if index < len(outputs):
+                    item["outputFile"] = outputs[index]
+        state["queue"] = queue
+        state["stage"] = "batch-done"
+        state["status"] = "done"
+        self._update_payload(
+            job.job_id,
+            {"batch_state": state, "keywords": [item.get("keyword", "") for item in state.get("keywords", [])]},
+            event_type="writing.batch_queue_completed",
+            operator="system",
+        )
         return {"outputs": outputs, "count": len(outputs), "demo_only": True}
 
     def list_jobs(self, *, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._jobs.list_recent(limit=limit)
-        return [
-            {
-                "job_id": row["job_id"],
-                "job_type": row["job_type"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-                "scheduled_at": row["scheduled_at"],
-            }
-            for row in rows
-        ]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            detail = self._jobs.detail(row["job_id"]) or {}
+            payload = detail.get("payload") if isinstance(detail.get("payload"), dict) else {}
+            items.append(
+                {
+                    "job_id": row["job_id"],
+                    "job_type": row["job_type"],
+                    "status": row["status"],
+                    "provider_kind": self._provider_kind,
+                    "provider_status": self._provider_status,
+                    "demo": self._provider is not None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "scheduled_at": row["scheduled_at"],
+                    "payload": payload,
+                }
+            )
+        return items
 
     def detail(self, job_id: str) -> dict[str, Any] | None:
         detail = self._jobs.detail(job_id)
         return scrub_public_payload(detail, asset_root=self._markdown.root) if detail else None
+
+    def mutate(
+        self,
+        job_id: str,
+        *,
+        action: str,
+        value: dict[str, Any],
+        operator: str = "user",
+    ) -> dict[str, Any]:
+        """持久化旧 WritingMoney 页面上的局部写操作。
+
+        该接口不调用任何真实 Provider，也不把“收到 URL”包装成“已抓取”。
+        解析器未配置时，URL 只进入 received 状态并明确显示等待解析。
+        """
+        job = self._fetch(job_id)
+        if not job:
+            raise FileNotFoundError(f"未找到生产任务：{job_id}")
+        payload = dict(job.payload)
+        if action == "purpose":
+            purpose = str(value.get("purpose") or "").strip()
+            if not purpose:
+                raise ValueError("写作目的不能为空")
+            payload["purpose"] = purpose
+        elif action == "add_url":
+            raw_url = str(value.get("url") or "").strip()
+            parsed = urlparse(raw_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("URL 格式不合法")
+            materials = list(payload.get("url_materials") or [])
+            material_id = f"url_{generate_ulid_like('mat')}"
+            note = str(value.get("note") or "").strip()
+            materials.append(
+                {
+                    "id": material_id,
+                    "type": "url",
+                    "title": note[:80] or "URL 临时素材",
+                    "url": raw_url,
+                    "path": f"Hub 临时素材/{job_id}/{material_id}",
+                    "reason": "URL 已收录；当前未配置正文/OCR 解析器，未将其误报为已解析。",
+                    "points": [],
+                    "visuals": [],
+                    "usage": "reference",
+                    "parseStatus": "received",
+                    "addedAt": utc_now_iso(),
+                }
+            )
+            payload["url_materials"] = materials
+        elif action == "material_usage":
+            material_id = str(value.get("material_id") or "")
+            usage = str(value.get("usage") or "")
+            if usage not in {"must", "reference", "skip"}:
+                raise ValueError("素材使用状态不合法")
+            if not self._set_material_usage(payload, material_id, usage):
+                raise ValueError("素材不存在")
+        elif action == "template_select":
+            template_id = str(value.get("template_id") or "")
+            templates = list(payload.get("templates") or [])
+            found = False
+            for template in templates:
+                if isinstance(template, dict):
+                    template["selected"] = str(template.get("id") or "") == template_id
+                    found = found or template["selected"]
+            if templates and not found:
+                raise ValueError("模板不存在")
+            payload["selected_template_id"] = template_id
+            payload["templates"] = templates
+        elif action in {"stage", "confirm_decision", "confirm_plan"}:
+            stage = str(value.get("stage") or ("package" if action != "stage" else "decision"))
+            if stage not in {"decision", "package", "done", "batch-config", "batch-done"}:
+                raise ValueError("阶段不合法")
+            payload["stage"] = stage
+            if action != "stage":
+                payload["decision_confirmed_at"] = utc_now_iso()
+        elif action == "batch_state":
+            if job.job_type != "batch_production":
+                raise ValueError("只有批量成稿任务支持批次状态")
+            state = value.get("state")
+            if not isinstance(state, dict):
+                raise ValueError("批次状态必须是对象")
+            payload["batch_state"] = self._safe_batch_state(state)
+            payload["keywords"] = [
+                str(item.get("keyword") or "")
+                for item in payload["batch_state"].get("keywords", [])
+                if isinstance(item, dict)
+            ]
+            payload["output_dir"] = str(payload["batch_state"].get("output_dir") or "")
+            payload["stage"] = str(payload["batch_state"].get("stage") or "batch-config")
+        elif action == "batch_keyword_edit":
+            if job.job_type != "batch_production":
+                raise ValueError("只有批量成稿任务支持关键词编辑")
+            state = self._batch_state(payload)
+            keyword_id = str(value.get("keyword_id") or "")
+            keyword = str(value.get("keyword") or "").strip()
+            purpose = str(value.get("purpose") or "").strip()
+            if not keyword:
+                raise ValueError("关键词不能为空")
+            found = False
+            for item in state.get("keywords", []):
+                if isinstance(item, dict) and str(item.get("id")) == keyword_id:
+                    item["keyword"] = keyword[:200]
+                    item["purpose"] = purpose[:4000]
+                    item["motherMatches"] = []
+                    item["readiness"] = "needs-mother"
+                    found = True
+            if not found:
+                raise ValueError("关键词不存在")
+            state["stage"] = "batch-config"
+            state["queue"] = []
+            payload["batch_state"] = self._safe_batch_state(state)
+            payload["keywords"] = [str(item.get("keyword") or "") for item in state["keywords"]]
+            payload["stage"] = "batch-config"
+        elif action == "batch_mother_edit":
+            if job.job_type != "batch_production":
+                raise ValueError("只有批量成稿任务支持母文章匹配")
+            state = self._batch_state(payload)
+            keyword_id = str(value.get("keyword_id") or "")
+            mother_ids = [str(item) for item in (value.get("mother_ids") or [])]
+            found = False
+            for item in state.get("keywords", []):
+                if isinstance(item, dict) and str(item.get("id")) == keyword_id:
+                    item["motherMatches"] = [
+                        {"motherId": mother_id, "role": "手动选择", "confidence": 0.8}
+                        for mother_id in mother_ids
+                    ]
+                    item["readiness"] = "ready" if mother_ids else "needs-mother"
+                    found = True
+            if not found:
+                raise ValueError("关键词不存在")
+            state["stage"] = "batch-config"
+            state["queue"] = []
+            payload["batch_state"] = self._safe_batch_state(state)
+            payload["stage"] = "batch-config"
+        elif action == "batch_confirm_queue":
+            if job.job_type != "batch_production":
+                raise ValueError("只有批量成稿任务支持成稿队列")
+            state = self._batch_state(payload)
+            queue: list[dict[str, Any]] = []
+            for keyword in state.get("keywords", []):
+                if not isinstance(keyword, dict):
+                    continue
+                count = max(0, int(keyword.get("count") or 0))
+                if keyword.get("readiness") != "ready" or count <= 0:
+                    continue
+                for index in range(count):
+                    queue.append(
+                        {
+                            "id": f"{keyword.get('id')}-{index}",
+                            "keywordId": keyword.get("id"),
+                            "title": f"【{keyword.get('keyword') or '未命名关键词'}】第{index + 1}篇",
+                            "status": "waiting",
+                            "outputFile": "",
+                        }
+                    )
+            state["queue"] = queue
+            state["stage"] = "batch-done"
+            payload["batch_state"] = self._safe_batch_state(state)
+            payload["stage"] = "batch-done"
+        elif action == "batch_queue_item":
+            state = self._batch_state(payload)
+            item_id = str(value.get("item_id") or "")
+            status = str(value.get("status") or "")
+            if status not in {"waiting", "running", "done", "rework"}:
+                raise ValueError("队列状态不合法")
+            matched = False
+            for item in state.get("queue", []):
+                if isinstance(item, dict) and str(item.get("id")) == item_id:
+                    item["status"] = status
+                    matched = True
+            if not matched:
+                raise ValueError("队列项不存在")
+            payload["batch_state"] = self._safe_batch_state(state)
+        elif action == "publish_handoff":
+            state = self._batch_state(payload)
+            state["publish_handoff"] = bool(value.get("enabled", True))
+            payload["batch_state"] = self._safe_batch_state(state)
+        else:
+            raise ValueError(f"不支持的写作变更：{action}")
+
+        self._update_payload(job_id, payload, event_type=f"writing.{action}", operator=operator)
+        self._audit.record(
+            action=f"writing.{action}",
+            subject_type="writing_job",
+            subject_id=job_id,
+            actor_id=operator,
+            outcome="succeeded",
+            details={"job_type": job.job_type, "payload_keys": sorted(payload.keys())},
+        )
+        return self.detail(job_id) or {}
+
+    def _update_payload(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        *,
+        event_type: str,
+        operator: str,
+    ) -> dict[str, Any]:
+        job = self._fetch(job_id)
+        if not job:
+            raise FileNotFoundError(f"未找到生产任务：{job_id}")
+        payload = dict(job.payload)
+        payload.update(patch)
+        return self._jobs.update_payload(
+            job_id,
+            payload,
+            event_type=event_type,
+            actor=operator,
+        )
+
+    @staticmethod
+    def _set_material_usage(payload: dict[str, Any], material_id: str, usage: str) -> bool:
+        found = False
+        for key in ("materials", "url_materials"):
+            for material in payload.get(key) or []:
+                if isinstance(material, dict) and str(material.get("id") or "") == material_id:
+                    material["usage"] = usage
+                    found = True
+        return found
+
+    @staticmethod
+    def _batch_state(payload: dict[str, Any]) -> dict[str, Any]:
+        raw = payload.get("batch_state")
+        if isinstance(raw, dict):
+            return raw
+        keywords = []
+        for index, keyword in enumerate(payload.get("keywords") or []):
+            keywords.append(
+                {
+                    "id": f"kw-{index}",
+                    "keyword": str(keyword),
+                    "purpose": "",
+                    "count": 1,
+                    "recommendedCount": 1,
+                    "signal": "medium",
+                    "signalReason": "Hub 任务输入",
+                    "hookId": "hook-plan",
+                    "motherMatches": [],
+                    "readiness": "needs-mother",
+                }
+            )
+        return {
+            "name": str(payload.get("topic") or ""),
+            "source": str(payload.get("source") or "Hub"),
+            "brief": str((payload.get("requirements") or {}).get("brief") or ""),
+            "output_dir": str(payload.get("output_dir") or ""),
+            "publish_handoff": False,
+            "stage": "batch-config",
+            "status": "pending",
+            "keywords": keywords,
+            "queue": [],
+        }
+
+    @staticmethod
+    def _safe_batch_state(state: dict[str, Any]) -> dict[str, Any]:
+        """只保留旧页面可编辑的批次字段，避免任意 JSON 进入任务快照。"""
+        keywords: list[dict[str, Any]] = []
+        for index, raw in enumerate(state.get("keywords") or []):
+            if not isinstance(raw, dict):
+                continue
+            keywords.append(
+                {
+                    "id": str(raw.get("id") or f"kw-{index}"),
+                    "keyword": str(raw.get("keyword") or "")[:200],
+                    "purpose": str(raw.get("purpose") or "")[:4000],
+                    "signal": str(raw.get("signal") or "medium")[:40],
+                    "signalReason": str(raw.get("signalReason") or "")[:400],
+                    "count": max(0, min(99, int(raw.get("count") or 0))),
+                    "recommendedCount": max(0, min(99, int(raw.get("recommendedCount") or 0))),
+                    "hookId": str(raw.get("hookId") or "")[:80],
+                    "motherMatches": [
+                        {
+                            "motherId": str(match.get("motherId") or ""),
+                            "role": str(match.get("role") or "")[:200],
+                            "confidence": match.get("confidence"),
+                        }
+                        for match in (raw.get("motherMatches") or [])
+                        if isinstance(match, dict)
+                    ],
+                    "readiness": "ready" if raw.get("readiness") == "ready" else "needs-mother",
+                }
+            )
+        return {
+            "name": str(state.get("name") or "")[:200],
+            "source": str(state.get("source") or "")[:120],
+            "brief": str(state.get("brief") or "")[:4000],
+            "output_dir": str(state.get("output_dir") or "")[:500],
+            "publish_handoff": bool(state.get("publish_handoff", False)),
+            "stage": str(state.get("stage") or "batch-config"),
+            "status": str(state.get("status") or "pending"),
+            "keywords": keywords,
+            "queue": [
+                {
+                    "id": str(item.get("id") or "")[:120],
+                    "keywordId": str(item.get("keywordId") or "")[:120],
+                    "title": str(item.get("title") or "")[:400],
+                    "status": str(item.get("status") or "waiting"),
+                    "outputFile": str(item.get("outputFile") or "")[:500],
+                }
+                for item in (state.get("queue") or [])
+                if isinstance(item, dict)
+            ],
+        }
 
     def _asset_ref(self, path: str) -> str:
         ref = public_asset_ref(path, self._markdown.root)
@@ -376,7 +767,7 @@ class WritingService:
         self._conn.execute(
             "INSERT INTO job_events(event_id, job_id, occurred_at, event_type, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
             (
-                f"ev_{job_id}_{event}",
+                generate_ulid_like("evt"),
                 job_id,
                 utc_now_iso(),
                 event,

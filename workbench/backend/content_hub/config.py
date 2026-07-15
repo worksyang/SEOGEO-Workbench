@@ -188,7 +188,10 @@ class Settings:
                 "HUB_XHS_SETTINGS_DB_PATH",
                 "/Users/works14/Documents/zkcode/取数/xhs-keyword-monitor/data/state/app.db",
             )).expanduser().resolve(),
-            xhs_source_timeout_seconds=float(os.getenv("HUB_XHS_SOURCE_TIMEOUT_SECONDS", "5")),
+            # 小红书原版的完整 monitor-data 会包含 15 天榜单明细，
+            # 本地 4,681 个博主时响应体约 170 MB；辅助热力图页面仍需保留原版
+            # 数据契约，因此不能用短超时把真实回放误报成“接口不可用”。
+            xhs_source_timeout_seconds=float(os.getenv("HUB_XHS_SOURCE_TIMEOUT_SECONDS", "20")),
             geo_source_root=Path(os.getenv(
                 "HUB_GEO_SOURCE_ROOT", "/Users/works14/Documents/zkcode/GEOProMax"
             )).expanduser().resolve(),
@@ -209,9 +212,11 @@ class Settings:
             asset_store_path=_asset_store_path_local,
             wiki_allowed_roots=_wiki_roots,
             publish_accounts=_parse_publish_accounts(os.getenv("HUB_PUBLISH_ACCOUNTS")),
-            # 这里只读取非敏感的能力状态，不读取、校验或回显任何 secret。
-            writing_provider_kind=os.getenv("HUB_WRITING_PROVIDER_KIND", "unconfigured").strip() or "unconfigured",
-            writing_provider_status=os.getenv("HUB_WRITING_PROVIDER_STATUS", "unconfigured").strip() or "unconfigured",
+            # 首版本机默认启用明确标记的 Fake Provider，让母文章铸造/批量成稿
+            # 可以完整跑通任务、产物、审计和回放链路；它不调用外部模型，也不冒充真实生成。
+            # 如需验证真实 Provider 门禁，可显式设置 HUB_WRITING_PROVIDER_KIND=unconfigured。
+            writing_provider_kind=os.getenv("HUB_WRITING_PROVIDER_KIND", "fake").strip() or "fake",
+            writing_provider_status=os.getenv("HUB_WRITING_PROVIDER_STATUS", "demo_only").strip() or "demo_only",
             publish_bridge_kind=os.getenv("HUB_PUBLISH_BRIDGE_KIND", "disabled").strip() or "disabled",
             publish_bridge_status=os.getenv("HUB_PUBLISH_BRIDGE_STATUS", "unconfigured").strip() or "unconfigured",
         )

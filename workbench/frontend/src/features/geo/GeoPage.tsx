@@ -11,16 +11,28 @@ function sourceStatus(data: GeoBootstrapData | null): string {
     : 'unknown'
 }
 
+function statusLabel(value: unknown): string {
+  const normalized = String(value || 'unknown')
+  if (normalized === 'healthy') return '健康'
+  if (normalized === 'degraded' || normalized === 'partial') return '降级'
+  if (normalized === 'offline') return '离线'
+  if (normalized === 'not_checked') return '未检查'
+  return normalized
+}
+
 export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: string) => void}) {
   const [state, setState] = useState<IslandState>('loading')
   const [error, setError] = useState('')
+  const [bootstrap, setBootstrap] = useState<GeoBootstrapData | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
     apiGet<{data?: GeoBootstrapData}>('/api/v1/geo/bootstrap', controller.signal)
       .then((response) => {
         const data = response.data ?? null
-        onSourceStatus(sourceStatus(data))
+        setBootstrap(data)
+        const hubStatus = data?.hub_import_status?.status
+        onSourceStatus(String(hubStatus || sourceStatus(data)))
         setState('ready')
       })
       .catch((reason) => {
@@ -33,7 +45,7 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
   }, [onSourceStatus])
 
   return (
-    <div className="wechat-island-page">
+    <div className="wechat-island-page geo-island-page">
       <div className="wechat-island-caption">
         <div>
           <strong>GEO 观察 · 原系统业务岛屿</strong>
@@ -44,6 +56,25 @@ export default function GeoPage({onSourceStatus}: {onSourceStatus: (status: stri
         </span>
       </div>
       {error && <div className="wechat-island-error" role="alert">{error}</div>}
+      {bootstrap && (
+        <div className="module-status-banner amber geo-status-grid" role="status">
+          <div>
+            <strong>原始 GEO 来源：{statusLabel(sourceStatus(bootstrap))}</strong>
+            <span>{String((bootstrap.source_status && typeof bootstrap.source_status === 'object' && 'path' in bootstrap.source_status) ? bootstrap.source_status.path : '原始 SQLite 只读连接')}</span>
+          </div>
+          <div>
+            <strong>Hub 数据底座：{statusLabel(bootstrap.hub_import_status?.status)}</strong>
+            <span>{bootstrap.hub_import_status?.message || '尚未获得 Hub 导入回执。'}</span>
+          </div>
+          <div>
+            <strong>最近导入</strong>
+            <span>
+              已写入 {bootstrap.hub_import_status?.records_written ?? 0} 条，
+              失败 {bootstrap.hub_import_status?.records_failed ?? 0} 条
+            </span>
+          </div>
+        </div>
+      )}
       <iframe
         className="wechat-legacy-frame"
         title="GEO 观察原系统业务岛屿"

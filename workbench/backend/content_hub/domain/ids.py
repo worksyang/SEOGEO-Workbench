@@ -33,11 +33,13 @@ ID_PREFIXES: Final[tuple[str, ...]] = (
     "job",  # production job
 )
 
-# 工程前缀：ingestion batch / correction_job / publish_attempt
+# 工程前缀：ingestion batch / correction_job / publish_attempt / job_event
 OPS_PREFIXES: Final[tuple[str, ...]] = (
     "batch",
     "corr",
     "pub",
+    "evt",
+    "mat",
 )
 
 # 已注册的外部 ID 命名空间（v3.2 §十一 + dev-plan §5）。

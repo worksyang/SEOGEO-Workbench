@@ -379,6 +379,15 @@ def test_geo_missing_markdown_is_partial_failed_and_not_healthy(settings, tmp_pa
         assert "missing_answer_markdown" in audit["details_json"] or "missing_markdown" in audit["details_json"]
 
 
+def test_geo_status_separates_source_health_from_hub_import_health(settings, tmp_path):
+    service = GeoService(configured(settings, tmp_path))
+    result = service.bootstrap()
+    assert "source_status" in result
+    assert "hub_import_status" in result
+    assert result["source_status"]["read_only"] is True
+    assert result["hub_import_status"]["status"] in {"not_checked", "healthy", "degraded", "offline"}
+
+
 def test_geo_manifest_changes_create_new_batch_even_when_counts_match(settings, tmp_path, monkeypatch):
     service = GeoService(configured(settings, tmp_path))
     first = service.import_history(confirm=True, limit=1)

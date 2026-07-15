@@ -119,6 +119,45 @@ class JobsService:
         result["events"] = events
         return result
 
+    def update_payload(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        event_type: str = "payload.updated",
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        """原子更新任务 payload，并留下可重放的任务事件。
+
+        WritingMoney 的旧页面拥有大量局部状态（素材三态、模板、方案、批次队列）。
+        这些状态不应只留在 iframe 内存，因此统一作为 production_jobs.payload_json
+        的版本化业务快照持久化。调用方负责在边界处完成字段校验和脱敏。
+        """
+        row = self._conn.execute(
+            "SELECT job_id FROM production_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(job_id)
+        serialized = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+        self._conn.execute(
+            """
+            UPDATE production_jobs
+            SET payload_json=?, updated_at=?
+            WHERE job_id=?
+            """,
+            (serialized, utc_now_iso(), job_id),
+        )
+        self._record_event(
+            job_id,
+            event_type,
+            {
+                "actor": actor,
+                "payload_keys": sorted(payload.keys()),
+            },
+        )
+        return dict(payload)
+
     def list_recent(self, *, limit: int = 30) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT job_id, job_type, status, created_at, updated_at, scheduled_at FROM production_jobs "
@@ -131,7 +170,7 @@ class JobsService:
         self._conn.execute(
             "INSERT INTO job_events(event_id, job_id, occurred_at, event_type, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
             (
-                f"ev_{job_id}_{event}",
+                generate_ulid_like("evt"),
                 job_id,
                 utc_now_iso(),
                 event,

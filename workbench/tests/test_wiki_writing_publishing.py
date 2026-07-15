@@ -486,6 +486,41 @@ def test_t158_writing_run_batch_emits_outputs(hub):
     assert result["count"] == 2
 
 
+def test_t158a_batch_plan_count_overrides_default_target(hub):
+    """页面已确认的逐关键词计划不能被创建时默认 1 篇覆盖。"""
+    conn, settings, _ = hub
+    store = MarkdownStore(settings.asset_store_path)
+    svc = WritingService(connection=conn, markdown_store=store, provider=FakeProvider(latency_ms=0))
+    job = svc.create_batch(
+        topic="逐关键词计划测试",
+        source="manual",
+        requirements={},
+        keywords=["K1", "K2"],
+        target_article_count=1,
+    )
+    detail = svc.mutate(
+        job.job_id,
+        action="batch_state",
+        value={
+            "state": {
+                "name": "逐关键词计划测试",
+                "source": "manual",
+                "brief": "",
+                "output_dir": "generated/test",
+                "stage": "batch-config",
+                "keywords": [
+                    {"id": "kw-0", "keyword": "K1", "count": 1, "readiness": "needs-mother"},
+                    {"id": "kw-1", "keyword": "K2", "count": 1, "readiness": "needs-mother"},
+                ],
+                "queue": [],
+            }
+        },
+    )
+    assert len(detail["payload"]["batch_state"]["keywords"]) == 2
+    result = svc.run(job.job_id, operator="test")
+    assert result["count"] == 2
+
+
 def test_t159_writing_restart_recovery(hub):
     conn, settings, _ = hub
     store = MarkdownStore(settings.asset_store_path)

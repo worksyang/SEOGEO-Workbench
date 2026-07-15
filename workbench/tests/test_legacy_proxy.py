@@ -28,6 +28,11 @@ class _Response:
         return None
 
 
+class _SensitiveResponse(_Response):
+    def read(self) -> bytes:
+        return b'{"username":"demo","password":"dont-return","nested":{"token":"secret"}}'
+
+
 def test_legacy_proxy_whitelist_and_query(settings, monkeypatch) -> None:
     seen: list[str] = []
 
@@ -75,6 +80,42 @@ def test_legacy_proxy_whitelist_and_query(settings, monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_xhs_legacy_write_is_blocked_before_upstream(settings, monkeypatch) -> None:
+    seen: list[str] = []
+
+    @contextmanager
+    def fake_urlopen(request, timeout):
+        seen.append(f"{request.full_url}|{request.method}|{timeout}")
+        yield _Response()
+
+    monkeypatch.setattr(legacy_proxy.urllib.request, "urlopen", fake_urlopen)
+
+    async def run() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post(
+                    "/api/keywords/kw_1/refresh",
+                    headers={
+                        "Referer": "http://testserver/legacy/xhs/monitor.html",
+                        "Content-Type": "application/json",
+                    },
+                    json={"keyword": "香港保险"},
+                )
+                assert response.status_code == 409
+                body = response.json()
+                assert body["blocked"] is True
+                assert body["upstream_called"] is False
+                assert body["error"]["code"] == "LEGACY_XHS_WRITE_BLOCKED"
+                assert not seen
+
+    asyncio.run(run())
+
+
 def test_mp_legacy_proxy_uses_mp_upstream_and_limits_static_files(settings, monkeypatch) -> None:
     seen: list[str] = []
 
@@ -117,6 +158,33 @@ def test_mp_legacy_proxy_uses_mp_upstream_and_limits_static_files(settings, monk
     asyncio.run(run())
 
 
+def test_mp_settings_response_redacts_credentials(settings, monkeypatch) -> None:
+    @contextmanager
+    def fake_urlopen(request, timeout):
+        yield _SensitiveResponse()
+
+    monkeypatch.setattr(legacy_proxy.urllib.request, "urlopen", fake_urlopen)
+
+    async def run() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get(
+                    "/api/settings",
+                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                )
+                assert response.status_code == 200
+                body = response.json()
+                assert body["password"] == "[REDACTED]"
+                assert body["nested"]["token"] == "[REDACTED]"
+
+    asyncio.run(run())
+
+
 def test_geo_legacy_page_and_api_use_geo_upstream(settings, monkeypatch) -> None:
     seen: list[str] = []
 
@@ -151,3 +219,31 @@ def test_geo_legacy_page_and_api_use_geo_upstream(settings, monkeypatch) -> None
                 assert blocked.json()["error"]["code"] == "LEGACY_GEO_PAGE_NOT_ALLOWED"
 
     asyncio.run(run())
+
+
+def test_xhs_auxiliary_pages_are_mirrored_without_root_navigation(settings) -> None:
+    """小红书原版从榜单跳转的两个无扩展名页面必须留在业务岛屿内。"""
+    from dataclasses import replace
+    from content_hub.config import Settings
+
+    browser_settings = replace(settings, frontend_dist=Settings.load().frontend_dist)
+
+    async def scenario() -> None:
+        app = create_app(browser_settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                for path, marker in (
+                    ("/legacy/xhs/monitor.html", "小红书关键词监控系统"),
+                    ("/legacy/xhs/article-hit-detail", "文章命中详情"),
+                    ("/legacy/xhs/keyword-turnover", "上榜文章换新热力图"),
+                ):
+                    response = await client.get(path)
+                    assert response.status_code == 200
+                    assert marker in response.text
+
+                static = await client.get("/legacy/xhs/static/js/article-hit-detail.js")
+                assert static.status_code == 200
+                assert "DETAIL_API_URL" in static.text
+
+    asyncio.run(scenario())

@@ -893,9 +893,9 @@ function hasRealUrl(url) {
 }
 
 function articleHitDetailHref(meta = {}, url = '') {
-  if (meta.article_id) return `/article-hit-detail?article_id=${encodeURIComponent(meta.article_id)}`;
-  if (url) return `/article-hit-detail?url=${encodeURIComponent(url)}`;
-  return '/article-hit-detail';
+  if (meta.article_id) return `/legacy/xhs/article-hit-detail?article_id=${encodeURIComponent(meta.article_id)}`;
+  if (url) return `/legacy/xhs/article-hit-detail?url=${encodeURIComponent(url)}`;
+  return '/legacy/xhs/article-hit-detail';
 }
 
 function metricsChipHtml(art) {
@@ -1986,7 +1986,7 @@ function turnoverDetailUrl(k) {
   const params = new URLSearchParams();
   if (k.keyword_id) params.set('keyword_id', k.keyword_id);
   params.set('keyword', k.keyword || '');
-  return `/keyword-turnover?${params.toString()}`;
+  return `/legacy/xhs/keyword-turnover?${params.toString()}`;
 }
 
 function turnoverPercent(rate) {

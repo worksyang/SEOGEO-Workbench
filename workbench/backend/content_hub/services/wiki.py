@@ -422,6 +422,132 @@ class WikiService:
             "entry": self._public_entry(entry),
         }
 
+    def read_source_ref(self, source_ref: str) -> dict[str, Any] | None:
+        """按原 Wiki UI 使用的相对路径读取正文，不把本机绝对路径带出接口。"""
+        root = self.import_root()
+        if root is None:
+            return None
+        safe_path, reason = safe_markdown_path(root / source_ref, root)
+        if not safe_path or reason:
+            return None
+        try:
+            text = safe_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        content_id = content_id_for_source(self._conn, source_ref, content_hash)
+        title, excerpt = _peek_title_and_excerpt(text, fallback=safe_path.stem)
+        return {
+            "content_id": content_id,
+            "title": title,
+            "body": text,
+            "source_ref": source_ref,
+            "relative_path": source_ref,
+            "excerpt": excerpt,
+        }
+
+    def save_source_ref(self, source_ref: str, *, body: str, operator: str = "user") -> dict[str, Any]:
+        """兼容原版 Wiki 的按路径保存，同时把事实同步回 Hub。
+
+        原始 Markdown 目录仍是正文事实载体；Hub 记录身份、哈希、发现关系、
+        快照和审计。该方法只接受允许根内的普通 `.md` 文件。
+        """
+        root = self.import_root()
+        if root is None:
+            raise FileNotFoundError("没有可用的 Wiki 允许根")
+        safe_path, reason = safe_markdown_path(root / source_ref, root)
+        if not safe_path or reason:
+            raise FileNotFoundError("母文章路径不安全或不可读取")
+        if not isinstance(body, str):
+            raise ValueError("正文必须是字符串")
+        text = body if body.endswith("\n") else body + "\n"
+        content_only = text
+        if text.startswith("---"):
+            parts = text.split("---", 2)
+            if len(parts) == 3:
+                content_only = parts[2]
+        old_bytes = safe_path.read_bytes()
+        content_hash = hashlib.sha256(content_only.strip().encode("utf-8")).hexdigest()
+        file_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        content_id = content_id_for_source(self._conn, source_ref, content_hash)
+        content_type = (
+            "knowledge_article"
+            if source_ref == "wiki" or source_ref.startswith("wiki/")
+            else "mother_article"
+        )
+        title, _excerpt = _peek_title_and_excerpt(text, fallback=safe_path.stem)
+        snapshot_path = self._create_snapshot(safe_path, content_id)
+        self._atomic_write(safe_path, text.encode("utf-8"))
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO contents(
+                content_id, content_type, title, canonical_url, first_seen_at,
+                updated_at, md_path, file_hash, content_hash, domain,
+                entities_json, intents_json, payload_json
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
+            ON CONFLICT(content_id) DO UPDATE SET
+                content_type=excluded.content_type,
+                title=excluded.title,
+                updated_at=excluded.updated_at,
+                md_path=excluded.md_path,
+                file_hash=excluded.file_hash,
+                content_hash=excluded.content_hash,
+                domain=excluded.domain,
+                payload_json=excluded.payload_json
+            """,
+            (
+                content_id,
+                content_type,
+                title,
+                now,
+                now,
+                source_ref,
+                file_hash,
+                content_hash,
+                str(Path(source_ref).parent).replace(".", "wiki"),
+                json.dumps({"asset_kind": content_type, "source_ref": source_ref}, ensure_ascii=False),
+            ),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO content_identifiers(namespace, external_id, content_id, first_seen_at, payload_json)
+            VALUES ('wiki.source_ref', ?, ?, ?, '{}')
+            ON CONFLICT(namespace, external_id) DO UPDATE SET
+                content_id=excluded.content_id
+            """,
+            (source_ref, content_id, now),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO content_discoveries(
+                discovery_id, content_id, discovery_system, discovery_channel,
+                discovered_at, snapshot_id, source_ref, payload_json
+            ) VALUES (?, ?, 'wiki', 'directory_scan', ?, NULL, ?, ?)
+            ON CONFLICT(content_id, discovery_system, discovery_channel, COALESCE(snapshot_id, 'no-snapshot'))
+            DO UPDATE SET discovered_at=excluded.discovered_at,
+                          source_ref=excluded.source_ref,
+                          payload_json=excluded.payload_json
+            """,
+            (
+                generate_ulid_like("dsc"),
+                content_id,
+                now,
+                source_ref,
+                json.dumps({"file_hash": file_hash, "source_ref": source_ref}, ensure_ascii=False),
+            ),
+        )
+        self._record_audit(operator, "wiki.save", content_id, {"source_ref": source_ref})
+        self._conn.commit()
+        return {
+            "content_id": content_id,
+            "source_ref": source_ref,
+            "relative_path": source_ref,
+            "file_hash": file_hash,
+            "snapshot_ref": snapshot_path.relative_to(self._asset_root).as_posix(),
+            "previous_file_hash": hashlib.sha256(old_bytes).hexdigest(),
+        }
+
     def save(self, content_id: str, *, body: str, operator: str = "user") -> dict[str, Any]:
         entry = self._entry_for_content(content_id)
         if not entry:

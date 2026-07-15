@@ -30,6 +30,7 @@ from content_hub.features.signals.router import router as signals_router
 from content_hub.features.governance.router import router as governance_router
 from content_hub.legacy_proxy import (
     proxy_legacy_geo_page,
+    proxy_legacy_xhs_page,
     proxy_legacy_static,
     proxy_legacy_wechat_api,
 )
@@ -161,6 +162,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route(
         "/legacy/geo/{path:path}",
         proxy_legacy_geo_page,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/xhs/article-hit-detail",
+        proxy_legacy_xhs_page,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/xhs/keyword-turnover",
+        proxy_legacy_xhs_page,
         methods=["GET"],
         include_in_schema=False,
     )

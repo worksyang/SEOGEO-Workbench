@@ -182,8 +182,8 @@ class MpService:
             "checked_at": checked_at,
             "runtime_endpoint": "/api/runtime/overview",
             "auth_endpoint": "/api/auth/wechat/check",
-            "read_only_root": str(self.adapter.root),
-            "metadata_root": str(self.adapter.metadata_root),
+            "read_only_root": "configured/mp-source",
+            "metadata_root": "configured/mp-metadata",
         }
         if source_status["status"] != "healthy":
             source_status["operation_hint"] = "请在旧公众号监控控制台完成 WeRSS 登录并重新检查；工作台不会自动扫码或伪造成功。"
@@ -195,9 +195,13 @@ class MpService:
             for row in imported:
                 row["payload"] = json.loads(row.pop("payload_json") or "{}")
             imported_count = con.execute("SELECT COUNT(DISTINCT c.content_id) FROM contents c JOIN content_discoveries d ON d.content_id=c.content_id AND d.discovery_system='wechat-mp' AND d.discovery_channel='account-feed' WHERE c.content_type='external_article'").fetchone()[0]
+        health = live.get("health")
+        if isinstance(health, dict) and "database" in health:
+            health = dict(health)
+            health["database"] = "configured/mp-runtime"
         return {
             "source_status": source_status,
-            "health": live.get("health"), "runtime": live.get("runtime"), "auth": live.get("auth"),
+            "health": health, "runtime": live.get("runtime"), "auth": live.get("auth"),
             "accounts": accounts[:100], "categories": categories[:100], "jobs": jobs[:100],
             "summary": {"account_count": len(accounts), "category_count": len(categories), "job_count": len(jobs), "imported_article_count": imported_count, "configured_category_count": len(self.adapter.categories)},
             "hub_articles": imported,

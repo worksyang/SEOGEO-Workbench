@@ -261,7 +261,40 @@ def test_xhs_source_change_and_root_security(settings, tmp_path):
         bad.read_records()
 
 
-def test_xhs_live_202_409_and_empty_terms(settings, tmp_path, monkeypatch):
+def test_xhs_refresh_is_blocked_without_calling_legacy_write(settings, tmp_path, monkeypatch):
+    service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
+    with connect(service.settings) as con:
+        con.execute(
+            "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
+            ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
+        )
+    called = False
+
+    def legacy_write(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("不应调用旧小红书写接口")
+
+    monkeypatch.setattr(service.adapter, "refresh", legacy_write)
+    blocked = service.refresh("xhs_keyword_1", True)
+    assert blocked["http_status"] == 409
+    assert blocked["blocked"] is True
+    assert blocked["upstream_called"] is False
+    assert blocked["source_status"]["source"] == "hub_policy"
+    assert called is False
+    with connect(service.settings, readonly=True) as con:
+        audit = con.execute(
+            "SELECT outcome,details_json FROM audit_log WHERE action='xhs.refresh' ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit["outcome"] == "blocked"
+        assert json.loads(audit["details_json"])["upstream_called"] is False
+        connection = con.execute(
+            "SELECT capabilities_json FROM system_connections WHERE system_key='xhs-search'"
+        ).fetchone()
+        assert "keyword_refresh_dry_run" in json.loads(connection["capabilities_json"])
+
+
+def test_xhs_live_bootstrap_fallback_and_empty_terms(settings, tmp_path, monkeypatch):
     service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
     with connect(service.settings) as con:
         con.execute(
@@ -271,16 +304,7 @@ def test_xhs_live_202_409_and_empty_terms(settings, tmp_path, monkeypatch):
     class Response:
         def __init__(self, status, payload):
             self.status, self.payload = status, payload
-    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(202, {"status": "queued", "job_id": "job-1", "token": "secret"}))
-    queued = service.refresh("xhs_keyword_1", True)
-    assert queued["http_status"] == 202
-    assert queued["source_status"]["status"] == "healthy"
-    assert queued["job_id"] == "job-1"
-    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(200, {"status": "done"}))
-    assert service.refresh("xhs_keyword_1", True)["source_status"]["status"] == "healthy"
-    monkeypatch.setattr(service.adapter, "refresh", lambda *_: Response(409, {"status": "busy"}))
-    busy = service.refresh("xhs_keyword_1", True)
-    assert busy["http_status"] == 409 and busy["source_status"]["status"] == "degraded"
+
     monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, {"keywords": [], "snapshot_terms": None, "token": "secret"}))
     degraded = service.bootstrap()
     assert degraded["source_status"]["source"] == "hub_db"
@@ -290,18 +314,26 @@ def test_xhs_live_202_409_and_empty_terms(settings, tmp_path, monkeypatch):
     assert service.bootstrap()["counts"] == {"keywords": 9}
 
 
-def test_xhs_refresh_sends_keyword_text_and_confirm(settings, tmp_path, monkeypatch):
+def test_xhs_refresh_does_not_forward_legacy_identifier(settings, tmp_path, monkeypatch):
     service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
     with connect(service.settings) as con:
         con.execute(
             "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
             ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
         )
-    seen = {}
-    monkeypatch.setattr(service.adapter, "refresh", lambda keyword_id, keyword_text: seen.update(keyword_id=keyword_id, keyword_text=keyword_text) or RemoteResponse({"job_id": "job-42"}, 202))
+    called = False
+
+    def legacy_write(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("不应调用旧小红书写接口")
+
+    monkeypatch.setattr(service.adapter, "refresh", legacy_write)
     result = service.refresh("xhs_keyword_1", True)
-    assert seen == {"keyword_id": "kw_1", "keyword_text": "香港保险"}
-    assert result["job_id"] == "job-42"
+    assert result["http_status"] == 409
+    assert result["keyword_id"] == "xhs_keyword_1"
+    assert result["upstream_called"] is False
+    assert called is False
 
 
 def test_xhs_adapter_refresh_payload_contains_keyword_and_confirm(settings, tmp_path, monkeypatch):
@@ -347,16 +379,21 @@ def test_xhs_empty_settings_uses_normalized_active_and_audits_warning(xhs_settin
         assert con.execute("SELECT status FROM keywords WHERE platform='xiaohongshu'").fetchone()[0] == "paused"
 
 
-def test_xhs_refresh_upstream_failure_is_not_success(settings, tmp_path, monkeypatch):
+def test_xhs_refresh_legacy_failure_path_is_not_used(settings, tmp_path, monkeypatch):
     service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
     with connect(service.settings) as con:
         con.execute(
             "INSERT INTO keywords(keyword_id,platform,keyword,first_seen_at,updated_at,payload_json) VALUES(?,?,?,?,?,?)",
             ("xhs_keyword_1", "xiaohongshu", "香港保险", "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", '{"source_keyword_id":"kw_1"}'),
         )
-    monkeypatch.setattr(service.adapter, "refresh", lambda *_: (_ for _ in ()).throw(XhsSourceError("upstream down", kind="source_unavailable")))
-    with pytest.raises(ConflictError, match="source_unavailable"):
-        service.refresh("xhs_keyword_1", True)
+    monkeypatch.setattr(
+        service.adapter,
+        "refresh",
+        lambda *_: (_ for _ in ()).throw(AssertionError("不应调用旧小红书写接口")),
+    )
+    result = service.refresh("xhs_keyword_1", True)
+    assert result["http_status"] == 409
+    assert result["blocked"] is True
 
 
 def test_xhs_live_account_proxy_and_hub_fallback(xhs_settings, monkeypatch):

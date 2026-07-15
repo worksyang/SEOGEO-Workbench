@@ -103,7 +103,7 @@ export default function SystemsPage() {
         <>
           <section className="systems-summary">
             <article>
-              <span>v3.2 架构</span>
+              <span>v3.3 架构</span>
               <b>已对齐</b>
               <small>14 张业务核心表 · Markdown + SQLite</small>
             </article>

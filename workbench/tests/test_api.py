@@ -52,6 +52,8 @@ def test_system_status_reports_real_contract(settings) -> None:
         assert data["database"]["schema_version"] == 4
         assert len(data["connections"]) == 7
         assert {item["status"] for item in data["connections"]} == {"unknown"}
+        assert all(isinstance(item["capabilities"], list) for item in data["connections"])
+        assert all(isinstance(item["details"], dict) for item in data["connections"])
         assert data["service"]["frontend_built"] is False
 
     with_client(settings, assertion)

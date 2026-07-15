@@ -3566,6 +3566,42 @@ a:focus-visible {
     cursor: pointer;
 }
 .publishing-page .publishing-actions .mini-btn.danger { background: #a32020; }
+.publishing-page .publishing-actions select {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+    color: #333;
+    background: #fff;
+}
+.publishing-page .publishing-account-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+}
+.publishing-page .publishing-account-card,
+.publishing-page .publishing-history-row {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fafafa;
+}
+.publishing-page .publishing-account-card span,
+.publishing-page .publishing-account-card small,
+.publishing-page .publishing-account-card em,
+.publishing-page .publishing-history-row span,
+.publishing-page .publishing-history-row small {
+    color: #777;
+    font-size: 11px;
+    font-style: normal;
+}
+.publishing-page .publishing-history {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
 .publishing-page .publishing-preview {
     display: grid;
     grid-template-columns: 2fr 1fr;

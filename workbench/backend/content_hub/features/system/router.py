@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,15 @@ def system_status(request: Request) -> dict[str, object]:
                 """
             )
         ]
+    for connection in connections:
+        try:
+            connection["capabilities"] = json.loads(connection.pop("capabilities_json") or "[]")
+        except (TypeError, ValueError):
+            connection["capabilities"] = []
+        try:
+            connection["details"] = json.loads(connection.pop("details_json") or "{}")
+        except (TypeError, ValueError):
+            connection["details"] = {}
     return {
         "ok": database["status"] != "offline",
         "data": {

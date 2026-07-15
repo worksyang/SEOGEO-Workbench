@@ -21,11 +21,9 @@ IDENTIFIER_NAMESPACE = "wiki.source_ref"
 DEFAULT_MAX_FILES = 2000
 EXCLUDED_DIRS = {
     ".git", ".obsidian", ".claude", ".codex", ".playwright-mcp", ".tmp",
-    "__pycache__", "wiki-viewer", "WritingMoney", "output", "候选区",
-    "排除流", "微信搜索结果", "缓存", "cache", "tmp", "temp", "runtime",
+    "__pycache__", "wiki-viewer", "WritingMoney", "缓存", "cache", "tmp",
+    "temp", "runtime",
 }
-NON_ARTICLE_NAME_HINTS = ("prompt", "readme", "license", "changelog", "requirements")
-NON_ARTICLE_NAMES = {"agents.md", "claude.md", ".backup-log.md"}
 
 
 class WikiIngestionPipeline(IngestionPipeline):
@@ -185,12 +183,6 @@ def scan_directory(wiki_root: Path, *, max_files: int = DEFAULT_MAX_FILES) -> Wi
             continue
         if candidate.name.startswith("."):
             result.rejected.append({"source_ref": source_ref, "reason": "excluded_hidden_file"})
-            continue
-        if (
-            candidate.name.casefold() in NON_ARTICLE_NAMES
-            or candidate.name.casefold().startswith(NON_ARTICLE_NAME_HINTS)
-        ):
-            result.rejected.append({"source_ref": source_ref, "reason": "non_article_prompt_or_tool_file"})
             continue
         safe_path, reason = safe_markdown_path(candidate, root)
         if not safe_path:

@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from content_hub.db.connection import connect
+from content_hub.db.writer_lock import writer_lock
 from content_hub.services.publishing import PublishAccount, PublishingService
 from content_hub.services.safety import scrub_public_payload
 
@@ -66,10 +67,10 @@ def _load_sensitive_words(request: Request) -> list[str]:
     return []
 
 
-def _service(request: Request) -> PublishingService:
+def _service(request: Request, connection) -> PublishingService:
     settings = request.app.state.settings
     return PublishingService(
-        connection=connect(settings, readonly=False),
+        connection=connection,
         publish_root=Path(settings.asset_store_path) / "publish",
         sensitive_words=_load_sensitive_words(request),
         accounts=_accounts_from_settings(request),
@@ -80,20 +81,28 @@ def _service(request: Request) -> PublishingService:
 
 @router.get("/accounts")
 def accounts(request: Request) -> dict:
-    return {"ok": True, "data": {"items": _service(request).list_accounts()}}
+    settings = request.app.state.settings
+    with connect(settings, readonly=True) as connection:
+        return {"ok": True, "data": {"items": _service(request, connection).list_accounts()}}
 
 
 @router.get("/accounts/{account_id}")
 def account_status(request: Request, account_id: str) -> dict:
-    return {"ok": True, "data": _service(request).status(account_id)}
+    settings = request.app.state.settings
+    with connect(settings, readonly=True) as connection:
+        return {"ok": True, "data": _service(request, connection).status(account_id)}
 
 
 @router.post("/preview")
 def preview(request: Request, payload: dict) -> dict:
+    settings = request.app.state.settings
     body = payload.get("body") or ""
     content_id = payload.get("content_id") or "preview"
     extra = payload.get("extra_sensitive_words") or []
-    result = _service(request).preview(content_id=content_id, body=body, extra_sensitive_words=extra)
+    with connect(settings, readonly=True) as connection:
+        result = _service(request, connection).preview(
+            content_id=content_id, body=body, extra_sensitive_words=extra
+        )
     return {
         "ok": True,
         "data": {
@@ -107,6 +116,7 @@ def preview(request: Request, payload: dict) -> dict:
 
 @router.post("/draft")
 def draft(request: Request, payload: dict) -> dict:
+    settings = request.app.state.settings
     account_id = payload.get("account_id")
     body = payload.get("body") or ""
     content_id = payload.get("content_id") or "draft"
@@ -114,9 +124,12 @@ def draft(request: Request, payload: dict) -> dict:
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 account_id")
     try:
-        result = _service(request).save_draft(
-            account_id=account_id, content_id=content_id, body=body, operator=operator
-        )
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                result = _service(request, connection).save_draft(
+                    account_id=account_id, content_id=content_id, body=body, operator=operator
+                )
+                connection.commit()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": result}
@@ -124,13 +137,19 @@ def draft(request: Request, payload: dict) -> dict:
 
 @router.post("/dry-run")
 def dry_run(request: Request, payload: dict) -> dict:
+    settings = request.app.state.settings
     account_id = payload.get("account_id")
     body = payload.get("body") or ""
     content_id = payload.get("content_id") or "dry-run"
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 account_id")
     try:
-        result = _service(request).dry_run(account_id=account_id, content_id=content_id, body=body)
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                result = _service(request, connection).dry_run(
+                    account_id=account_id, content_id=content_id, body=body
+                )
+                connection.commit()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": result}
@@ -138,6 +157,7 @@ def dry_run(request: Request, payload: dict) -> dict:
 
 @router.post("/publish")
 def publish(request: Request, payload: dict) -> dict:
+    settings = request.app.state.settings
     account_id = payload.get("account_id")
     body = payload.get("body") or ""
     content_id = payload.get("content_id") or "publish"
@@ -146,9 +166,16 @@ def publish(request: Request, payload: dict) -> dict:
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 account_id")
     try:
-        result = _service(request).publish(
-            account_id=account_id, content_id=content_id, body=body, confirm=confirm, operator=operator
-        )
+        with writer_lock(Path(settings.lock_path)):
+            with connect(settings, readonly=False) as connection:
+                result = _service(request, connection).publish(
+                    account_id=account_id,
+                    content_id=content_id,
+                    body=body,
+                    confirm=confirm,
+                    operator=operator,
+                )
+                connection.commit()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": result.get("ok", result["status"] not in {"blocked"}), "data": result}

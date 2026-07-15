@@ -237,3 +237,45 @@ def test_t060_reconcile_creates_correction_job(hub, tmp_path):
     if error_results:
         corr = conn.execute("SELECT COUNT(*) AS n FROM correction_jobs").fetchone()
         assert corr["n"] >= len(error_results)
+
+
+def test_reconcile_resolves_relative_source_paths_and_separates_missing_hash(tmp_path):
+    import hashlib
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    body = b"# source\n"
+    source_file = source_root / "nested" / "article.md"
+    source_file.parent.mkdir()
+    source_file.write_bytes(body)
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            md_path TEXT NOT NULL,
+            file_hash TEXT
+        );
+        """
+    )
+    connection.executemany(
+        "INSERT INTO contents(content_id, md_path, file_hash) VALUES (?, ?, ?)",
+        [
+            ("matched", "nested/article.md", hashlib.sha256(body).hexdigest()),
+            ("unverified", "nested/article.md", ""),
+            ("missing", "missing.md", ""),
+        ],
+    )
+
+    result = ReconcileEngine(connection, [source_root]).file_integrity()[0]
+
+    assert result.severity == "warn"
+    assert result.evidence == {
+        "missing": 1,
+        "drifted": 0,
+        "unverified": 1,
+        "total": 3,
+    }

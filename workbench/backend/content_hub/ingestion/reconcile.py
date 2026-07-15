@@ -61,31 +61,63 @@ class ReconcileEngine:
         ).fetchall()
         missing = 0
         drifted = 0
+        unverified = 0
         for content_id, md_path, file_hash in rows:
-            try:
-                path = resolve_within(Path(md_path), self._roots)
-            except ValueError:
+            candidates = self._reference_candidates(md_path)
+            existing = [path for path in candidates if path.is_file()]
+            if not existing:
                 missing += 1
                 continue
-            if not path.exists():
-                missing += 1
+            if not file_hash:
+                unverified += 1
                 continue
-            try:
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            except OSError:
-                drifted += 1
-                continue
-            if digest != file_hash:
+            matched = False
+            for path in existing:
+                try:
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:
+                    continue
+                if digest == file_hash:
+                    matched = True
+                    break
+            if not matched:
                 drifted += 1
         severity = "warn" if missing or drifted else "info"
         return [
             ReconcileCheckResult(
                 section="file_integrity",
                 severity=severity,
-                summary=f"共 {len(rows)} 个 markdown 指针；缺失 {missing}、内容漂移 {drifted}",
-                evidence={"missing": missing, "drifted": drifted, "total": len(rows)},
+                summary=(
+                    f"共 {len(rows)} 个 markdown 指针；缺失 {missing}、"
+                    f"内容漂移 {drifted}、未记录哈希 {unverified}"
+                ),
+                evidence={
+                    "missing": missing,
+                    "drifted": drifted,
+                    "unverified": unverified,
+                    "total": len(rows),
+                },
             )
         ]
+
+    def _reference_candidates(self, raw_path: str) -> list[Path]:
+        """将绝对路径或相对来源路径解析为受允许根目录约束的候选路径。"""
+        raw = Path(raw_path).expanduser()
+        if raw.is_absolute():
+            try:
+                return [resolve_within(raw, self._roots)]
+            except ValueError:
+                return []
+
+        candidates: list[Path] = []
+        for root in self._roots:
+            try:
+                candidate = resolve_within(root / raw, [root])
+            except ValueError:
+                continue
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
 
     def identity_integrity(self) -> list[ReconcileCheckResult]:
         results: list[ReconcileCheckResult] = []
