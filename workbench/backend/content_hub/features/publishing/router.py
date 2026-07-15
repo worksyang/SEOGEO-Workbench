@@ -82,8 +82,12 @@ def _service(request: Request, connection) -> PublishingService:
 @router.get("/accounts")
 def accounts(request: Request) -> dict:
     settings = request.app.state.settings
-    with connect(settings, readonly=True) as connection:
-        return {"ok": True, "data": {"items": _service(request, connection).list_accounts()}}
+    with writer_lock(Path(settings.lock_path)):
+        with connect(settings, readonly=False) as connection:
+            service = _service(request, connection)
+            service.sync_runtime_accounts()
+            connection.commit()
+            return {"ok": True, "data": {"items": service.list_accounts()}}
 
 
 @router.get("/accounts/{account_id}")

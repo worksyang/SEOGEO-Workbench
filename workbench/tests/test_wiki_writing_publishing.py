@@ -682,6 +682,11 @@ def test_t163_publishing_dry_run_no_publish(hub):
     assert "preview_path" not in result
     assert not Path(result["preview_ref"]).is_absolute()
     assert (tmp_path / result["preview_ref"]).exists()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM publish_accounts_runtime WHERE account_id='acc'"
+    ).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM publish_queues").fetchone()[0] == 1
+    assert conn.execute("SELECT status FROM publish_queue_items").fetchone()[0] == "drafted"
 
 
 def test_t164_publishing_idempotency_blocks_duplicate(hub):

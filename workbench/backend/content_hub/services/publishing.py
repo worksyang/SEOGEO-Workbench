@@ -86,6 +86,40 @@ class PublishingService:
                     item["last_attempt_at"] = row["last_at"]
         return items
 
+    def sync_runtime_accounts(self) -> None:
+        """把本机安全配置投影为不含凭据的发布运行账号表。"""
+        now = utc_now_iso()
+        for account in self._accounts.values():
+            login_status = "ready" if account.enabled and account.publishable else "disabled"
+            self._conn.execute(
+                """
+                INSERT INTO publish_accounts_runtime(
+                    account_id,display_name,configuration_ref,login_status,enabled,publishable,updated_at,payload_json
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    display_name=excluded.display_name,login_status=excluded.login_status,
+                    enabled=excluded.enabled,publishable=excluded.publishable,updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    account.account_id,
+                    account.display_name,
+                    f"publish_accounts:{account.account_id}",
+                    login_status,
+                    int(account.enabled),
+                    int(account.publishable),
+                    now,
+                    json.dumps(
+                        {
+                            "bridge_kind": account.bridge_kind,
+                            "bridge_status": account.bridge_status,
+                            "credentials_stored": False,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+
     def status(self, account_id: str) -> dict[str, Any]:
         acct = self._accounts.get(account_id)
         if not acct:
@@ -318,8 +352,94 @@ class PublishingService:
             (idem_key,),
         ).fetchone()
         if row:
-            return row["attempt_id"] if isinstance(row, sqlite3.Row) else row[0]
-        return attempt_id# ── Markdown → 微信编辑器 HTML 的简化实现 ──────────────────
+            persisted_attempt_id = row["attempt_id"] if isinstance(row, sqlite3.Row) else row[0]
+            self._record_runtime_publish(
+                attempt_id=persisted_attempt_id,
+                account_id=account_id,
+                content_id=str(details.get("content_id") or ""),
+                mode=mode,
+                status=status,
+                payload=payload,
+            )
+            return persisted_attempt_id
+        return attempt_id
+
+    def _record_runtime_publish(
+        self,
+        *,
+        attempt_id: str,
+        account_id: str,
+        content_id: str,
+        mode: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> None:
+        self.sync_runtime_accounts()
+        queue_id = generate_ulid_like("pqu")
+        item_id = generate_ulid_like("pqi")
+        event_id = generate_ulid_like("pev")
+        now = utc_now_iso()
+        queue_mode = mode if mode in {"draft", "dry_run"} else "normal"
+        queue_status = "completed" if status == "succeeded" else "blocked" if status == "blocked" else "ready"
+        item_status = "drafted" if mode in {"draft", "dry_run"} and status == "succeeded" else "published" if status == "succeeded" else "blocked"
+        content_exists = bool(content_id) and self._conn.execute(
+            "SELECT 1 FROM contents WHERE content_id=?",
+            (content_id,),
+        ).fetchone() is not None
+        self._conn.execute(
+            """
+            INSERT INTO publish_queues(
+                publish_queue_id,queue_name,mode,status,interval_seconds,requires_confirmation,
+                schedule_json,created_by,created_at,updated_at
+            ) VALUES(?,?,?,?,0,?,?,?, ?,?)
+            """,
+            (
+                queue_id,
+                f"{mode}:{account_id}:{attempt_id}",
+                queue_mode,
+                queue_status,
+                0 if mode in {"draft", "dry_run"} else 1,
+                "{}",
+                "publishing-service",
+                now,
+                now,
+            ),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO publish_queue_items(
+                publish_queue_item_id,publish_queue_id,content_id,account_id,ordinal,status,idempotency_key,payload_json
+            ) VALUES(?,?,?,?,0,?,?,?)
+            """,
+            (
+                item_id,
+                queue_id,
+                content_id if content_exists else None,
+                account_id,
+                item_status,
+                attempt_id,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO publish_events(
+                publish_event_id,publish_queue_item_id,attempt_id,event_type,status,details_json,occurred_at
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                event_id,
+                item_id,
+                attempt_id,
+                f"publishing.{mode}",
+                status,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
+        )
+
+
+# ── Markdown → 微信编辑器 HTML 的简化实现 ──────────────────
 
 _INLINE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _INLINE_EM = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
