@@ -1,0 +1,27 @@
+{
+  "source_root": "/Users/works14/Documents/zkcode/GEOProMax",
+  "entrypoint": "web/run.py",
+  "formal_port": 8790,
+  "files": [
+    {
+      "path": "/Users/works14/Documents/zkcode/GEOProMax/web/run.py",
+      "sha256": "615b6db1e4c7c5bcf6030b7afc2e5406ceb752b21d6521c0474879abc7bc1f61",
+      "size": 28689
+    },
+    {
+      "path": "/Users/works14/Documents/zkcode/GEOProMax/web/ui.py",
+      "sha256": "be8e8397ae8dee9a6aa81cb3090697c770a2056bac7a44aab0590a55230dc40d",
+      "size": 82858
+    },
+    {
+      "path": "/Users/works14/Documents/zkcode/GEOProMax/web/README.md",
+      "sha256": "b65bf285228d7110e28e95124e288ea9818c0ef939b62bd3ccf09c204dddb519",
+      "size": 1178
+    },
+    {
+      "path": "/Users/works14/Documents/zkcode/GEOProMax/geo_demo_static.html",
+      "sha256": "439fd5c411d43fad65ab94ce1b31b0014f6e049e04822b6006fc5d9eacc69d19",
+      "size": 19285199
+    }
+  ]
+}

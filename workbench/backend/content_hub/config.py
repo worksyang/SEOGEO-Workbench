@@ -99,6 +99,7 @@ class Settings:
     xhs_settings_db_path: Path
     xhs_source_timeout_seconds: float
     geo_source_root: Path
+    geo_source_url: str
     geo_database_path: Path
     geo_platforms_path: Path
     geo_redfox_root: Path
@@ -191,6 +192,7 @@ class Settings:
             geo_source_root=Path(os.getenv(
                 "HUB_GEO_SOURCE_ROOT", "/Users/works14/Documents/zkcode/GEOProMax"
             )).expanduser().resolve(),
+            geo_source_url=os.getenv("HUB_GEO_SOURCE_URL", "http://127.0.0.1:8790").rstrip("/"),
             geo_database_path=Path(os.getenv(
                 "HUB_GEO_DATABASE_PATH",
                 "/Users/works14/Documents/zkcode/GEOProMax/data/index/geopromax.sqlite",

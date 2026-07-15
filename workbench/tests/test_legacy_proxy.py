@@ -115,3 +115,39 @@ def test_mp_legacy_proxy_uses_mp_upstream_and_limits_static_files(settings, monk
                 assert blocked.json()["error"]["code"] == "LEGACY_STATIC_NOT_ALLOWED"
 
     asyncio.run(run())
+
+
+def test_geo_legacy_page_and_api_use_geo_upstream(settings, monkeypatch) -> None:
+    seen: list[str] = []
+
+    @contextmanager
+    def fake_urlopen(request, timeout):
+        seen.append(f"{request.full_url}|{request.method}|{timeout}")
+        yield _Response()
+
+    monkeypatch.setattr(legacy_proxy.urllib.request, "urlopen", fake_urlopen)
+
+    async def run() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                page = await client.get("/legacy/geo/index.html")
+                assert page.status_code == 200
+                assert f"{settings.geo_source_url}/" in seen[-1]
+
+                data = await client.get(
+                    "/api/data",
+                    headers={"Referer": "http://testserver/legacy/geo/index.html"},
+                )
+                assert data.status_code == 200
+                assert f"{settings.geo_source_url}/api/data" in seen[-1]
+
+                blocked = await client.get("/legacy/geo/other.html")
+                assert blocked.status_code == 404
+                assert blocked.json()["error"]["code"] == "LEGACY_GEO_PAGE_NOT_ALLOWED"
+
+    asyncio.run(run())

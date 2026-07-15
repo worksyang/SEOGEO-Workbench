@@ -28,7 +28,11 @@ from content_hub.features.contents.router import router as contents_router
 from content_hub.features.jobs.router import router as jobs_router
 from content_hub.features.signals.router import router as signals_router
 from content_hub.features.governance.router import router as governance_router
-from content_hub.legacy_proxy import proxy_legacy_static, proxy_legacy_wechat_api
+from content_hub.legacy_proxy import (
+    proxy_legacy_geo_page,
+    proxy_legacy_static,
+    proxy_legacy_wechat_api,
+)
 
 from content_hub.logging import configure_logging
 
@@ -152,6 +156,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/{path:path}",
         proxy_legacy_wechat_api,
         methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/geo/{path:path}",
+        proxy_legacy_geo_page,
+        methods=["GET"],
         include_in_schema=False,
     )
     # 公众号旧控制台会返回 /static/logo.svg 这类绝对资源地址；

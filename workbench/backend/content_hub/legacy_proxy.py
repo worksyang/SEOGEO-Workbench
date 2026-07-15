@@ -40,6 +40,8 @@ _ALLOWED_PREFIXES = (
     "runtime/",
     "auth/",
     "ai/",
+    "data",
+    "import-json",
 )
 
 
@@ -82,12 +84,16 @@ async def proxy_legacy_wechat_api(
     referer = request.headers.get("referer", "")
     is_xhs = "/legacy/xhs/" in referer
     is_mp = "/legacy/mp/" in referer
+    is_geo = "/legacy/geo/" in referer
     if is_xhs:
         source_url = settings.xhs_source_url
         timeout_seconds = settings.xhs_source_timeout_seconds
     elif is_mp:
         source_url = settings.mp_source_url
         timeout_seconds = settings.mp_source_timeout_seconds
+    elif is_geo:
+        source_url = settings.geo_source_url
+        timeout_seconds = 10.0
     else:
         source_url = settings.wechat_source_url
         timeout_seconds = settings.wechat_source_timeout_seconds
@@ -136,6 +142,55 @@ async def proxy_legacy_wechat_api(
                 "error": {
                     "code": "LEGACY_UPSTREAM_UNAVAILABLE",
                     "message": f"原系统服务暂时不可用：{exc}",
+                },
+            },
+        )
+
+
+async def proxy_legacy_geo_page(path: str, request: Request) -> Response:
+    """把 GEOProMax 原始服务端页面原样承载到工作台业务岛屿。"""
+    if path not in {"", "index.html"}:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "error": {
+                    "code": "LEGACY_GEO_PAGE_NOT_ALLOWED",
+                    "message": "该 GEO 原始页面路径未登记到工作台。",
+                },
+            },
+        )
+
+    settings: Any = request.app.state.settings
+    target = f"{str(settings.geo_source_url).rstrip('/')}/"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    upstream_request = urllib.request.Request(
+        target,
+        headers={"Accept": request.headers.get("accept", "text/html")},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(upstream_request, timeout=10.0) as upstream:
+            return Response(
+                content=upstream.read(),
+                status_code=int(upstream.status),
+                media_type=upstream.headers.get_content_type() or "text/html",
+            )
+    except urllib.error.HTTPError as exc:
+        return Response(
+            content=exc.read(),
+            status_code=int(exc.code),
+            media_type=exc.headers.get_content_type() if exc.headers else "text/plain",
+        )
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "error": {
+                    "code": "LEGACY_UPSTREAM_UNAVAILABLE",
+                    "message": f"GEO 原系统服务暂时不可用：{exc}",
                 },
             },
         )
