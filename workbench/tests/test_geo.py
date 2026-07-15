@@ -354,6 +354,16 @@ def test_geo_import_persists_no_absolute_paths_and_uses_canonical_connection(set
         texts.append(audit["details_json"])
         assert all("/Users/" not in text and "/private/" not in text for text in texts)
         assert "legacy_connection_migrated" not in audit["details_json"]
+        manifest = con.execute(
+            "SELECT manifest_id,entry_count,payload_json FROM source_manifests WHERE system_key='geo'"
+        ).fetchone()
+        assert manifest["manifest_id"] == result["manifest_id"]
+        assert manifest["entry_count"] > 0
+        entries = con.execute(
+            "SELECT relative_path FROM source_manifest_entries WHERE manifest_id=?",
+            (result["manifest_id"],),
+        ).fetchall()
+        assert entries and all("/Users/" not in row["relative_path"] for row in entries)
 
 
 def test_geo_missing_markdown_is_partial_failed_and_not_healthy(settings, tmp_path, monkeypatch):

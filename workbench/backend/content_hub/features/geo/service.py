@@ -911,6 +911,7 @@ class GeoService:
             "redfox": self._redfox_summary(),
         }
         data["_markdown_cache"] = markdown_cache
+        data["_file_manifest"] = file_manifest
         return data, preview
 
     def preview(self, *, limit: int | None = None) -> dict[str, Any]:
@@ -1062,6 +1063,51 @@ class GeoService:
                 deduplications = list(preview.get("deduplications", []))
                 failed = 0
                 with transaction(con):
+                    # 每一次真实导入都冻结来源清单；对外只保存相对标签和哈希，
+                    # 不把本机绝对路径泄露到 Hub/API/审计。
+                    manifest_entries = list(data.get("_file_manifest") or [])
+                    con.execute(
+                        """
+                        INSERT INTO source_manifests(
+                            manifest_id,system_key,source_kind,root_fingerprint,manifest_hash,
+                            entry_count,captured_at,immutable,payload_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(manifest_id) DO NOTHING
+                        """,
+                        (
+                            manifest_id,
+                            "geo",
+                            "geopromax_sqlite",
+                            _sorted_hash({"adapter": self.adapter.adapter_key, "root_name": Path(self.settings.geo_source_root).name}),
+                            manifest_id,
+                            len(manifest_entries),
+                            now,
+                            1,
+                            _json({"adapter": self.adapter.adapter_key, "lineage": "sqlite"}),
+                        ),
+                    )
+                    for index, item in enumerate(manifest_entries):
+                        raw_path = str(item.get("path") or "")
+                        label = "database" if raw_path == str(self.settings.geo_database_path) else (
+                            "platform_rules" if raw_path == str(self.settings.geo_platforms_path) else
+                            _relative_source_path(raw_path, self.settings.geo_source_root) or f"unmapped/{index}"
+                        )
+                        con.execute(
+                            """
+                            INSERT INTO source_manifest_entries(
+                                manifest_id,relative_path,content_hash,size_bytes,observed_at,payload_json
+                            ) VALUES(?,?,?,?,?,?)
+                            ON CONFLICT(manifest_id,relative_path) DO NOTHING
+                            """,
+                            (
+                                manifest_id,
+                                label,
+                                item.get("sha256"),
+                                item.get("size"),
+                                now,
+                                _json({"error": item.get("error")} if item.get("error") else {}),
+                            ),
+                        )
                     con.execute(
                         "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,records_seen,records_written,records_failed,source_ref,error_json,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (batch_id, self.adapter.adapter_key, manifest_id, "running", now, len(data["answers"]), 0, 0, f"geopromax:{manifest_id}", _json(preview["rejected"]), _json(preview)),
