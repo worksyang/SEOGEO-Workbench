@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react'
 import {apiGet, apiRequest, ApiError} from '../../api/client'
 
-type Tab = 'identity' | 'states' | 'lineage' | 'locks' | 'backups'
+type Tab = 'identity' | 'states' | 'lineage' | 'locks' | 'switches' | 'comparisons' | 'dual-write' | 'backups'
 
 function record(value: unknown, fallback: Record<string, unknown> = {}): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : fallback
@@ -21,6 +21,9 @@ export default function GovernancePage() {
   const [locks, setLocks] = useState<{connections: Array<Record<string, unknown>>; audit: Array<Record<string, unknown>>}>({connections: [], audit: []})
   const [reconcile, setReconcile] = useState<{results: Array<Record<string, unknown>>; total: number; errors: number; warnings: number}>({results: [], total: 0, errors: 0, warnings: 0})
   const [backups, setBackups] = useState<{items: Array<Record<string, unknown>>; total: number; verifiable: number}>({items: [], total: 0, verifiable: 0})
+  const [switches, setSwitches] = useState<{items: Array<Record<string, unknown>>; total: number}>({items: [], total: 0})
+  const [writingJobs, setWritingJobs] = useState<Array<Record<string, unknown>>>([])
+  const [switchAction, setSwitchAction] = useState('')
   const [backupAction, setBackupAction] = useState('')
   const [error, setError] = useState('')
 
@@ -48,6 +51,12 @@ export default function GovernancePage() {
     apiGet<{ok: boolean; data: typeof backups}>('/api/v1/governance/backups', controller.signal)
       .then((res) => setBackups(res?.data || {items: [], total: 0, verifiable: 0}))
       .catch(() => undefined)
+    apiGet<{ok: boolean; data: typeof switches}>('/api/v1/governance/switches', controller.signal)
+      .then((res) => setSwitches(res?.data || {items: [], total: 0}))
+      .catch(() => undefined)
+    apiGet<{ok: boolean; data: {items?: Array<Record<string, unknown>>}}>('/api/v1/writing/jobs?limit=30', controller.signal)
+      .then((res) => setWritingJobs(res?.data?.items || []))
+      .catch(() => undefined)
     return () => controller.abort()
   }, [])
 
@@ -60,6 +69,28 @@ export default function GovernancePage() {
       setBackups(refreshed.data)
     } catch (err) {
       setBackupAction(err instanceof Error ? err.message : '备份失败')
+    }
+  }
+
+  async function updateSwitch(item: Record<string, unknown>, mode: 'legacy' | 'compare' | 'hub') {
+    const moduleKey = text(item.module_key)
+    const contractKey = text(item.contract_key)
+    if (!moduleKey || !contractKey) return
+    if (mode === 'hub' && !window.confirm(`确认将 ${moduleKey}/${contractKey} 切换到 Hub 模式？此操作会改变读取路径。`)) return
+    setSwitchAction(`正在更新 ${moduleKey}/${contractKey}…`)
+    try {
+      await apiRequest(`/api/v1/governance/switches/${encodeURIComponent(moduleKey)}/${encodeURIComponent(contractKey)}`, 'PUT', {
+        data_mode: mode,
+        rollback_mode: text(item.rollback_mode, 'legacy'),
+        operator: 'user',
+        reason: mode === 'hub' ? '用户在数据治理页明确确认切换' : '用户在数据治理页安全回退/对比',
+        ...(mode === 'hub' ? {confirm: true} : {}),
+      })
+      const refreshed = await apiGet<{ok: boolean; data: typeof switches}>('/api/v1/governance/switches')
+      setSwitches(refreshed.data)
+      setSwitchAction(`${moduleKey}/${contractKey} 已切换为 ${mode}`)
+    } catch (err) {
+      setSwitchAction(err instanceof Error ? err.message : '治理开关更新失败')
     }
   }
 
@@ -93,6 +124,15 @@ export default function GovernancePage() {
           </button>
           <button className={`pill ${tab === 'locks' ? 'active' : ''}`} onClick={() => setTab('locks')}>
             资源锁与风控
+          </button>
+          <button className={`pill ${tab === 'switches' ? 'active' : ''}`} onClick={() => setTab('switches')}>
+            迁移开关
+          </button>
+          <button className={`pill ${tab === 'comparisons' ? 'active' : ''}`} onClick={() => setTab('comparisons')}>
+            契约对比
+          </button>
+          <button className={`pill ${tab === 'dual-write' ? 'active' : ''}`} onClick={() => setTab('dual-write')}>
+            双写回执
           </button>
           <button className={`pill ${tab === 'backups' ? 'active' : ''}`} onClick={() => setTab('backups')}>
             备份恢复
@@ -261,6 +301,94 @@ export default function GovernancePage() {
               </ul>
             )}
           </section>
+        </section>
+      )}
+
+      {tab === 'switches' && (
+        <section className="governance-section">
+          <div className="governance-backup-head">
+            <div>
+              <h3>迁移开关</h3>
+              <p className="muted">读取自 /api/v1/governance/switches。legacy 与 compare 可直接操作；切到 hub 必须再次确认。</p>
+            </div>
+            <span className="count-pill">{switches.total} 个契约</span>
+          </div>
+          {switchAction && <div className="module-placeholder"><span>{switchAction}</span></div>}
+          {switches.items.length === 0 ? (
+            <div className="module-empty">当前没有已登记迁移开关；不展示猜测数据。</div>
+          ) : (
+            <div className="backup-list">
+              {switches.items.map((item) => (
+                <article className="backup-card" key={`${text(item.module_key)}:${text(item.contract_key)}`}>
+                  <div>
+                    <strong>{text(item.module_key)} / {text(item.contract_key)}</strong>
+                    <small>更新于 {text(item.updated_at)} · 操作者 {text(item.updated_by, 'unknown')} · 回退 {text(item.rollback_mode, 'legacy')}</small>
+                  </div>
+                  <div className="backup-card-actions">
+                    <span className={`tag ${item.data_mode === 'hub' ? 'red' : item.data_mode === 'compare' ? 'amber' : 'green'}`}>{text(item.data_mode)}</span>
+                    <button className="secondary-button" onClick={() => updateSwitch(item, 'legacy')}>Legacy</button>
+                    <button className="secondary-button" onClick={() => updateSwitch(item, 'compare')}>Compare</button>
+                    <button className="primary-button" onClick={() => updateSwitch(item, 'hub')}>切到 Hub</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === 'comparisons' && (
+        <section className="governance-section">
+          <h3>契约对比可见性</h3>
+          <div className="module-placeholder">
+            <strong>历史对比回执未伪造</strong>
+            <span>当前前端可调用的治理接口仅提供 POST /api/v1/governance/comparisons 写入回执，没有 GET 历史查询接口；以下仅列出真实处于 compare 模式的契约。</span>
+          </div>
+          {switches.items.filter((item) => item.data_mode === 'compare').length === 0 ? (
+            <div className="module-empty">暂无处于 compare 模式的契约。</div>
+          ) : (
+            <div className="backup-list">
+              {switches.items.filter((item) => item.data_mode === 'compare').map((item) => (
+                <article className="backup-card" key={`${text(item.module_key)}:${text(item.contract_key)}`}>
+                  <div>
+                    <strong>{text(item.module_key)} / {text(item.contract_key)}</strong>
+                    <small>当前读取策略为 compare · 最近切换 {text(item.updated_at)}</small>
+                  </div>
+                  <span className="tag amber">等待真实对比回执</span>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === 'dual-write' && (
+        <section className="governance-section">
+          <h3>双写回执</h3>
+          <div className="module-placeholder">
+            <strong>只展示真实 WritingMoney 任务证据</strong>
+            <span>治理路由当前没有 dual-write receipts 的 GET 接口；不从数据库或前端推测双写成功。</span>
+          </div>
+          {writingJobs.length === 0 ? (
+            <div className="module-empty">暂无可读取的写作任务回执。</div>
+          ) : (
+            <div className="backup-list">
+              {writingJobs.map((job) => {
+                const payload = record(job.payload)
+                const dualWrite = record(payload.dual_write)
+                const evidence = Boolean(payload.legacy_dual_write || dualWrite.legacy_dual_write)
+                return (
+                  <article className="backup-card" key={text(job.job_id)}>
+                    <div>
+                      <strong>{text(job.job_id)}</strong>
+                      <small>{text(job.job_type)} · {text(job.status)} · {text(job.updated_at)}</small>
+                    </div>
+                    <span className={`tag ${evidence ? 'green' : 'gray'}`}>{evidence ? '有双写证据' : '未提供双写证据'}</span>
+                  </article>
+                )
+              })}
+            </div>
+          )}
         </section>
       )}
 

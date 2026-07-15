@@ -4,7 +4,8 @@ import HomePage from './features/overview/HomePage'
 import MpPage from './features/mp/MpPage'
 import GeoPage from './features/geo/GeoPage'
 import WikiPage from './features/wiki/WikiPage'
-import WritingPage from './features/writing/WritingPage'
+import MotherPage from './features/writing/MotherPage'
+import BatchPage from './features/writing/BatchPage'
 import PublishingPage from './features/publishing/PublishingPage'
 import SystemsPage from './features/systems/SystemsPage'
 import GovernancePage from './features/governance/GovernancePage'
@@ -154,8 +155,8 @@ export default function App() {
     if (active === 'xhs') return <XhsIslandPage onSourceStatus={setXhsSourceStatus} />
     if (active === 'geo') return <GeoPage onSourceStatus={setGeoSourceStatus} />
     if (active === 'wiki') return <WikiPage />
-    if (active === 'mother') return <WritingPage initialTab="forge" />
-    if (active === 'batch') return <WritingPage initialTab="batch" />
+    if (active === 'mother') return <MotherPage />
+    if (active === 'batch') return <BatchPage />
     if (active === 'publish') return <PublishingPage />
     if (active === 'systems') return <SystemsPage />
     return <GovernancePage />

@@ -3670,6 +3670,16 @@ a:focus-visible {
     border-radius: 12px;
     padding: 18px 20px;
 }
+.governance-page .module-switch {
+    flex-wrap: wrap;
+}
+.governance-page .module-switch .pill {
+    white-space: nowrap;
+}
+.governance-page .module-placeholder strong,
+.governance-page .module-placeholder span {
+    display: block;
+}
 .governance-page .governance-section h3 { margin: 0 0 12px; font-size: 14px; color: #222; }
 .governance-page .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .governance-page .data-table th,
