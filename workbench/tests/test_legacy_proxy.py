@@ -73,3 +73,45 @@ def test_legacy_proxy_whitelist_and_query(settings, monkeypatch) -> None:
                 assert blocked.json()["error"]["code"] == "LEGACY_ENDPOINT_NOT_ALLOWED"
 
     asyncio.run(run())
+
+
+def test_mp_legacy_proxy_uses_mp_upstream_and_limits_static_files(settings, monkeypatch) -> None:
+    seen: list[str] = []
+
+    @contextmanager
+    def fake_urlopen(request, timeout):
+        seen.append(f"{request.full_url}|{request.method}|{timeout}")
+        yield _Response()
+
+    monkeypatch.setattr(legacy_proxy.urllib.request, "urlopen", fake_urlopen)
+
+    async def run() -> None:
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                accounts = await client.get(
+                    "/api/accounts",
+                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                )
+                assert accounts.status_code == 200
+                assert f"{settings.mp_source_url}/api/accounts" in seen[-1]
+
+                logo = await client.get(
+                    "/static/logo.svg",
+                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                )
+                assert logo.status_code == 200
+                assert logo.headers["content-type"].startswith("image/svg+xml")
+
+                blocked = await client.get(
+                    "/static/private.txt",
+                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                )
+                assert blocked.status_code == 404
+                assert blocked.json()["error"]["code"] == "LEGACY_STATIC_NOT_ALLOWED"
+
+    asyncio.run(run())
