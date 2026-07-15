@@ -10,6 +10,7 @@ from typing import Any
 from content_hub.adapters.mp import MpAdapter, MpSourceError, _scrub, _source_datetime, _trusted_url
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
+from content_hub.domain.ids import generate_ulid_like
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
 from content_hub.services.mp_runtime import MpCollectionRuntime
 
@@ -70,6 +71,11 @@ def _auth_state(payload: Any) -> tuple[bool | None, bool]:
         logged_in = status.get("logged_in")
     inconsistent = status.get("inconsistent") is True or data.get("inconsistent") is True
     return (logged_in if isinstance(logged_in, bool) else None), inconsistent
+
+
+def _source_ref(kind: str, relative_path: str = "") -> str:
+    suffix = relative_path.replace("\\", "/").lstrip("/")
+    return f"wechat-mp://{kind}" + (f"/{suffix}" if suffix else "")
 
 
 class MpService:
@@ -148,6 +154,129 @@ class MpService:
             self._connection("degraded" if exc.status else "offline", error=str(exc))
             raise
 
+    @staticmethod
+    def _account_id(item: dict[str, Any]) -> str:
+        return str(item.get("mp_id") or item.get("id") or item.get("account_id") or item.get("source_account_ref") or item.get("name") or "").strip()
+
+    @staticmethod
+    def _account_name(item: dict[str, Any]) -> str:
+        return str(item.get("mp_name") or item.get("name") or item.get("canonical_name") or item.get("display_name") or "").strip()
+
+    def _project_runtime(
+        self,
+        *,
+        accounts_payload: Any = None,
+        categories_payload: Any = None,
+        source_ref: str = "wechat-mp://live-http",
+    ) -> None:
+        """把上游账号、分类和 flags 投影到 mp_* 运行表；不保存凭据。"""
+        accounts = _rows(accounts_payload, "accounts", "items")
+        category_names = sorted(self._remote_category_names(categories_payload))
+        now = _now()
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    for index, name in enumerate(category_names):
+                        category_id = _id("mpcat", name)
+                        con.execute(
+                            """
+                            INSERT INTO mp_categories(category_id,category_name,sort_order,created_at,updated_at)
+                            VALUES(?,?,?,?,?)
+                            ON CONFLICT(category_name) DO UPDATE SET sort_order=excluded.sort_order,updated_at=excluded.updated_at
+                            """,
+                            (category_id, name, index, now, now),
+                        )
+                    for item in accounts:
+                        mp_id = self._account_id(item)
+                        name = self._account_name(item)
+                        if not mp_id or not name:
+                            continue
+                        flags = item.get("flags") if isinstance(item.get("flags"), dict) else item
+                        category_name = str(flags.get("category_name") or item.get("category_name") or "").strip()
+                        category_id = None
+                        if category_name:
+                            row = con.execute(
+                                "SELECT category_id FROM mp_categories WHERE category_name=?",
+                                (category_name,),
+                            ).fetchone()
+                            category_id = row["category_id"] if row else None
+                        con.execute(
+                            """
+                            INSERT INTO mp_accounts_runtime(
+                                mp_id,display_name,source_account_ref,avatar_ref,description,
+                                configuration_ref,last_seen_at,created_at,updated_at,payload_json
+                            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(mp_id) DO UPDATE SET
+                                display_name=excluded.display_name,
+                                source_account_ref=excluded.source_account_ref,
+                                avatar_ref=excluded.avatar_ref,
+                                description=excluded.description,
+                                last_seen_at=excluded.last_seen_at,
+                                updated_at=excluded.updated_at,
+                                payload_json=excluded.payload_json
+                            """,
+                            (
+                                mp_id,
+                                name,
+                                str(item.get("source_account_ref") or mp_id),
+                                item.get("avatar_ref") or item.get("avatar"),
+                                item.get("description"),
+                                item.get("configuration_ref"),
+                                now,
+                                now,
+                                now,
+                                _json({"source_ref": source_ref, "account": item}),
+                            ),
+                        )
+                        con.execute(
+                            """
+                            INSERT INTO mp_account_flags(mp_id,category_id,monitor_enabled,run_enabled,updated_at)
+                            VALUES(?,?,?,?,?)
+                            ON CONFLICT(mp_id) DO UPDATE SET
+                                category_id=COALESCE(excluded.category_id,mp_account_flags.category_id),
+                                monitor_enabled=excluded.monitor_enabled,
+                                run_enabled=excluded.run_enabled,
+                                updated_at=excluded.updated_at
+                            """,
+                            (
+                                mp_id,
+                                category_id,
+                                int(flags.get("monitor_enabled", item.get("monitor_enabled", True)) is not False),
+                                int(flags.get("run_enabled", item.get("run_enabled", True)) is not False),
+                                now,
+                            ),
+                        )
+
+    def _runtime_accounts(self) -> list[dict[str, Any]]:
+        with connect(self.settings, readonly=True) as con:
+            rows = con.execute(
+                """
+                SELECT a.*, f.category_id, c.category_name,
+                       f.monitor_enabled, f.run_enabled
+                FROM mp_accounts_runtime a
+                LEFT JOIN mp_account_flags f ON f.mp_id=a.mp_id
+                LEFT JOIN mp_categories c ON c.category_id=f.category_id
+                ORDER BY a.display_name,a.mp_id
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            item["flags"] = {
+                "monitor_enabled": bool(item.pop("monitor_enabled", 1)),
+                "run_enabled": bool(item.pop("run_enabled", 1)),
+                "category_name": item.pop("category_name", None),
+            }
+            result.append(item)
+        return result
+
+    def _runtime_categories(self) -> list[dict[str, Any]]:
+        with connect(self.settings, readonly=True) as con:
+            return [dict(row) for row in con.execute(
+                "SELECT category_id,category_name,sort_order,created_at,updated_at FROM mp_categories ORDER BY sort_order,category_name"
+            ).fetchall()]
+
     def bootstrap(self) -> dict[str, Any]:
         calls = {"health": self.adapter.health, "runtime": self.adapter.runtime_overview, "accounts": self.adapter.accounts, "categories": self.adapter.categories_remote, "jobs": self.adapter.jobs, "auth": self.adapter.auth_check}
         live: dict[str, Any] = {}
@@ -191,6 +320,12 @@ class MpService:
         accounts = _rows(live.get("accounts"), "accounts", "items")
         categories = _rows(live.get("categories"), "categories", "items")
         jobs = _rows(live.get("jobs"), "jobs", "items")
+        if accounts or categories:
+            self._project_runtime(
+                accounts_payload=live.get("accounts"),
+                categories_payload=live.get("categories"),
+                source_ref="wechat-mp://live-http/bootstrap",
+            )
         with connect(self.settings, readonly=True) as con:
             imported = [dict(row) for row in con.execute("SELECT DISTINCT c.content_id,c.title,c.author_name,c.published_at,c.creator_id,c.md_path,c.content_hash,c.payload_json FROM contents c JOIN content_discoveries d ON d.content_id=c.content_id AND d.discovery_system='wechat-mp' AND d.discovery_channel='account-feed' WHERE c.content_type='external_article' ORDER BY c.published_at DESC,c.content_id LIMIT 100").fetchall()]
             for row in imported:
@@ -203,8 +338,8 @@ class MpService:
         return {
             "source_status": source_status,
             "health": health, "runtime": live.get("runtime"), "auth": live.get("auth"),
-            "accounts": accounts[:100], "categories": categories[:100], "jobs": jobs[:100],
-            "summary": {"account_count": len(accounts), "category_count": len(categories), "job_count": len(jobs), "imported_article_count": imported_count, "configured_category_count": len(self.adapter.categories)},
+            "accounts": self._runtime_accounts()[:100], "categories": self._runtime_categories()[:100], "jobs": jobs[:100],
+            "summary": {"account_count": len(self._runtime_accounts()), "category_count": len(self._runtime_categories()), "job_count": len(jobs), "imported_article_count": imported_count, "configured_category_count": len(self.adapter.categories)},
             "hub_articles": imported,
         }
 
@@ -390,7 +525,38 @@ class MpService:
         )
 
     def _write(self, con: sqlite3.Connection, records: list[dict[str, Any]], live_accounts: list[dict[str, Any]], batch_id: str, report: dict[str, Any], now: str) -> None:
-        con.execute("INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at,payload_json=excluded.payload_json", (batch_id, "wechat-mp", "markdown", "running", now, str(self.adapter.root), _json(report)))
+        con.execute("INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET status='running',started_at=excluded.started_at,payload_json=excluded.payload_json", (batch_id, "wechat-mp", "markdown", "running", now, _source_ref("markdown"), _json(report)))
+        con.execute(
+            """
+            INSERT INTO source_manifests(manifest_id,system_key,source_kind,root_fingerprint,manifest_hash,entry_count,captured_at,payload_json)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(manifest_id) DO NOTHING
+            """,
+            (
+                report["manifest_id"],
+                "wechat-mp",
+                "markdown+metadata",
+                hashlib.sha256(b"wechat-mp:configured-source").hexdigest(),
+                report["manifest_id"],
+                len(report.get("manifest", {}).get("files", [])) + len(report.get("manifest", {}).get("metadata_files", [])),
+                now,
+                _json({"source_ref": _source_ref("markdown"), "manifest": report.get("manifest", {})}),
+            ),
+        )
+        for entry in report.get("manifest", {}).get("files", []):
+            relative_path = str(entry.get("relative_path") or "")
+            if relative_path:
+                con.execute(
+                    "INSERT OR REPLACE INTO source_manifest_entries(manifest_id,relative_path,content_hash,size_bytes,observed_at,payload_json) VALUES(?,?,?,?,?,?)",
+                    (report["manifest_id"], _source_ref("markdown", relative_path), entry.get("content_hash") or entry.get("file_hash"), entry.get("size"), now, _json(entry)),
+                )
+        for entry in report.get("manifest", {}).get("metadata_files", []):
+            relative_path = str(entry.get("path") or "")
+            if relative_path:
+                con.execute(
+                    "INSERT OR REPLACE INTO source_manifest_entries(manifest_id,relative_path,content_hash,size_bytes,observed_at,payload_json) VALUES(?,?,?,?,?,?)",
+                    (report["manifest_id"], _source_ref("metadata", relative_path), entry.get("sha256"), entry.get("size"), now, _json(entry)),
+                )
         account_by_name: dict[str, dict[str, Any]] = {}
         account_by_id: dict[str, dict[str, Any]] = {}
         stable_source_at = min((str(row.get("source_updated_at") or "") for row in records if row.get("source_updated_at")), default=now)
@@ -452,7 +618,8 @@ class MpService:
             if trusted_url:
                 con.execute("INSERT INTO content_identifiers(namespace,external_id,content_id,first_seen_at,payload_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace,external_id) DO UPDATE SET content_id=excluded.content_id,payload_json=excluded.payload_json", ("mp_csv_url", trusted_url, cid, now, _json({"metadata_source": record.get("metadata_source")})))
             discovery_id = _id("discovery", f"wechat-mp:account-feed:{cid}")
-            con.execute("INSERT INTO content_discoveries(discovery_id,content_id,discovery_system,discovery_channel,discovered_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(discovery_id) DO UPDATE SET payload_json=excluded.payload_json", (discovery_id, cid, "wechat-mp", "account-feed", source_at, path or record.get("metadata_source", {}).get("path"), _json({"category": record.get("category"), "author": author, "metadata_match_status": record.get("metadata_match_status")})))
+            discovery_ref = _source_ref("markdown", path) if path else _source_ref("metadata", str(record.get("metadata_source", {}).get("path") or ""))
+            con.execute("INSERT INTO content_discoveries(discovery_id,content_id,discovery_system,discovery_channel,discovered_at,source_ref,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(discovery_id) DO UPDATE SET source_ref=excluded.source_ref,payload_json=excluded.payload_json", (discovery_id, cid, "wechat-mp", "account-feed", source_at, discovery_ref, _json({"category": record.get("category"), "author": author, "metadata_match_status": record.get("metadata_match_status")})))
             accepted += 1
         report["accepted"] = accepted
         finished_at = _now()
@@ -460,9 +627,19 @@ class MpService:
         con.execute("UPDATE ingestion_batches SET status=?,finished_at=?,records_seen=?,records_written=?,records_failed=?,error_json=?,payload_json=? WHERE batch_id=?", ("succeeded" if not report["rejected"] else "partial_failed", finished_at, len(records) + rejected_count, accepted, rejected_count, _json(report["rejected"]), _json(report), batch_id))
         con.execute("INSERT INTO ingestion_checkpoints(adapter_key,checkpoint_key,cursor_value,source_hash,last_success_at,batch_id,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(adapter_key,checkpoint_key) DO UPDATE SET cursor_value=excluded.cursor_value,source_hash=excluded.source_hash,last_success_at=excluded.last_success_at,batch_id=excluded.batch_id,payload_json=excluded.payload_json", ("wechat-mp", "markdown", finished_at, report["manifest_id"], finished_at, batch_id, _json(report)))
 
-    def accounts(self): return self._remote(self.adapter.accounts)
-    def categories(self): return self._remote(self.adapter.categories_remote)
-    def jobs(self): return self._remote(self.adapter.jobs)
+    def accounts(self):
+        response = self._remote(self.adapter.accounts)
+        self._project_runtime(accounts_payload=response.payload, source_ref="wechat-mp://live-http/accounts")
+        return {"source_status": {"status": "healthy", "source": "hub_db"}, "accounts": self._runtime_accounts(), "count": len(self._runtime_accounts())}
+
+    def categories(self):
+        response = self._remote(self.adapter.categories_remote)
+        self._project_runtime(categories_payload=response.payload, source_ref="wechat-mp://live-http/categories")
+        return {"source_status": {"status": "healthy", "source": "hub_db"}, "categories": self._runtime_categories(), "count": len(self._runtime_categories())}
+
+    def jobs(self):
+        response = self._remote(self.adapter.jobs)
+        return {"source_status": {"status": "healthy", "source": "live_http"}, "jobs": _rows(response.payload, "jobs", "items")}
     def job(self, job_id: str): return self._remote(lambda: self.adapter.job(job_id))
     def auth_check(self):
         response = self._remote(self.adapter.auth_check)
@@ -528,7 +705,49 @@ class MpService:
                 raise ValidationAppError("无法读取上游账号分类，已安全拒绝 flags 更新。") from exc
             if clean["category_name"] not in self._remote_category_names(remote_categories.payload):
                 raise ValidationAppError("category_name 不是上游当前返回的账号分类。")
-        return self._remote(lambda: self.adapter.update_flags(mp_id, _scrub(clean)))
+        command_id = generate_ulid_like("cmd")
+        command_key = f"flags:{mp_id}:{hashlib.sha256(_json(clean).encode()).hexdigest()}"
+        now = _now()
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute(
+                        """
+                        INSERT OR IGNORE INTO command_runs(
+                            command_id,module_key,command_type,idempotency_key,actor_id,status,
+                            confirmation_json,input_json,created_at,updated_at
+                        ) VALUES(?,?,?,?,?,'running',?,?,?,?)
+                        """,
+                        (command_id, "wechat-mp", "mp.account_flags", command_key, "user", _json({"confirmed": True}), _json(clean), now, now),
+                    )
+        try:
+            response = self._remote(lambda: self.adapter.update_flags(mp_id, _scrub(clean)))
+        except MpSourceError as exc:
+            with writer_lock(self.settings.lock_path):
+                with connect(self.settings) as con:
+                    with transaction(con):
+                        con.execute("UPDATE command_runs SET status='failed',error_json=?,updated_at=? WHERE command_id=?", (_json({"kind": exc.kind, "status": exc.status, "message": str(exc)}), _now(), command_id))
+            self._audit("wechat-mp.account_flags", "failed", subject_id=mp_id, details={"command_id": command_id, "error": str(exc)})
+            raise
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute("UPDATE command_runs SET status='succeeded',output_json=?,updated_at=? WHERE command_id=?", (_json(response.payload), _now(), command_id))
+        with connect(self.settings, readonly=True) as con:
+            account = con.execute(
+                "SELECT display_name,payload_json FROM mp_accounts_runtime WHERE mp_id=?",
+                (mp_id,),
+            ).fetchone()
+        current = json.loads(account["payload_json"] or "{}").get("account", {}) if account else {}
+        current["flags"] = {**(current.get("flags") or {}), **clean}
+        current.setdefault("mp_id", mp_id)
+        current.setdefault("mp_name", account["display_name"] if account else mp_id)
+        self._project_runtime(
+            accounts_payload={"accounts": [current]},
+            source_ref="wechat-mp://live-http/account-flags",
+        )
+        self._audit("wechat-mp.account_flags", "succeeded", subject_id=mp_id, details={"command_id": command_id, "flags": clean})
+        return response
 
     def create_job(self, payload: dict[str, Any], confirm: bool, *, idempotency_key: str = ""):
         if confirm is not True:
@@ -577,11 +796,23 @@ class MpService:
                 status="failed",
                 error={"kind": exc.kind, "status": exc.status, "message": str(exc)},
             )
+            self._audit(
+                "wechat-mp.job_create",
+                "failed",
+                subject_id=command["collection_job_id"],
+                details={"command_id": command["command_id"], "kind": exc.kind, "status": exc.status},
+            )
             raise
         upstream = _compact(response.payload)
         raw_status = str(_payload_data(upstream).get("status") or "").lower()
         status = "queued" if raw_status in {"queued", "pending"} else "running" if raw_status in {"running", "processing"} else "succeeded"
         runtime_store.finish(command["collection_job_id"], status=status, result=upstream)
+        self._audit(
+            "wechat-mp.job_create",
+            "succeeded",
+            subject_id=command["collection_job_id"],
+            details={"command_id": command["command_id"], "status": status},
+        )
         response_payload = dict(upstream) if isinstance(upstream, dict) else {"upstream": upstream}
         response_payload.update(
             {
@@ -596,4 +827,10 @@ class MpService:
         if confirm is not True:
             self._audit("wechat-mp.job_cancel", "blocked", subject_id=job_id, details={"reason": "confirm_required"})
             raise ValidationAppError("取消公众号任务必须明确传入 confirm=true。")
-        return self._remote(lambda: self.adapter.cancel_job(job_id))
+        try:
+            response = self._remote(lambda: self.adapter.cancel_job(job_id))
+        except MpSourceError as exc:
+            self._audit("wechat-mp.job_cancel", "failed", subject_id=job_id, details={"error": str(exc), "status": exc.status})
+            raise
+        self._audit("wechat-mp.job_cancel", "succeeded", subject_id=job_id, details={"upstream": _compact(response.payload)})
+        return response

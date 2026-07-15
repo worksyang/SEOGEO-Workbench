@@ -110,3 +110,41 @@ class MpCollectionRuntime:
                         """,
                         (generate_ulid_like("mpe"), collection_job_id, "upstream_result", status, json.dumps({"result": result or {}, "error": error or {}}, ensure_ascii=False), now),
                     )
+
+    def record_event(
+        self,
+        collection_job_id: str,
+        *,
+        event_type: str,
+        status: str,
+        mp_id: str | None = None,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """写入采集事件；未知任务直接失败，不伪造事件成功。"""
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    exists = con.execute(
+                        "SELECT 1 FROM mp_collection_jobs WHERE collection_job_id=?",
+                        (collection_job_id,),
+                    ).fetchone()
+                    if exists is None:
+                        raise ValueError(f"公众号采集任务不存在：{collection_job_id}")
+                    con.execute(
+                        """
+                        INSERT INTO mp_collection_events(
+                            collection_event_id,collection_job_id,mp_id,event_type,status,message,details_json,occurred_at
+                        ) VALUES(?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            generate_ulid_like("mpe"),
+                            collection_job_id,
+                            mp_id,
+                            event_type,
+                            status,
+                            message,
+                            json.dumps(details or {}, ensure_ascii=False),
+                            _now(),
+                        ),
+                    )
