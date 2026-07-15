@@ -27,7 +27,10 @@ def _accounts_from_settings(request: Request) -> list[PublishAccount]:
                 profile_dir=raw.get("profile_dir") or "",
                 cookie_file=raw.get("cookie_file") or "",
                 token_file=raw.get("token_file") or "",
-                enabled=bool(raw.get("enabled", True)),
+                enabled=False,
+                publishable=False,
+                bridge_kind=getattr(settings, "publish_bridge_kind", "disabled"),
+                bridge_status=getattr(settings, "publish_bridge_status", "unconfigured"),
             )
         )
     if not out:
@@ -38,7 +41,10 @@ def _accounts_from_settings(request: Request) -> list[PublishAccount]:
                 profile_dir="",
                 cookie_file="",
                 token_file="",
-                enabled=True,
+                enabled=False,
+                publishable=False,
+                bridge_kind="disabled",
+                bridge_status="unconfigured",
             )
         )
     return out
@@ -66,6 +72,8 @@ def _service(request: Request) -> PublishingService:
         publish_root=Path(settings.asset_store_path) / "publish",
         sensitive_words=_load_sensitive_words(request),
         accounts=_accounts_from_settings(request),
+        bridge_kind=getattr(settings, "publish_bridge_kind", "disabled"),
+        bridge_status=getattr(settings, "publish_bridge_status", "unconfigured"),
     )
 
 
@@ -142,7 +150,7 @@ def publish(request: Request, payload: dict) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": result["status"] not in {"blocked"}, "data": result}
+    return {"ok": result.get("ok", result["status"] not in {"blocked"}), "data": result}
 
 
 @router.get("/attempts")
@@ -162,5 +170,9 @@ def attempts(request: Request, account_id: str | None = None, limit: int = 50) -
                 item["payload"] = json.loads(item.pop("payload_json") or "{}")
             except Exception:
                 item["payload"] = {}
+            # 历史记录也不把路径、profile 或任何潜在 secret 字段回显到 API。
+            for unsafe_key in ("content_md_path", "md_path", "profile_dir", "cookie_file", "token_file",
+                               "cookie_blob", "token_blob", "raw_cookie", "raw_token"):
+                item["payload"].pop(unsafe_key, None)
             rows.append(item)
     return {"ok": True, "data": {"items": rows}}

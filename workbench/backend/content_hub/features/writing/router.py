@@ -19,6 +19,8 @@ def _service(request: Request) -> WritingService:
     return WritingService(
         connection=connect(settings, readonly=False),
         markdown_store=MarkdownStore(Path(settings.asset_store_path)),
+        provider_kind=settings.writing_provider_kind,
+        provider_status=settings.writing_provider_status,
     )
 
 
@@ -48,7 +50,17 @@ def create_job(request: Request, payload: dict) -> dict:
             target_article_count=int(payload.get("target_article_count") or 1),
             matched_articles=payload.get("matched_articles") or [],
         )
-    return {"ok": True, "data": {"job_id": job.job_id, "job_type": job.job_type, "status": job.status}}
+    return {
+        "ok": True,
+        "data": {
+            "job_id": job.job_id,
+            "job_type": job.job_type,
+            "status": job.status,
+            "provider_kind": settings.writing_provider_kind,
+            "provider_status": settings.writing_provider_status,
+            "demo": False,
+        },
+    }
 
 
 @router.post("/jobs/{job_id}/run")
@@ -60,7 +72,7 @@ def run_job(request: Request, job_id: str) -> dict:
             result = svc.run(job_id, operator="user")
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"ok": result["status"] != "failed", "data": result}
+    return {"ok": result["status"] not in {"failed", "blocked", "demo_only"}, "data": result}
 
 
 @router.get("/jobs/{job_id}")

@@ -83,12 +83,13 @@ def test_t148_wiki_save_atomic_replaces_file(hub):
     result = svc.save(cid, body=new_body, operator="test")
     assert result["content_id"] == cid
     assert "新内容" in target.read_text(encoding="utf-8")
-    snapshot = Path(result["snapshot_path"])
+    snapshot = asset_root / result["snapshot_ref"]
     assert snapshot.parent == (asset_root / "wiki" / ".snapshots").resolve()
     assert snapshot.read_text(encoding="utf-8").endswith("旧文本\n")
     second = svc.save(cid, body=new_body.replace("新内容", "再次保存"), operator="test")
-    assert Path(second["snapshot_path"]).exists()
-    assert second["snapshot_path"] != result["snapshot_path"]
+    assert (asset_root / second["snapshot_ref"]).exists()
+    assert second["snapshot_ref"] != result["snapshot_ref"]
+    assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 
 
 def test_t149_wiki_save_validation_blocks_external_path(hub):
@@ -168,6 +169,38 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     audit = conn.execute("SELECT details_json FROM audit_log WHERE action='wiki.import' ORDER BY occurred_at DESC LIMIT 1").fetchone()[0]
     assert str(root) not in audit
     assert "configured/wiki-source" in audit
+    tree = svc.tree()
+    entries = svc.collect(tree)
+    mother = next(item for item in entries if item["source_ref"] == "其他/母文章.md")
+    knowledge = next(item for item in entries if item["source_ref"] == "wiki/规则.md")
+    assert mother["content_id"] == conn.execute(
+        "SELECT content_id FROM contents WHERE title='母文章'"
+    ).fetchone()[0]
+    assert knowledge["content_id"] == conn.execute(
+        "SELECT content_id FROM contents WHERE title='规则'"
+    ).fetchone()[0]
+    assert svc.search("母文章")[0]["content_id"] == mother["content_id"]
+    detail = svc.read(mother["content_id"])
+    assert detail and detail["entry"]["source_ref"] == "其他/母文章.md"
+    assert "正文" in detail["body"]
+    public_data = json.dumps({"tree": tree, "detail": detail}, ensure_ascii=False)
+    assert str(root) not in public_data
+    assert str(asset) not in public_data
+
+    saved = svc.save(mother["content_id"], body="# 母文章\n\n编辑后的正文", operator="test")
+    assert "编辑后的正文" in (root / "其他" / "母文章.md").read_text(encoding="utf-8")
+    assert (asset / saved["snapshot_ref"]).exists()
+    row = conn.execute(
+        "SELECT content_id, content_hash FROM contents WHERE content_id=?",
+        (mother["content_id"],),
+    ).fetchone()
+    assert row["content_id"] == mother["content_id"]
+    assert row["content_hash"]
+    save_audit = conn.execute(
+        "SELECT details_json FROM audit_log WHERE action='wiki.save' ORDER BY occurred_at DESC LIMIT 1"
+    ).fetchone()[0]
+    assert str(root) not in save_audit
+    assert "其他/母文章.md" in save_audit
 
 
 def test_t168_wiki_scan_rejects_symlink_invalid_utf8_and_excluded_dirs(hub):
@@ -205,6 +238,28 @@ def test_t169_wiki_scan_reports_truncation_and_real_root_shape(hub):
     assert scan.scanned == 3
     assert scan.accepted == 2
     assert scan.truncated is True
+
+
+def test_t170_wiki_tree_read_skip_symlink_dirs_and_files(hub):
+    conn, _settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "其他").mkdir(parents=True)
+    (root / "其他" / "正常.md").write_text("# 正常\n\n正文", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "逃逸.md").write_text("# 逃逸", encoding="utf-8")
+    (root / "软链目录").symlink_to(outside, target_is_directory=True)
+    (root / "其他" / "软链文件.md").symlink_to(outside / "逃逸.md")
+    (root / "wiki").mkdir()
+    asset = tmp_path / "asset"
+    (asset / "wiki").mkdir(parents=True)
+    svc = WikiService(connection=conn, asset_root=asset, source_roots=[root], lock_path=tmp_path / "lock")
+    entries = svc.collect()
+    refs = {entry["source_ref"] for entry in entries}
+    assert "其他/正常.md" in refs
+    assert "软链目录/逃逸.md" not in refs
+    assert "其他/软链文件.md" not in refs
+    assert svc.read("cnt_not_a_real_article") is None
 
 
 def test_t151_settings_default_wiki_roots_exclude_zkcode_source(hub):
@@ -299,8 +354,12 @@ def test_t157_writing_run_mother_forge_writes_artifact(hub):
     svc = WritingService(connection=conn, markdown_store=store, provider=FakeProvider(latency_ms=0))
     job = svc.create_mother_forge(topic="铸造测试", purpose="")
     result = svc.run(job.job_id, operator="test")
-    assert result["status"] == "succeeded"
+    assert result["status"] == "demo_only"
+    assert result["demo"] is True
+    assert result["reason_code"] == "writing.demo_provider"
     assert Path(result["md_path"]).exists()
+    assert conn.execute("SELECT status FROM production_jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == "blocked"
+    assert "demo_mother_article" in Path(result["md_path"]).read_text(encoding="utf-8")
 
 
 def test_t158_writing_run_batch_emits_outputs(hub):
@@ -315,7 +374,7 @@ def test_t158_writing_run_batch_emits_outputs(hub):
         target_article_count=2,
     )
     result = svc.run(job.job_id, operator="test")
-    assert result["status"] == "succeeded"
+    assert result["status"] == "demo_only"
     assert result["count"] == 2
 
 
@@ -328,7 +387,7 @@ def test_t159_writing_restart_recovery(hub):
     svc.run(job.job_id, operator="test")
     # 第二次 claim 应该被拒绝
     detail = svc.detail(job.job_id)
-    assert detail["status"] == "succeeded"
+    assert detail["status"] == "blocked"
 
 
 # ── Publishing ─────────────────────────────────────
@@ -348,7 +407,7 @@ def test_t160_publishing_does_not_leak_cookie(hub):
     # 内部对象保留配置字段，但服务输出不得泄露路径。
     expected = {
         "account_id", "display_name", "profile_dir", "cookie_file",
-        "token_file", "enabled", "publishable",
+        "token_file", "enabled", "publishable", "bridge_kind", "bridge_status",
     }
     assert set(asdict(acct).keys()) == expected, f"PublishAccount 字段集合变化：{set(asdict(acct).keys())}"
     dumped = str(acct.to_dict())
@@ -357,7 +416,7 @@ def test_t160_publishing_does_not_leak_cookie(hub):
     assert "token_file" not in dumped
     assert set(acct.to_dict()) == {
         "account_id", "display_name", "enabled", "publishable",
-        "cookie_exists", "token_exists", "status",
+        "bridge_kind", "bridge_status", "status", "reason_code",
     }
     # 不应有 cookie 内容读取的方法
     assert not hasattr(acct, "read_cookie")
@@ -402,6 +461,53 @@ def test_t165_publishing_real_requires_confirm(hub):
     )
     result_no_confirm = svc.publish(account_id="acc", content_id="c", body="x")
     assert result_no_confirm["status"] == "needs_confirmation"
+    assert result_no_confirm["ok"] is False
     result_with_confirm = svc.publish(account_id="acc", content_id="c", body="x", confirm=True)
     assert result_with_confirm["status"] == "blocked"
-    assert "未执行真实发布" in result_with_confirm["reason"]
+    assert result_with_confirm["ok"] is False
+    assert result_with_confirm["reason_code"] == "publish.bridge_unavailable"
+    assert not (tmp_path / "publish" / "acc" / "would_publish").exists()
+    attempt = conn.execute("SELECT status, payload_json FROM publish_attempts").fetchone()
+    assert attempt[0] == "blocked"
+    assert "content_md_path" not in attempt[1]
+
+
+def test_t181_writing_unconfigured_is_blocked_and_audited(hub):
+    conn, settings, _ = hub
+    svc = WritingService(connection=conn, markdown_store=MarkdownStore(settings.asset_store_path))
+    job = svc.create_batch(topic="未配置", source="manual", requirements={}, keywords=["K"], target_article_count=1)
+    result = svc.run(job.job_id, operator="test")
+    assert result == {
+        "status": "blocked",
+        "job_id": job.job_id,
+        "blocked": True,
+        "demo": False,
+        "provider_kind": "unconfigured",
+        "provider_status": "unconfigured",
+        "reason_code": "writing.provider_unconfigured",
+        "mode": "batch_production",
+    }
+    assert not list((settings.asset_store_path / "generated").glob("*.md"))
+    event = conn.execute("SELECT payload_json FROM job_events WHERE job_id=? AND event_type='blocked'", (job.job_id,)).fetchone()[0]
+    audit = conn.execute("SELECT details_json FROM audit_log WHERE action='writing.run'").fetchone()[0]
+    assert "writing.provider_unconfigured" in event and "writing.provider_unconfigured" in audit
+    assert "/" not in event and "secret" not in event.lower()
+
+
+def test_t182_publishing_confirm_is_blocked_without_bridge_and_never_succeeds(hub):
+    conn, _settings, tmp_path = hub
+    svc = PublishingService(
+        connection=conn,
+        publish_root=tmp_path / "publish",
+        accounts=[PublishAccount("demo", "演示账号", "", "", "", False)],
+    )
+    result = svc.publish(account_id="demo", content_id="c182", body="# body", confirm=True)
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "publish.bridge_unavailable"
+    assert not (tmp_path / "publish" / "demo" / "would_publish").exists()
+    row = conn.execute("SELECT status FROM publish_attempts WHERE attempt_id=?", (result["attempt_id"],)).fetchone()
+    assert row[0] == "blocked"
+    audit = conn.execute("SELECT details_json FROM audit_log WHERE action='publishing.publish'").fetchone()[0]
+    assert "publish.bridge_unavailable" in audit
+    assert "SECRET" not in audit and "/" not in audit

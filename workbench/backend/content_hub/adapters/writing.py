@@ -1,4 +1,4 @@
-"""WritingMoney 适配器：把 Fake Provider 落地的生产任务同步写入 Hub。
+"""WritingMoney 演示适配器：显式写入 demo_only 资产，绝不伪称真实成稿。
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from ..ingestion.pipeline import IngestionPipeline, RawBatch
 from ..validation.timestamps import utc_now_iso
 from .base import AdapterStatus, AdapterTask
 
-ADAPTER_KEY = "writing-fake"
+ADAPTER_KEY = "writing-demo"
 
 
 def make_dummy_batch(*, count: int = 3) -> tuple[RawBatch, AdapterStatus]:
@@ -38,19 +38,19 @@ def make_dummy_batch(*, count: int = 3) -> tuple[RawBatch, AdapterStatus]:
         content_id = content_id_from_text("writing_demo", slug)
         content = ContentRecord(
             content_id=content_id,
-            content_type="generated_article",
+            content_type="demo_generated_article",
             title=title,
             canonical_url="",
             first_seen_at=now,
             updated_at=now,
             md_path="",
-            payload={"adapter": "writing-fake", "slug": slug, "index": index},
+            payload={"adapter": ADAPTER_KEY, "slug": slug, "index": index, "demo_only": True},
         )
         raw.contents.append(content)
         raw.identifiers.append(
             IdentifierRecord(
-                namespace="mother.frontmatter_asset_id",
-                external_id=f"writing-fake::{slug}",
+                namespace="writing.demo_asset_id",
+                external_id=f"{ADAPTER_KEY}::{slug}",
                 content_id=content_id,
                 first_seen_at=now,
             )
@@ -61,8 +61,8 @@ def make_dummy_batch(*, count: int = 3) -> tuple[RawBatch, AdapterStatus]:
                 system="writing",
                 channel="fake_provider",
                 discovered_at=now,
-                source_ref=f"writing-fake::{slug}",
-                payload={"slug": slug},
+                source_ref=f"{ADAPTER_KEY}::{slug}",
+                payload={"slug": slug, "demo_only": True},
             )
         )
         status.written += 1

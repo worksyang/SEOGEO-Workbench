@@ -5,6 +5,10 @@ type Account = {
   account_id: string
   display_name: string
   enabled: boolean
+  publishable?: boolean
+  bridge_kind?: string
+  bridge_status?: string
+  reason_code?: string
   last_attempt_at?: string
 }
 
@@ -111,6 +115,11 @@ export default function PublishingPage() {
         <span className="module-right">仅展示预览与 dry-run；真发布未开放</span>
       </header>
 
+      <div className="module-status-banner amber">
+        <strong>未配置真实发布桥 · 不可发布</strong>
+        <span>预览、dry-run、草稿均不会发布到公众号；confirm=true 也会明确返回 blocked。</span>
+      </div>
+
       {state === 'offline' && (
         <div className="module-placeholder">
           <strong>Hub 暂时不可达</strong>
@@ -125,7 +134,7 @@ export default function PublishingPage() {
             <select value={selected} onChange={(e) => setSelected(e.target.value)}>
               {accounts.map((acct) => (
                 <option key={acct.account_id} value={acct.account_id}>
-                  {acct.display_name} ({acct.account_id})
+                  {acct.display_name} · {acct.publishable ? '可发布' : '不可发布'} ({acct.account_id})
                 </option>
               ))}
             </select>

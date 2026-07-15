@@ -1,9 +1,9 @@
-"""WritingMoney 服务：母文章铸造项目 + 批量成稿批次 + Fake Provider + 任务恢复。
+"""WritingMoney 服务：安全的配置状态、演示 Provider 与任务恢复。
 
 dev-plan §5.6 协议：
 - 项目 / 批次全部落到 production_jobs 表；
 - 素材必用 / 参考 / 不用 = payload_json 内部分；
-- AI 提供方为可插拔 FakeProvider；真实 Provider 由 adapter 注入。
+- 默认不配置任何真实 Provider；FakeProvider 只能由调用方显式注入并始终标记为 demo_only。
 - 输出 Markdown 写到 asset_store/generated，并登记为 content。
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from ..domain.ids import generate_ulid_like
 from ..ingestion.markdown_store import MarkdownStore
 from ..validation.timestamps import utc_now_iso
+from .audit import AuditService
 from .jobs import JobsService
 
 
@@ -51,6 +52,8 @@ class FakeProvider:
 
     def __init__(self, latency_ms: int = 80):
         self.latency_ms = latency_ms
+        self.kind = "fake"
+        self.status = "demo_only"
 
     def generate(
         self,
@@ -80,11 +83,16 @@ class WritingService:
         connection: sqlite3.Connection,
         markdown_store: MarkdownStore,
         provider: FakeProvider | None = None,
+        provider_kind: str = "unconfigured",
+        provider_status: str = "unconfigured",
     ):
         self._conn = connection
         self._markdown = markdown_store
-        self._provider = provider or FakeProvider()
+        self._provider = provider
+        self._provider_kind = getattr(provider, "kind", provider_kind) if provider else provider_kind
+        self._provider_status = getattr(provider, "status", provider_status) if provider else provider_status
         self._jobs = JobsService(connection)
+        self._audit = AuditService(connection)
 
     def create_mother_forge(
         self,
@@ -105,6 +113,14 @@ class WritingService:
         job_id = self._jobs.create(
             job_type="mother_forge",
             payload=payload,
+        )
+        self._audit.record(
+            action="writing.create",
+            subject_type="writing_job",
+            subject_id=job_id,
+            actor_id=operator,
+            outcome="succeeded",
+            details=self._safe_provider_details(mode="mother_forge"),
         )
         return WritingJob(job_id=job_id, job_type="mother_forge", topic=topic, status="queued", payload=payload)
 
@@ -134,6 +150,14 @@ class WritingService:
             job_type="batch_production",
             payload=payload,
         )
+        self._audit.record(
+            action="writing.create",
+            subject_type="writing_job",
+            subject_id=job_id,
+            actor_id=operator,
+            outcome="succeeded",
+            details=self._safe_provider_details(mode="batch_production"),
+        )
         return WritingJob(
             job_id=job_id,
             job_type="batch_production",
@@ -148,6 +172,28 @@ class WritingService:
             raise FileNotFoundError(f"未找到生产任务：{job_id}")
         if not self._jobs.claim(job_id, operator):
             return {"status": "skipped", "reason": "任务已被认领或不在 queued 状态"}
+        if self._provider is None:
+            details = self._safe_provider_details(
+                mode=job.job_type,
+                reason_code="writing.provider_unconfigured",
+            )
+            self._jobs.complete(job_id, status="blocked")
+            self._record_event(job_id, "blocked", details)
+            self._audit.record(
+                action="writing.run",
+                subject_type="writing_job",
+                subject_id=job_id,
+                actor_id=operator,
+                outcome="blocked",
+                details=details,
+            )
+            return {
+                "status": "blocked",
+                "job_id": job_id,
+                "blocked": True,
+                "demo": False,
+                **details,
+            }
         try:
             if job.job_type == "mother_forge":
                 written = self._run_mother_forge(job)
@@ -155,12 +201,38 @@ class WritingService:
                 written = self._run_batch(job)
             else:
                 raise ValueError(f"不支持的 job_type={job.job_type}")
-            self._jobs.complete(job_id, output_content_id=written.get("content_id", ""), status="succeeded")
-            return {"status": "succeeded", "job_id": job_id, **written}
+            self._jobs.complete(job_id, output_content_id=written.get("content_id", ""), status="blocked")
+            details = self._safe_provider_details(
+                mode=job.job_type,
+                reason_code="writing.demo_provider",
+            )
+            details["demo"] = True
+            self._record_event(job_id, "demo_only", details)
+            self._audit.record(
+                action="writing.run",
+                subject_type="writing_job",
+                subject_id=job_id,
+                actor_id=operator,
+                outcome="blocked",
+                details=details,
+            )
+            return {"status": "demo_only", "job_id": job_id, "blocked": False, **details, **written}
         except Exception as exc:  # noqa: BLE001
             self._jobs.complete(job_id, status="failed")
-            self._record_event(job_id, "failed", {"error": str(exc)})
-            return {"status": "failed", "job_id": job_id, "error": str(exc)}
+            details = self._safe_provider_details(
+                mode=job.job_type,
+                reason_code="writing.provider_error",
+            )
+            self._record_event(job_id, "failed", details)
+            self._audit.record(
+                action="writing.run",
+                subject_type="writing_job",
+                subject_id=job_id,
+                actor_id=operator,
+                outcome="failed",
+                details=details,
+            )
+            return {"status": "failed", "job_id": job_id, **details}
 
     def _run_mother_forge(self, job: WritingJob) -> dict[str, Any]:
         body = self._provider.generate(
@@ -173,17 +245,17 @@ class WritingService:
         result = self._markdown.write(
             bucket="generated",
             content_id=_deterministic_id("mother", title, job.job_id),
-            content_type="mother_article",
+            content_type="demo_mother_article",
             title=title,
             author="WritingMoney",
             body=body,
             published_at=utc_now_iso(),
-            extra_frontmatter={"mode": "mother_forge", "purpose": job.payload.get("purpose", "")},
+            extra_frontmatter={"mode": "mother_forge", "purpose": job.payload.get("purpose", ""), "demo_only": True},
         )
         self._record_content(
             result.md_path,
             title,
-            "mother_article",
+            "demo_mother_article",
             result.file_hash,
             result.content_hash,
         )
@@ -191,6 +263,7 @@ class WritingService:
         return {
             "md_path": result.md_path,
             "content_id": self._last_content_id(result.md_path),
+            "demo_only": True,
         }
 
     def _run_batch(self, job: WritingJob) -> dict[str, Any]:
@@ -210,23 +283,23 @@ class WritingService:
             result = self._markdown.write(
                 bucket="generated",
                 content_id=_deterministic_id("batch", prompt, job.job_id, str(index)),
-                content_type="generated_article",
+                content_type="demo_generated_article",
                 title=prompt,
                 author="WritingMoney",
                 body=body,
                 published_at=utc_now_iso(),
-                extra_frontmatter={"mode": "batch", "keyword": keyword},
+                extra_frontmatter={"mode": "batch", "keyword": keyword, "demo_only": True},
             )
             outputs.append(result.md_path)
             self._record_content(
                 result.md_path,
                 prompt,
-                "generated_article",
+                "demo_generated_article",
                 result.file_hash,
                 result.content_hash,
             )
             self._record_event(job.job_id, f"batch.article.{index + 1}", {"md_path": result.md_path})
-        return {"outputs": outputs, "count": len(outputs)}
+        return {"outputs": outputs, "count": len(outputs), "demo_only": True}
 
     def list_jobs(self, *, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._jobs.list_recent(limit=limit)
@@ -295,6 +368,15 @@ class WritingService:
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
             ),
         )
+
+    def _safe_provider_details(self, *, mode: str, reason_code: str = "writing.job_created") -> dict[str, Any]:
+        return {
+            "provider_kind": self._provider_kind,
+            "provider_status": self._provider_status,
+            "reason_code": reason_code,
+            "mode": mode,
+            "demo": self._provider is not None,
+        }
 
     def _last_content_id(self, md_path: str) -> str:
         row = self._conn.execute(

@@ -5,6 +5,9 @@ type Job = {
   job_id: string
   job_type: 'mother_forge' | 'batch_production' | string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked' | string
+  provider_kind?: string
+  provider_status?: string
+  demo?: boolean
   created_at: string
   updated_at: string
   scheduled_at: string
@@ -21,7 +24,7 @@ function text(value: unknown, fallback = ''): string {
 const STATUS_LABELS: Record<string, string> = {
   queued: '等待中',
   running: '运行中',
-  succeeded: '已完成',
+  succeeded: '已完成（需核验）',
   failed: '失败',
   cancelled: '已取消',
   blocked: '受阻',
@@ -126,6 +129,11 @@ export default function WritingPage() {
         </span>
       </header>
 
+      <div className="module-status-banner amber">
+        <strong>写作 Provider：未配置真实提供方</strong>
+        <span>当前创建/运行不会伪称真实成稿；仅显式测试 Provider 可生成 demo_only 演示产物。</span>
+      </div>
+
       {state === 'offline' && <div className="module-placeholder"><strong>Hub 暂时不可达</strong><span>{error}</span></div>}
       {state === 'error' && <div className="module-placeholder"><strong>读取失败</strong><span>{error}</span></div>}
 
@@ -141,7 +149,7 @@ export default function WritingPage() {
               <article key={job.job_id} className={`job-card status-${job.status}`}>
                 <div className="job-head">
                   <strong>{job.job_type === 'mother_forge' ? '母文章铸造' : '批量成稿'}</strong>
-                  <span className={`tag ${job.status === 'succeeded' ? 'green' : job.status === 'failed' ? 'red' : 'amber'}`}>
+                  <span className={`tag ${job.status === 'failed' ? 'red' : 'amber'}`}>
                     {STATUS_LABELS[job.status] || job.status}
                   </span>
                 </div>

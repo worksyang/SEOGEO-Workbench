@@ -29,18 +29,17 @@ def make_attempts_batch(
     from ..domain.models import ContentRecord, DiscoveryRecord, IdentifierRecord
 
     for attempt in items:
-        url = attempt.get("md_path") or attempt.get("content_md_path") or ""
         title = attempt.get("title") or attempt.get("account_id", account_id)
-        content_id = content_id_from_text("publish", account_id, attempt.get("idem_key", ""), url)
+        content_id = content_id_from_text("publish", account_id, attempt.get("idem_key", ""))
         content = ContentRecord(
             content_id=content_id,
-            content_type="publish_artifact",
+            content_type="demo_publish_artifact",
             title=title,
-            canonical_url=url,
+            canonical_url="",
             first_seen_at=utc_now_iso(),
             updated_at=utc_now_iso(),
-            md_path=attempt.get("md_path") or "",
-            payload={"account_id": account_id, "idem_key": attempt.get("idem_key", "")},
+            md_path="",
+            payload={"account_id": account_id, "idem_key": attempt.get("idem_key", ""), "demo_only": True},
         )
         raw.contents.append(content)
         status.written += 1
@@ -53,21 +52,25 @@ def run(connection: sqlite3.Connection, pipeline: IngestionPipeline, *, account_
         status=AdapterStatus(adapter_key=ADAPTER_KEY, source_scope=account_id or "all-accounts"),
     )
     rows = connection.execute(
-        "SELECT DISTINCT account_id FROM publish_attempts LIMIT 50"
+        "SELECT DISTINCT account_key FROM publish_attempts LIMIT 50"
     ).fetchall()
     total_seen = 0
     total_written = 0
     total_failed = 0
     for row in rows:
-        acct = row["account_id"]
+        acct = row["account_key"]
         if account_id and acct != account_id:
             continue
         attempts = [
             dict(item)
             for item in connection.execute(
-                "SELECT attempt_id, content_md_path, idem_key, status FROM publish_attempts WHERE account_id=? LIMIT 200",
+                "SELECT attempt_id, idempotency_key, status FROM publish_attempts WHERE account_key=? LIMIT 200",
                 (acct,),
             ).fetchall()
+        ]
+        attempts = [
+            {"account_id": acct, "idem_key": item.get("idempotency_key", ""), "status": item.get("status")}
+            for item in attempts
         ]
         raw, _ = make_attempts_batch(account_id=acct, attempts=attempts)
         task.status.total += len(attempts)

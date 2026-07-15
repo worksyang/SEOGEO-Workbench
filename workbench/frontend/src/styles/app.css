@@ -3491,6 +3491,9 @@ a:focus-visible {
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 12px;
 }
+.module-status-banner { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--amber-line); border-radius: 10px; background: var(--amber-soft); color: var(--amber); display: flex; gap: 10px; align-items: baseline; }
+.module-status-banner strong { font-size: 12px; }
+.module-status-banner span { font-size: 11px; color: #8a6a25; }
 .writing-page .job-card {
     background: #fff;
     border: 1px solid var(--line);

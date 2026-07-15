@@ -106,6 +106,10 @@ class Settings:
     asset_store_path: Path
     wiki_allowed_roots: tuple[Path, ...]
     publish_accounts: tuple[dict, ...] = ()
+    writing_provider_kind: str = "unconfigured"
+    writing_provider_status: str = "unconfigured"
+    publish_bridge_kind: str = "disabled"
+    publish_bridge_status: str = "unconfigured"
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -203,6 +207,11 @@ class Settings:
             asset_store_path=_asset_store_path_local,
             wiki_allowed_roots=_wiki_roots,
             publish_accounts=_parse_publish_accounts(os.getenv("HUB_PUBLISH_ACCOUNTS")),
+            # 这里只读取非敏感的能力状态，不读取、校验或回显任何 secret。
+            writing_provider_kind=os.getenv("HUB_WRITING_PROVIDER_KIND", "unconfigured").strip() or "unconfigured",
+            writing_provider_status=os.getenv("HUB_WRITING_PROVIDER_STATUS", "unconfigured").strip() or "unconfigured",
+            publish_bridge_kind=os.getenv("HUB_PUBLISH_BRIDGE_KIND", "disabled").strip() or "disabled",
+            publish_bridge_status=os.getenv("HUB_PUBLISH_BRIDGE_STATUS", "unconfigured").strip() or "unconfigured",
         )
         settings.ensure_directories()
         return settings

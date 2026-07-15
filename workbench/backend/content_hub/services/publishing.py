@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 from ..domain.ids import generate_ulid_like
 from ..validation.timestamps import utc_now_iso
+from .audit import AuditService
 
 
 @dataclass(slots=True)
@@ -28,20 +29,19 @@ class PublishAccount:
     token_file: str
     enabled: bool
     publishable: bool = False
+    bridge_kind: str = "disabled"
+    bridge_status: str = "unconfigured"
 
     def to_dict(self) -> dict[str, Any]:
-        cookie_exists = bool(self.cookie_file) and Path(self.cookie_file).expanduser().is_file()
-        token_exists = bool(self.token_file) and Path(self.token_file).expanduser().is_file()
         return {
             "account_id": self.account_id,
             "display_name": self.display_name,
             "enabled": self.enabled,
-            "publishable": self.publishable,
-            "cookie_exists": cookie_exists,
-            "token_exists": token_exists,
-            "status": "ready"
-            if self.enabled and self.publishable and cookie_exists and token_exists
-            else "unavailable",
+            "publishable": False,
+            "bridge_kind": self.bridge_kind,
+            "bridge_status": self.bridge_status,
+            "status": "unavailable",
+            "reason_code": "publish.bridge_unavailable",
         }
 
 
@@ -61,12 +61,17 @@ class PublishingService:
         publish_root: Path,
         sensitive_words: Iterable[str] = (),
         accounts: Iterable[PublishAccount] = (),
+        bridge_kind: str = "disabled",
+        bridge_status: str = "unconfigured",
     ):
         self._conn = connection
         self._publish_root = Path(publish_root).resolve()
         self._publish_root.mkdir(parents=True, exist_ok=True)
         self._sensitive_words = sorted({word for word in sensitive_words if word})
         self._accounts: dict[str, PublishAccount] = {acct.account_id: acct for acct in accounts}
+        self._bridge_kind = bridge_kind
+        self._bridge_status = bridge_status
+        self._audit = AuditService(connection)
 
     def list_accounts(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -84,18 +89,15 @@ class PublishingService:
         acct = self._accounts.get(account_id)
         if not acct:
             return {"account_id": account_id, "status": "unknown", "enabled": False}
-        cookie_path = Path(acct.cookie_file).expanduser()
-        cookie_exists = cookie_path.is_file() if acct.cookie_file else False
-        token_path = Path(acct.token_file).expanduser()
-        token_exists = token_path.is_file() if acct.token_file else False
         return {
             "account_id": account_id,
             "display_name": acct.display_name,
             "enabled": acct.enabled,
-            "publishable": acct.publishable,
-            "cookie_exists": cookie_exists,
-            "token_exists": token_exists,
-            "status": "ready" if acct.enabled and acct.publishable and cookie_exists and token_exists else "unavailable",
+            "publishable": False,
+            "bridge_kind": self._bridge_kind,
+            "bridge_status": self._bridge_status,
+            "status": "unavailable",
+            "reason_code": "publish.bridge_unavailable",
         }
 
     def preview(
@@ -141,14 +143,21 @@ class PublishingService:
         target.write_text(body, encoding="utf-8")
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path=str(target),
+            content_md_path="",
             idem_key=digest,
             status="succeeded",
             outcome="draft_saved",
             details={"content_id": content_id, "operator": operator},
         )
         # 仅在 Publishing 自身需要时新建 job；下面调用 _record_attempt 时已经包含 job_id 备用
-        return {"attempt_id": attempt_id, "draft_path": str(target), "content_id": content_id}
+        self._audit.record(
+            action="publishing.draft",
+            subject_type="publish_attempt",
+            subject_id=attempt_id,
+            outcome="succeeded",
+            details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status, "reason_code": "publish.draft_only"},
+        )
+        return {"attempt_id": attempt_id, "draft_path": str(target), "content_id": content_id, "status": "draft_only"}
 
     def dry_run(self, *, account_id: str, content_id: str, body: str) -> dict[str, Any]:
         self._ensure_known_account(account_id)
@@ -159,11 +168,18 @@ class PublishingService:
         target.write_text(preview.html, encoding="utf-8")
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path=str(target),
+            content_md_path="",
             idem_key=hashlib.sha256((preview.html or "").encode("utf-8")).hexdigest()[:16],
             status="succeeded",
             outcome="dry_run",
             details={"sensitive_matches": preview.sensitive_matches, "warnings": preview.warnings},
+        )
+        self._audit.record(
+            action="publishing.dry_run",
+            subject_type="publish_attempt",
+            subject_id=attempt_id,
+            outcome="succeeded",
+            details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status, "reason_code": "publish.preview_only"},
         )
         return {
             "attempt_id": attempt_id,
@@ -185,29 +201,37 @@ class PublishingService:
     ) -> dict[str, Any]:
         self._ensure_known_account(account_id)
         if not confirm:
-            return {"status": "needs_confirmation", "reason": "真发布要求传入 confirm=True 二次确认。"}
-        acct = self._accounts[account_id]
-        if not acct.enabled:
-            return {"status": "blocked", "reason": "账号未启用，当前仅允许演示、草稿或 dry-run。"}
-        if not acct.publishable:
-            return {"status": "blocked", "reason": "真实发布适配器未配置，未执行真实发布。"}
-        preview = self.preview(content_id=content_id, body=body)
-        would_dir = self._publish_root / account_id / "would_publish"
-        would_dir.mkdir(parents=True, exist_ok=True)
+            result = {"status": "needs_confirmation", "ok": False, "reason_code": "publish.confirmation_required",
+                      "reason": "真发布要求传入 confirm=True 二次确认。"}
+            self._audit.record(
+                action="publishing.publish",
+                subject_type="publish_account",
+                subject_id=account_id,
+                outcome="blocked",
+                details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status,
+                         "reason_code": result["reason_code"]},
+            )
+            return result
         attempt_id = self._record_attempt(
             account_id=account_id,
-            content_md_path=str(would_dir / f"{content_id}.md"),
+            content_md_path="",
             idem_key=hashlib.sha256(f"{account_id}::{content_id}".encode("utf-8")).hexdigest()[:16],
-            status="succeeded",
-            outcome="would_publish",
-            details={"operator": operator, "sensitive_count": len(preview.sensitive_matches)},
+            status="blocked",
+            outcome="blocked",
+            details={"operator": operator, "reason_code": "publish.bridge_unavailable"},
         )
-        return {
-            "status": "blocked",
-            "attempt_id": attempt_id,
-            "account": acct.display_name,
-            "note": "仅记录 would_publish 审计，不代表真实发布成功。",
-        }
+        result = {"status": "blocked", "ok": False, "attempt_id": attempt_id,
+                  "reason_code": "publish.bridge_unavailable",
+                  "reason": "未配置真实发布桥，未执行发布。"}
+        self._audit.record(
+            action="publishing.publish",
+            subject_type="publish_account",
+            subject_id=account_id,
+            outcome="blocked",
+            details={"bridge_kind": self._bridge_kind, "bridge_status": self._bridge_status,
+                     "reason_code": result["reason_code"]},
+        )
+        return result
 
     def _ensure_known_account(self, account_id: str) -> None:
         if account_id not in self._accounts:
@@ -223,7 +247,7 @@ class PublishingService:
         outcome: str,
         details: dict[str, Any],
     ) -> str:
-        payload = {"automated": False, "content_md_path": content_md_path, "outcome": outcome, **details}
+        payload = {"automated": False, "outcome": outcome, **details}
         if "dry" in outcome:
             mode = "dry_run"
         elif "draft" in outcome:
@@ -239,13 +263,14 @@ class PublishingService:
             return existing["attempt_id"] if isinstance(existing, sqlite3.Row) else existing[0]
         # job_id 派生自 idem_key 以满足 FK，且幂等时复用同一行
         job_id = f"job_pub_{idem_key}"
+        job_status = "blocked" if status == "blocked" else "succeeded"
         try:
             self._conn.execute(
                 """INSERT OR IGNORE INTO production_jobs(
                        job_id, job_type, status, input_signal_ids_json,
                        source_content_ids_json, created_at, updated_at, payload_json
-                   ) VALUES (?, ?, 'succeeded', '[]', '[]', ?, ?, '{}')""",
-                (job_id, f"publish_{mode}", utc_now_iso(), utc_now_iso()),
+                   ) VALUES (?, ?, ?, '[]', '[]', ?, ?, '{}')""",
+                (job_id, f"publish_{mode}", job_status, utc_now_iso(), utc_now_iso()),
             )
         except sqlite3.OperationalError:
             # 单独的 OperationalError（非完整性错误），重抛
