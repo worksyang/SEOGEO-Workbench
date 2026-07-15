@@ -28,6 +28,10 @@ def bootstrap(request: Request): return {"ok": True, "data": svc(request).bootst
 @router.get("/status")
 def status(request: Request): return {"ok": True, "data": svc(request).status()}
 
+@router.get("/reconciliation")
+def reconciliation(request: Request, limit: int = 100, offset: int = 0):
+    return {"ok": True, "data": svc(request).reconciliation(limit=limit, offset=offset)}
+
 @router.get("/questions")
 def questions(request: Request, limit: int = 100, offset: int = 0):
     return {"ok": True, "data": svc(request).questions(limit=max(1, min(limit, 10000)), offset=max(0, offset))}

@@ -771,7 +771,18 @@ def test_geo_full_temp_import_preserves_verified_counts_and_single_deduplication
     assert len(replay["deduplications"]) == 733
     assert replay["conflicts"] == []
     with connect(configured_settings, readonly=True) as con:
-        assert con.execute("SELECT COUNT(*) FROM geo_answers").fetchone()[0] == 1110
+        assert con.execute("SELECT COUNT(*) FROM geo_answers").fetchone()[0] == 1163
+        assert con.execute(
+            "SELECT COUNT(*) FROM contract_comparisons "
+            "WHERE module_key='geo' AND contract_key='history_import'"
+        ).fetchone()[0] == 108
+        assert con.execute(
+            "SELECT COUNT(*) FROM source_manifests WHERE system_key='geo'"
+        ).fetchone()[0] == 2
+        source_payload = con.execute(
+            "SELECT payload_json FROM geo_answers WHERE source_ref='geopromax:4'"
+        ).fetchone()
+        assert "manifest://geo/" in source_payload["payload_json"]
         assert con.execute("SELECT COUNT(*) FROM content_identifiers").fetchone()[0] == 7811
         assert con.execute("SELECT COUNT(DISTINCT canonical_url) FROM contents WHERE content_type='external_article'").fetchone()[0] == 7078
         assert con.execute("SELECT COUNT(*) FROM geo_source_relations").fetchone()[0] == 20028

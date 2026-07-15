@@ -25,6 +25,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (6, "writing_runtime_receipts"),
         (7, "source_manifest_backfill"),
         (8, "core_fill_indexes"),
+        (9, "geo_reconciliation"),
     ]
 
 
@@ -41,6 +42,8 @@ def _settings_for_migration_state(
             "0005_v33_runtime_layers.sql",
             "0006_writing_runtime_receipts.sql",
             "0007_source_manifest_backfill.sql",
+            "0008_core_fill_indexes.sql",
+            "0009_geo_reconciliation.sql",
         ])
     for name in names:
         shutil.copy2(source_dir / name, migration_dir / name)
@@ -103,7 +106,7 @@ def _run_canonicalization(
 
     full = _settings_for_migration_state(base, tmp_path, initial_only=False)
     assert full.database_path == initial.database_path
-    assert migrate(full) == [4, 5, 6, 7]
+    assert migrate(full) == [4, 5, 6, 7, 8, 9]
     return full
 
 

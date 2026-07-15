@@ -15,6 +15,7 @@ from content_hub.adapters.geo import GeoAdapter, GeoSourceError, RedfoxAdapter, 
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.ingestion.source_manifests import manifest_ref, write_manifest
 
 
 def _now() -> str:
@@ -221,6 +222,38 @@ class GeoService:
             "message": message,
         }
 
+    @staticmethod
+    def _reconciliation_summary(con: sqlite3.Connection) -> dict[str, Any]:
+        rows = con.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM contract_comparisons
+            WHERE module_key='geo' AND contract_key='history_import'
+            GROUP BY status
+            """
+        ).fetchall()
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        latest = con.execute(
+            """
+            SELECT comparison_id, compared_at, status, diff_json
+            FROM contract_comparisons
+            WHERE module_key='geo' AND contract_key='history_import'
+            ORDER BY compared_at DESC, comparison_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return {
+            "status": "partial" if counts.get("different", 0) or counts.get("legacy_error", 0) else "matched",
+            "counts": counts,
+            "total": sum(counts.values()),
+            "latest": {
+                "comparison_id": latest["comparison_id"],
+                "compared_at": latest["compared_at"],
+                "status": latest["status"],
+                "diff": json.loads(latest["diff_json"] or "{}"),
+            } if latest else None,
+        }
+
     def status(self) -> dict[str, Any]:
         try:
             snap = self.adapter.snapshot(limit=5)
@@ -232,12 +265,14 @@ class GeoService:
             imported = con.execute("SELECT COUNT(*) FROM geo_answers WHERE source_ref LIKE 'geopromax:%'").fetchone()[0]
             redfox_imported = con.execute("SELECT COUNT(*) FROM geo_answers WHERE source_ref LIKE 'redfox:%'").fetchone()[0]
             hub_import_status = self._hub_import_status(con)
+            reconciliation = self._reconciliation_summary(con)
         return {
             "source_status": source,
             "source": snap,
             "redfox": self._redfox_summary(),
             "hub": {"sqlite_answers": imported, "redfox_answers": redfox_imported},
             "hub_import_status": hub_import_status,
+            "reconciliation": reconciliation,
         }
 
     def bootstrap(self) -> dict[str, Any]:
@@ -250,6 +285,39 @@ class GeoService:
             "redfox": {"historical_read_only_available": True, "batch_import": False},
         }
         return scrub(result)
+
+    def reconciliation(self, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        limit = _validate_limit(limit) or 100
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValidationAppError("offset 必须是非负整数。")
+        with connect(self.settings, readonly=True) as con:
+            summary = self._reconciliation_summary(con)
+            total = con.execute(
+                "SELECT COUNT(*) FROM contract_comparisons WHERE module_key='geo' AND contract_key='history_import'"
+            ).fetchone()[0]
+            rows = [
+                dict(row) for row in con.execute(
+                    """
+                    SELECT comparison_id,status,legacy_hash,hub_hash,diff_json,compared_at
+                    FROM contract_comparisons
+                    WHERE module_key='geo' AND contract_key='history_import'
+                    ORDER BY compared_at DESC, comparison_id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+            ]
+        for row in rows:
+            row["diff"] = json.loads(row.pop("diff_json") or "{}")
+        return scrub({
+            "status": summary["status"],
+            "summary": summary,
+            "items": rows,
+            "count": len(rows),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
 
     def query(self, table: str, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
         limit = _validate_limit(limit)
@@ -843,13 +911,14 @@ class GeoService:
             if not item["identity_valid"]:
                 rejects.append({"kind": "source", "id": source["id"], "reason": "source_id_mismatch", "expected": expected, "raw_platform": raw, "url": source["url"]})
         missing, bad, answer_rejects = [], [], []
+        degraded: list[dict[str, Any]] = []
         answer_reject_by_id: dict[int, dict[str, Any]] = {}
         for answer in data["answers"]:
             answer["markdown_path"] = _relative_source_path(answer.get("markdown_path"), self.settings.geo_source_root)
             markdown = read_markdown(answer.get("markdown_path"))
             if not markdown["exists"]:
                 missing.append({"kind": "answer", "id": answer["id"], "path": answer.get("markdown_path"), "error": markdown["error"]})
-                answer_reject_by_id[answer["id"]] = {"kind": "answer", "id": answer["id"], "reason": "missing_answer_markdown", "error": markdown["error"]}
+                degraded.append({"kind": "answer", "id": answer["id"], "reason": "missing_answer_markdown", "error": markdown["error"]})
             elif markdown.get("error") == "bad_frontmatter":
                 bad.append({"kind": "answer", "id": answer["id"], "path": answer.get("markdown_path"), "error": markdown["error"]})
             if not str(answer.get("question") or "").strip():
@@ -897,6 +966,7 @@ class GeoService:
             "importable": {"answers": len(data["answers"]) - len(answer_rejects), "sources": len(data["sources"]) - len(rejects), "relations": len(data["relations"]), "metrics": len(data["metrics"])},
             "missing_markdown": missing,
             "bad_markdown": bad,
+            "degraded": degraded,
             "platforms": {
                 "raw_counts": dict(Counter(str(item.get("platform") or "") for item in data["sources"])),
                 "canonical_counts": dict(Counter(str(item.get("canonical_platform") or "") for item in source_by_id.values())),
@@ -921,10 +991,42 @@ class GeoService:
         if any(item.get("kind") == "answer" for item in preview["rejected"]):
             preview["warnings"].append("存在回答 Markdown、问题或时间字段无效；这些 answer 将计入回答失败，不影响来源身份对账。")
         if preview["missing_markdown"]:
-            preview["warnings"].append("存在缺失 Markdown；SQLite 结构事实仍可审计，但正文不可导入。")
+            preview["warnings"].append("存在缺失 Markdown；已保留 SQLite 结构事实，回答 Markdown 正文仍标记为不可用。")
         if preview["bad_markdown"]:
             preview["warnings"].append("存在坏 frontmatter Markdown。")
         return scrub(preview)
+
+    @staticmethod
+    def _comparison_rows(
+        *,
+        manifest_id: str,
+        degraded: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+        conflicts: list[dict[str, Any]],
+        now: str,
+    ) -> list[tuple[Any, ...]]:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for item in [*degraded, *rejected, *conflicts]:
+            kind = str(item.get("kind") or "record")
+            legacy_id = item.get("id", item.get("legacy_answer_id", item.get("legacy_relation_id", "")))
+            grouped[(kind, str(legacy_id))].append(item)
+        rows = []
+        for (kind, legacy_id), items in grouped.items():
+            key = f"{manifest_id}:{kind}:{legacy_id}"
+            status = "legacy_error" if any(item in degraded or item in rejected for item in items) else "different"
+            reasons = [item.get("reason", "conflict") for item in items]
+            rows.append((
+                _id("comparison", key),
+                "geo",
+                "history_import",
+                hashlib.sha256(key.encode()).hexdigest(),
+                manifest_id,
+                None,
+                status,
+                _json({"manifest_id": manifest_id, "items": items, "reasons": reasons}),
+                now,
+            ))
+        return rows
 
     @staticmethod
     def _creator_id(platform: str, author: str, profile: str | None) -> tuple[str, str, str]:
@@ -1036,16 +1138,20 @@ class GeoService:
         now = _now()
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
-                existing = con.execute("SELECT batch_id FROM ingestion_batches WHERE adapter_key=? AND source_scope=?", (self.adapter.adapter_key, manifest_id)).fetchone()
-                if existing:
+                existing = con.execute(
+                    "SELECT batch_id,status FROM ingestion_batches WHERE adapter_key=? AND source_scope=?",
+                    (self.adapter.adapter_key, manifest_id),
+                ).fetchone()
+                repair_existing = bool(existing and existing["status"] == "partial_failed")
+                if existing and not repair_existing:
                     batch_row = con.execute(
                         "SELECT status,records_seen,records_written,records_failed,payload_json FROM ingestion_batches WHERE batch_id=?",
-                        (existing[0],),
+                        (existing["batch_id"],),
                     ).fetchone()
                     payload = json.loads(batch_row["payload_json"] or "{}") if batch_row else {}
                     counts = payload.get("counts", {}).get("selected", {}) if isinstance(payload, dict) else {}
                     return scrub({
-                        "batch_id": existing[0], "manifest_id": manifest_id, "idempotent": True,
+                        "batch_id": existing["batch_id"], "manifest_id": manifest_id, "idempotent": True,
                         "status": batch_row["status"] if batch_row else "unknown",
                         "records_seen": batch_row["records_seen"] if batch_row else 0,
                         "records_imported": batch_row["records_written"] if batch_row else 0,
@@ -1058,6 +1164,8 @@ class GeoService:
                         "preview": preview,
                     })
                 batch_id = _id("batch", f"{self.adapter.adapter_key}:{manifest_id}")
+                if repair_existing:
+                    batch_id = existing["batch_id"]
                 content_ids: dict[str, str] = {}
                 conflicts = list(preview["conflicts"])
                 deduplications = list(preview.get("deduplications", []))
@@ -1066,52 +1174,40 @@ class GeoService:
                     # 每一次真实导入都冻结来源清单；对外只保存相对标签和哈希，
                     # 不把本机绝对路径泄露到 Hub/API/审计。
                     manifest_entries = list(data.get("_file_manifest") or [])
-                    con.execute(
-                        """
-                        INSERT INTO source_manifests(
-                            manifest_id,system_key,source_kind,root_fingerprint,manifest_hash,
-                            entry_count,captured_at,immutable,payload_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(manifest_id) DO NOTHING
-                        """,
-                        (
-                            manifest_id,
-                            "geo",
-                            "geopromax_sqlite",
-                            _sorted_hash({"adapter": self.adapter.adapter_key, "root_name": Path(self.settings.geo_source_root).name}),
-                            manifest_id,
-                            len(manifest_entries),
-                            now,
-                            1,
-                            _json({"adapter": self.adapter.adapter_key, "lineage": "sqlite"}),
-                        ),
-                    )
+                    manifest_entries_for_writer = []
                     for index, item in enumerate(manifest_entries):
                         raw_path = str(item.get("path") or "")
                         label = "database" if raw_path == str(self.settings.geo_database_path) else (
                             "platform_rules" if raw_path == str(self.settings.geo_platforms_path) else
                             _relative_source_path(raw_path, self.settings.geo_source_root) or f"unmapped/{index}"
                         )
-                        con.execute(
-                            """
-                            INSERT INTO source_manifest_entries(
-                                manifest_id,relative_path,content_hash,size_bytes,observed_at,payload_json
-                            ) VALUES(?,?,?,?,?,?)
-                            ON CONFLICT(manifest_id,relative_path) DO NOTHING
-                            """,
-                            (
-                                manifest_id,
-                                label,
-                                item.get("sha256"),
-                                item.get("size"),
-                                now,
-                                _json({"error": item.get("error")} if item.get("error") else {}),
-                            ),
-                        )
-                    con.execute(
-                        "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,records_seen,records_written,records_failed,source_ref,error_json,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        (batch_id, self.adapter.adapter_key, manifest_id, "running", now, len(data["answers"]), 0, 0, f"geopromax:{manifest_id}", _json(preview["rejected"]), _json(preview)),
+                        manifest_entries_for_writer.append({
+                            "relative_path": label,
+                            "content_hash": item.get("sha256"),
+                            "size_bytes": item.get("size"),
+                            "observed_at": now,
+                            "payload": {"error": item.get("error")} if item.get("error") else {},
+                        })
+                    write_manifest(
+                        con,
+                        manifest_id=manifest_id,
+                        system_key="geo",
+                        source_kind="geopromax_sqlite",
+                        root_fingerprint=_sorted_hash({"adapter": self.adapter.adapter_key, "root_name": Path(self.settings.geo_source_root).name}),
+                        entries=manifest_entries_for_writer,
+                        captured_at=now,
+                        payload={"adapter": self.adapter.adapter_key, "lineage": "sqlite"},
                     )
+                    if repair_existing:
+                        con.execute(
+                            "UPDATE ingestion_batches SET status='running',started_at=?,error_json=?,payload_json=?,updated_at=? WHERE batch_id=?",
+                            (now, _json(preview["rejected"]), _json(preview), now, batch_id),
+                        )
+                    else:
+                        con.execute(
+                            "INSERT INTO ingestion_batches(batch_id,adapter_key,source_scope,status,started_at,records_seen,records_written,records_failed,source_ref,error_json,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                            (batch_id, self.adapter.adapter_key, manifest_id, "running", now, len(data["answers"]), 0, 0, manifest_ref("geo", manifest_id), _json(preview["rejected"]), _json(preview)),
+                        )
                 try:
                     with transaction(con):
                         source_imported = 0
@@ -1144,7 +1240,7 @@ class GeoService:
                             content_id = _id("content", f"geopromax-answer:{answer['id']}")
                             md = data["_markdown_cache"].get(str(answer.get("markdown_path") or ""), {})
                             raw_time = answer.get("finished_at") or answer.get("started_at")
-                            if not str(answer.get("question") or "").strip() or not md["exists"] or (raw_time and _utc(raw_time) is None):
+                            if not str(answer.get("question") or "").strip() or (raw_time and _utc(raw_time) is None):
                                 answer_failed += 1
                                 continue
                             captured_at = _utc(raw_time)
@@ -1168,7 +1264,7 @@ class GeoService:
                             for tool in tools_by_answer.get(answer["id"], []):
                                 tools_json.append({**tool, "search_keywords": sorted(keywords_by_tool.get(tool["id"], []), key=lambda item: item["position"])})
                             recommended = sorted(suggestions_by_answer.get(answer["id"], []), key=lambda item: item["position"])
-                            answer_payload = {"origin": "geopromax_sqlite", "lineage": "sqlite", "legacy_answer_id": answer["id"], "batch_id": answer["batch_id"], "batch": raw_batch, "share_link": answer.get("share_link"), "markdown_path": answer.get("markdown_path"), "error": answer.get("error"), "captured_at_raw": raw_time, "file_hash": md.get("file_hash"), "content_hash": md.get("content_hash"), "answer_hash": md.get("answer_hash"), "raw_answer": answer}
+                            answer_payload = {"origin": "geopromax_sqlite", "lineage": "sqlite", "legacy_answer_id": answer["id"], "batch_id": answer["batch_id"], "batch": raw_batch, "share_link": answer.get("share_link"), "markdown_path": answer.get("markdown_path"), "error": answer.get("error"), "captured_at_raw": raw_time, "file_hash": md.get("file_hash"), "content_hash": md.get("content_hash"), "answer_hash": md.get("answer_hash"), "markdown_available": bool(md.get("exists")), "source_refs": [manifest_ref("geo", manifest_id, f"answers/{answer['id']}")], "raw_answer": answer}
                             con.execute(
                                 "INSERT INTO contents(content_id,content_type,title,first_seen_at,updated_at,md_path,file_hash,content_hash,payload_json) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(content_id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,md_path=excluded.md_path,file_hash=excluded.file_hash,content_hash=excluded.content_hash,payload_json=excluded.payload_json",
                                 (content_id, "ai_answer", answer.get("question"), now, now, answer.get("markdown_path"), md.get("file_hash"), md.get("content_hash"), _json(answer_payload)),
@@ -1188,6 +1284,7 @@ class GeoService:
                                     "tool_id": relation.get("tool_id"), "anchor_index": relation.get("anchor_index"),
                                     "image_url": relation.get("image_url"), "error": relation.get("error"),
                                     "source_fact": relation_source,
+                                    "source_refs": [manifest_ref("geo", manifest_id, f"sources/{relation.get('source_id')}")],
                                 }
                                 relation_values = (
                                     relation_id, answer_id, content_ids.get(relation.get("source_id")),
@@ -1227,14 +1324,47 @@ class GeoService:
                                         continue
                                     con.execute(
                                         "INSERT INTO metric_observations(observation_id,subject_type,subject_id,metric_key,observed_at,numeric_value,source_ref,payload_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(observation_id) DO UPDATE SET subject_type=excluded.subject_type,subject_id=excluded.subject_id,metric_key=excluded.metric_key,observed_at=excluded.observed_at,numeric_value=excluded.numeric_value,payload_json=excluded.payload_json",
-                                        (observation_id, "content", content_ids[metric["source_id"]], metric_key, observed_at, metric[key], f"geopromax:{answer['id']}", _json({"origin": "geopromax_sqlite", "legacy_source_id": metric["source_id"], "metric_key": key})),
+                                        (observation_id, "content", content_ids[metric["source_id"]], metric_key, observed_at, metric[key], f"geopromax:{answer['id']}", _json({"origin": "geopromax_sqlite", "legacy_source_id": metric["source_id"], "metric_key": key, "source_refs": [manifest_ref("geo", manifest_id, f"sources/{metric['source_id']}")]})),
                                     )
                             written += 1
                         imported = source_imported + written
                         records_seen = len(data["sources"]) + len(data["answers"])
-                        records_failed = min(records_seen, failed + answer_failed)
+                        rejected_answer_ids = {
+                            item.get("id") for item in preview["rejected"] if item.get("kind") == "answer"
+                        }
+                        degraded_count = sum(
+                            1 for item in preview.get("degraded", [])
+                            if item.get("id") not in rejected_answer_ids
+                        )
+                        records_failed = min(records_seen, failed + answer_failed + degraded_count)
                         status = "partial_failed" if records_failed or conflicts else "succeeded"
                         con.execute("UPDATE ingestion_batches SET status=?,finished_at=?,records_seen=?,records_written=?,records_failed=?,error_json=?,payload_json=?,updated_at=? WHERE batch_id=?", (status, now, records_seen, imported, records_failed, _json({"rejected": preview["rejected"], "conflicts": conflicts, "status": status}), _json({**preview, "conflicts": conflicts, "deduplications": deduplications, "counts": {**preview["counts"], "records_seen": records_seen, "records_imported": imported, "records_failed": records_failed}}), now, batch_id))
+                        comparison_rows = self._comparison_rows(
+                            manifest_id=manifest_id,
+                            degraded=preview.get("degraded", []),
+                            rejected=preview["rejected"],
+                            conflicts=conflicts,
+                            now=now,
+                        )
+                        con.execute(
+                            "DELETE FROM contract_comparisons WHERE module_key='geo' AND contract_key='history_import' AND legacy_hash=?",
+                            (manifest_id,),
+                        )
+                        con.executemany(
+                            """
+                            INSERT INTO contract_comparisons(
+                                comparison_id,module_key,contract_key,request_fingerprint,
+                                legacy_hash,hub_hash,status,diff_json,compared_at
+                            ) VALUES(?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(comparison_id) DO UPDATE SET
+                                legacy_hash=excluded.legacy_hash,
+                                hub_hash=excluded.hub_hash,
+                                status=excluded.status,
+                                diff_json=excluded.diff_json,
+                                compared_at=excluded.compared_at
+                            """,
+                            comparison_rows,
+                        )
                         con.execute(
                             "INSERT INTO ingestion_checkpoints(adapter_key,checkpoint_key,cursor_value,source_hash,last_success_at,batch_id,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(adapter_key,checkpoint_key) DO UPDATE SET cursor_value=excluded.cursor_value,source_hash=excluded.source_hash,last_success_at=excluded.last_success_at,batch_id=excluded.batch_id,payload_json=excluded.payload_json",
                             (self.adapter.adapter_key, str(limit) if limit is not None else "full", str(max((row["id"] for row in data["answers"]), default="")), manifest_id, now, batch_id, _json({"manifest_id": manifest_id, "counts": preview["counts"]})),
@@ -1243,7 +1373,7 @@ class GeoService:
                             "INSERT INTO system_connections(system_key,display_name,base_url,status,last_checked_at,capabilities_json,details_json) VALUES('geo','GEOProMax',NULL,?,?,?,?) ON CONFLICT(system_key) DO UPDATE SET status=excluded.status,last_checked_at=excluded.last_checked_at,capabilities_json=excluded.capabilities_json,details_json=excluded.details_json",
                             ("healthy" if status == "succeeded" else "degraded", now, _json(["read", "dry_run", "history_import"]), _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "redfox": self._redfox_summary()})),
                         )
-                        con.execute("INSERT INTO audit_log(audit_id,occurred_at,actor_type,action,subject_type,subject_id,outcome,details_json) VALUES(?,?,?,?,?,?,?,?)", (_id("audit", batch_id), now, "workbench", "geo_import", "ingestion_batch", batch_id, "failed" if status != "succeeded" else "succeeded", _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "status": status, "rejected": preview["rejected"], "conflicts": conflicts, "deduplications": deduplications})))
+                        con.execute("INSERT OR REPLACE INTO audit_log(audit_id,occurred_at,actor_type,action,subject_type,subject_id,outcome,details_json) VALUES(?,?,?,?,?,?,?,?)", (_id("audit", batch_id), now, "workbench", "geo_import", "ingestion_batch", batch_id, "failed" if status != "succeeded" else "succeeded", _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "status": status, "rejected": preview["rejected"], "degraded": preview.get("degraded", []), "conflicts": conflicts, "deduplications": deduplications, "comparison_count": len(comparison_rows)})))
                 except Exception as exc:
                     failed_at = _now()
                     error = {"type": type(exc).__name__, "message": str(exc)}
@@ -1257,7 +1387,14 @@ class GeoService:
                             (_id("audit", f"{batch_id}:failed"), failed_at, "workbench", "geo_import", "ingestion_batch", batch_id, "failed", _json({"adapter": self.adapter.adapter_key, "manifest_id": manifest_id, "error": error})),
                         )
                     raise
-        return scrub({"batch_id": batch_id, "manifest_id": manifest_id, "idempotent": False, "status": status, "records_seen": len(data["sources"]) + len(data["answers"]), "records_imported": source_imported + written, "records_written": source_imported + written, "records_failed": min(len(data["sources"]) + len(data["answers"]), failed + answer_failed), "answer_count": len(data["answers"]), "source_count": len(data["sources"]), "source_identifier_count": len(data["sources"]), "source_content_count": len({item["url"] for item in data["sources"]}), "conflicts": conflicts, "deduplications": deduplications, "preview": preview})
+        rejected_answer_ids = {
+            item.get("id") for item in preview["rejected"] if item.get("kind") == "answer"
+        }
+        degraded_count = sum(
+            1 for item in preview.get("degraded", [])
+            if item.get("id") not in rejected_answer_ids
+        )
+        return scrub({"batch_id": batch_id, "manifest_id": manifest_id, "idempotent": False, "status": status, "records_seen": len(data["sources"]) + len(data["answers"]), "records_imported": source_imported + written, "records_written": source_imported + written, "records_failed": min(len(data["sources"]) + len(data["answers"]), failed + answer_failed + degraded_count), "answer_count": len(data["answers"]), "source_count": len(data["sources"]), "source_identifier_count": len(data["sources"]), "source_content_count": len({item["url"] for item in data["sources"]}), "conflicts": conflicts, "deduplications": deduplications, "reconciliation": {"status": status, "degraded": preview.get("degraded", []), "rejected": preview["rejected"]}, "preview": preview})
 
     def refresh_preview(self, answer_id: int) -> dict[str, Any]:
         detail = self.detail("answer", answer_id)
