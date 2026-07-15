@@ -43,14 +43,15 @@ def search(request: Request, query: str = Query(""), limit: int = Query(50, ge=1
 @router.post("/import")
 def import_wiki(request: Request, payload: dict | None = None) -> dict:
     payload = payload or {}
+    confirm = bool(payload.get("confirm", False))
     try:
         max_files = int(payload.get("max_files", 2000))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="max_files 必须是正整数") from exc
     if max_files < 1:
         raise HTTPException(status_code=400, detail="max_files 必须是正整数")
-    result = _service(request, readonly=bool(payload.get("confirm", False))).import_wiki(
-        confirm=bool(payload.get("confirm", False)),
+    result = _service(request, readonly=not confirm).import_wiki(
+        confirm=confirm,
         max_files=max_files,
         operator=str(payload.get("operator") or "user"),
     )

@@ -306,6 +306,21 @@ def test_t171_wiki_api_entries_and_reads_do_not_expose_absolute_paths(hub):
 
     tree = asyncio.run(request_json("/api/v1/wiki/tree"))
     detail = asyncio.run(request_json(f"/api/v1/wiki/{content_id}"))
+    async def confirm_import() -> dict:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/api/v1/wiki/import",
+                json={"confirm": True, "max_files": 10, "operator": "test"},
+            )
+            assert response.status_code == 200
+            return response.json()
+
+    confirmed = asyncio.run(confirm_import())
+    assert confirmed["ok"] is True
+    assert confirmed["data"]["status"] == "succeeded"
     payload = json.dumps({"tree": tree, "detail": detail}, ensure_ascii=False)
     assert str(root) not in payload
     assert str(asset) not in payload
