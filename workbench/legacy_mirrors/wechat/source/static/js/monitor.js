@@ -9,6 +9,44 @@ const KEYWORD_API_BASE = '/api/keywords';
 const COVER_API_URL = '/api/article-covers';
 const COVER_PLACEHOLDER_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="60" height="38" viewBox="0 0 60 38"%3E%3Crect fill="%23f0ece4" width="60" height="38" rx="4"/%3E%3Cpath d="M20 12h20v2H20zM20 18h14v2H20z" fill="%23c9c2b5"/%3E%3C/svg%3E';
 const COVER_NO_URL_URL = 'https://mmbiz.qpic.cn/mmbiz_png/zEVibTTYbgHBxcdNXREKIJ3gibv5DE3xZoZf1S8yvLSIQicpoPhY7nKEHLKY8IJ6Vaq1iaFpcNicOKic1enxiad0xbyVLC38jLicD2BYqbxCO3ASv7Y/640?from=appmsg&tp=wxpic&wxfrom=5&wx_lazy=1';
+const WECHAT_AUX_VERSION = 'wechat-v1';
+
+function wechatAuxUrl(path, params = {}) {
+  const query = new URLSearchParams(params);
+  query.set('wbv', WECHAT_AUX_VERSION);
+  return `${path}?${query.toString()}`;
+}
+
+const IDEMPOTENCY_WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+let idempotencyKeyCounter = 0;
+
+function createIdempotencyKey() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  idempotencyKeyCounter += 1;
+  return `legacy-${Date.now().toString(36)}-${idempotencyKeyCounter.toString(36)}`;
+}
+
+function withIdempotencyKey(options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  if (!IDEMPOTENCY_WRITE_METHODS.has(method)) return options;
+  const headers = new Headers(options.headers || {});
+  if (!headers.has('Idempotency-Key')) headers.set('Idempotency-Key', createIdempotencyKey());
+  return { ...options, headers };
+}
+
+function idempotentFetch(url, options = {}) {
+  return fetch(url, withIdempotencyKey(options));
+}
 
 marked.setOptions({
   gfm: true,
@@ -662,9 +700,9 @@ function hasRealUrl(url) {
 }
 
 function articleHitDetailHref(meta = {}, url = '') {
-  if (meta.article_id) return `/article-hit-detail?article_id=${encodeURIComponent(meta.article_id)}`;
-  if (url) return `/article-hit-detail?url=${encodeURIComponent(url)}`;
-  return '/article-hit-detail';
+  if (meta.article_id) return wechatAuxUrl('/article-hit-detail', { article_id: meta.article_id });
+  if (url) return wechatAuxUrl('/article-hit-detail', { url });
+  return wechatAuxUrl('/article-hit-detail');
 }
 
 function metricsChipHtml(art) {
@@ -786,7 +824,7 @@ async function loadQueuedArticleCovers() {
   batch.forEach(item => coverPending.add(item.article_id));
   coverBatchInFlight = true;
   try {
-    const resp = await fetch(COVER_API_URL, {
+    const resp = await idempotentFetch(COVER_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ articles: batch })
@@ -1675,6 +1713,7 @@ function turnoverDetailUrl(k) {
   const params = new URLSearchParams();
   if (k.keyword_id) params.set('keyword_id', k.keyword_id);
   params.set('keyword', k.keyword || '');
+  params.set('wbv', WECHAT_AUX_VERSION);
   return `/keyword-turnover?${params.toString()}`;
 }
 
@@ -3061,7 +3100,7 @@ async function toggleKeywordPin(event, keywordId, keyword, nextPinned) {
   if (event) event.stopPropagation();
   try {
     const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/${nextPinned ? 'pin' : 'unpin'}`;
-    const resp = await fetch(endpoint, {
+    const resp = await idempotentFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword })
@@ -3082,7 +3121,7 @@ async function saveKeywordTopic(keywordId, keyword) {
   const topic = input ? input.value.trim() : '';
   try {
     const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/topic`;
-    const resp = await fetch(endpoint, {
+    const resp = await idempotentFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword, topic })
@@ -3109,7 +3148,7 @@ async function saveKeywordBucket(keywordId, keyword) {
   const keyword_bucket = input ? input.value.trim() : '';
   try {
     const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/bucket`;
-    const resp = await fetch(endpoint, {
+    const resp = await idempotentFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword, keyword_bucket })
@@ -3704,7 +3743,7 @@ async function kmInitRefreshHistoryBtn() {
 }
 
 async function kmApiFetch(url, opts = {}) {
-  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const r = await idempotentFetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
@@ -3875,7 +3914,7 @@ async function kmConfirmRefresh() {
   }
   kmCloseRefreshModal();
   try {
-    const resp = await fetch(REFRESH_ALL_LAUNCH_URL, {
+    const resp = await idempotentFetch(REFRESH_ALL_LAUNCH_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword_ids: keywordIds }),
@@ -4694,7 +4733,7 @@ async function startKeywordRefresh(event, keywordId, keyword) {
   const btn = sourceButton || document.getElementById(`refresh-btn-${keywordId}`);
   if (btn) { btn.textContent = '搜索中…'; btn.disabled = true; }
   try {
-    const resp = await fetch(`/api/keywords/${encodeURIComponent(keywordId)}/refresh`, {
+    const resp = await idempotentFetch(`/api/keywords/${encodeURIComponent(keywordId)}/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword }),

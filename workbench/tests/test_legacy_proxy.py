@@ -61,14 +61,14 @@ def test_legacy_proxy_whitelist_and_query(settings, monkeypatch) -> None:
 
                 xhs = await client.get(
                     "/api/monitor-data/bootstrap",
-                    headers={"Referer": "http://testserver/legacy/xhs/monitor.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/xhs/monitor.html"},
                 )
                 assert xhs.status_code == 200
                 assert "127.0.0.1:8766" in seen[-1]
 
                 cover = await client.get(
                     "/api/article-cover-image?url=https%3A%2F%2Fsns-na-i11.xhscdn.com%2Fcover",
-                    headers={"Referer": "http://testserver/legacy/xhs/monitor.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/xhs/monitor.html"},
                 )
                 assert cover.status_code == 200
                 assert "127.0.0.1:8766" in seen[-1]
@@ -101,7 +101,7 @@ def test_xhs_legacy_write_is_blocked_before_upstream(settings, monkeypatch) -> N
                 response = await client.post(
                     "/api/keywords/kw_1/refresh",
                     headers={
-                        "Referer": "http://testserver/legacy/xhs/monitor.html",
+                        "Referer": "http://127.0.0.1:8799/legacy/xhs/monitor.html",
                         "Content-Type": "application/json",
                     },
                     json={"keyword": "香港保险"},
@@ -136,21 +136,21 @@ def test_mp_legacy_proxy_uses_mp_upstream_and_limits_static_files(settings, monk
             ) as client:
                 accounts = await client.get(
                     "/api/accounts",
-                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/mp/index.html"},
                 )
                 assert accounts.status_code == 200
                 assert f"{settings.mp_source_url}/api/accounts" in seen[-1]
 
                 logo = await client.get(
                     "/static/logo.svg",
-                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/mp/index.html"},
                 )
                 assert logo.status_code == 200
                 assert logo.headers["content-type"].startswith("image/svg+xml")
 
                 blocked = await client.get(
                     "/static/private.txt",
-                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/mp/index.html"},
                 )
                 assert blocked.status_code == 404
                 assert blocked.json()["error"]["code"] == "LEGACY_STATIC_NOT_ALLOWED"
@@ -175,7 +175,7 @@ def test_mp_settings_response_redacts_credentials(settings, monkeypatch) -> None
             ) as client:
                 response = await client.get(
                     "/api/settings",
-                    headers={"Referer": "http://testserver/legacy/mp/index.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/mp/index.html"},
                 )
                 assert response.status_code == 200
                 body = response.json()
@@ -209,7 +209,7 @@ def test_geo_legacy_page_and_api_use_geo_upstream(settings, monkeypatch) -> None
 
                 data = await client.get(
                     "/api/data",
-                    headers={"Referer": "http://testserver/legacy/geo/index.html"},
+                    headers={"Referer": "http://127.0.0.1:8799/legacy/geo/index.html"},
                 )
                 assert data.status_code == 200
                 assert f"{settings.geo_source_url}/api/data" in seen[-1]

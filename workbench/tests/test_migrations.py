@@ -8,6 +8,7 @@ from pathlib import Path
 from content_hub.db.connection import connect
 from content_hub.db.migrations import migrate
 from content_hub.config import Settings
+from content_hub.services.migration import WECHAT_HTTP_OPERATIONS
 
 
 def test_migrations_are_idempotent(settings) -> None:
@@ -27,7 +28,24 @@ def test_migrations_are_idempotent(settings) -> None:
         (8, "core_fill_indexes"),
         (9, "geo_reconciliation"),
         (10, "wiki_import_indexes"),
+        (11, "wechat_legacy_runtime"),
+        (12, "contract_comparison_diffs"),
+        (13, "wechat_state_commands"),
+        (14, "wechat_refresh_runtime"),
+        (15, "wechat_aux_runtime"),
+        (16, "wechat_migration_switches"),
     ]
+
+
+def test_empty_database_applies_all_sixteen_and_repeated_migration_is_noop(
+    tmp_path: Path,
+) -> None:
+    fresh = Settings.load().with_database(tmp_path / "empty.sqlite")
+    assert migrate(fresh) == list(range(1, 17))
+    assert migrate(fresh) == []
+    with connect(fresh, readonly=True) as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
 def _settings_for_migration_state(
@@ -211,6 +229,33 @@ def test_v33_runtime_control_planes_and_module_tables_exist(settings) -> None:
             for row in connection.execute("PRAGMA table_info(production_jobs)").fetchall()
         }
         assert {"wm_project_id", "wm_batch_id"} <= production_columns
+
+
+def test_wechat_migration_switch_inventory_is_complete_and_unique(settings) -> None:
+    with connect(settings, readonly=True) as connection:
+        rows = connection.execute(
+            """
+            SELECT module_key, contract_key, data_mode, rollback_mode
+            FROM migration_switches
+            WHERE module_key='wechat-search'
+            ORDER BY switch_id
+            """
+        ).fetchall()
+    legacy_operations = [
+        item
+        for item in WECHAT_HTTP_OPERATIONS
+        if item["path"].startswith("/api/") and not item["path"].startswith("/api/v1/")
+    ]
+    expected = {item["contract_key"]: item["kind"] for item in legacy_operations}
+    assert len(rows) == len(expected) == 43
+    assert {row["contract_key"] for row in rows} == set(expected)
+    assert sum(row["data_mode"] == "legacy" for row in rows) == 22
+    assert sum(row["data_mode"] == "hub" for row in rows) == 21
+    for row in rows:
+        if expected[row["contract_key"]] == "read":
+            assert row["data_mode"] == "legacy"
+        else:
+            assert row["data_mode"] == row["rollback_mode"] == "hub"
 
 
 def test_source_manifest_backfill_is_idempotent_and_hides_absolute_paths(settings, tmp_path) -> None:

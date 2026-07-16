@@ -21,11 +21,9 @@ from content_hub.validation.timestamps import utc_now_iso
 
 
 # 只代理两个原版业务岛屿已经使用的接口；禁止把工作台变成任意 URL 代理。
-_ALLOWED_PREFIXES = (
+_ALLOWED_EXACT = frozenset({
     "monitor-data",
     "monitor-data/bootstrap",
-    "monitor-data/keyword/",
-    "monitor-data/account/",
     "creator-detail",
     "keyword-manage",
     "article-content",
@@ -37,35 +35,58 @@ _ALLOWED_PREFIXES = (
     "articles",
     "account-aliases",
     "penalty-signals",
-    "scheduler/",
-    "keywords/",
     "refresh-all",
-    "refresh-status/",
-    # 公众号控制台的原始 API 契约；只允许已审计的资源族。
+    "keyword-discovery",
     "settings",
     "accounts",
-    "accounts/",
     "categories",
-    "categories/",
     "jobs",
-    "jobs/",
-    "runtime/",
-    "auth/",
-    "ai/",
     "data",
     "import-json",
-    "agent/",
-    "aidso/",
-    "keyword-discovery",
+})
+_ALLOWED_PATTERNS = (
+    re.compile(r"^monitor-data/(?:keyword|account)/[^/]+$"),
+    re.compile(r"^keywords/[^/]+/refresh$"),
+    re.compile(r"^keywords/[^/]+/(?:pin|unpin|topic|note|bucket)$"),
+    re.compile(r"^refresh-status/[^/]+$"),
+    re.compile(r"^accounts/[^/]+$"),
+    re.compile(r"^categories/[^/]+$"),
+    re.compile(r"^jobs/[^/]+$"),
+    re.compile(r"^runtime/[^/]+$"),
+    re.compile(r"^auth/[^/]+$"),
+    re.compile(r"^ai/[^/]+$"),
+    re.compile(r"^agent/(?:manifest|daily-brief|metric-dictionary|evidence/[^/]+)$"),
+    re.compile(r"^aidso/keyword-heat$"),
 )
 
 
 def _allowed(path: str) -> bool:
     normalized = path.lstrip("/")
-    return any(
-        normalized == prefix or normalized.startswith(prefix)
-        for prefix in _ALLOWED_PREFIXES
+    return normalized in _ALLOWED_EXACT or any(
+        pattern.fullmatch(normalized) for pattern in _ALLOWED_PATTERNS
     )
+
+
+def legacy_referer_kind(referer: str) -> str | None:
+    """只接受工作台同源 Referer，避免外域伪造路径触发业务岛屿分流。"""
+    raw = str(referer or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    if parsed.port != 8799:
+        return None
+    path = parsed.path or ""
+    if not path.startswith("/legacy/"):
+        return None
+    for kind in ("xhs", "mp", "geo", "wechat"):
+        if path.startswith(f"/legacy/{kind}/"):
+            return kind
+    return None
 
 
 def _upstream_url(base_url: str, path: str, query: str) -> str:
@@ -538,10 +559,10 @@ async def proxy_legacy_wechat_api(
         )
 
     settings: Any = request.app.state.settings
-    referer = request.headers.get("referer", "")
-    is_xhs = "/legacy/xhs/" in referer
-    is_mp = "/legacy/mp/" in referer
-    is_geo = "/legacy/geo/" in referer
+    referer_kind = legacy_referer_kind(request.headers.get("referer", ""))
+    is_xhs = referer_kind == "xhs"
+    is_mp = referer_kind == "mp"
+    is_geo = referer_kind == "geo"
     if is_xhs:
         source_url = settings.xhs_source_url
         timeout_seconds = settings.xhs_source_timeout_seconds

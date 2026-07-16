@@ -45,7 +45,7 @@ export default function WechatIslandPage({onSourceStatus}: {onSourceStatus: (sta
       <iframe
         className="wechat-legacy-frame"
         title="微信关键词原系统业务岛屿"
-        src="/legacy/wechat/monitor.html"
+        src="/legacy/wechat/monitor.html?wbv=wechat-v1"
       />
     </div>
   )

@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>账号分公式说明</title>
+  <style>
+    :root {
+      --bg:
+        radial-gradient(circle at top left, rgba(12, 86, 114, 0.12), transparent 28%),
+        radial-gradient(circle at 84% 14%, rgba(186, 93, 64, 0.1), transparent 24%),
+        linear-gradient(180deg, #f7f3ea 0%, #efe7da 55%, #e9dfd1 100%);
+      --panel: rgba(255, 252, 247, 0.9);
+      --line: rgba(65, 49, 31, 0.14);
+      --text: #262018;
+      --muted: #6b6054;
+      --blue: #0d5e7c;
+      --green: #2f6b54;
+      --amber: #8a692c;
+      --shadow: 0 20px 44px rgba(62, 46, 28, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1320px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 60px;
+    }
+
+    .hero,
+    .panel,
+    .formula-box,
+    .step-card,
+    .table-card,
+    .case-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 34px 36px;
+      border-radius: 30px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      top: -80px;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(13, 94, 124, 0.12), transparent 66%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: rgba(38, 32, 24, 0.06);
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+    }
+
+    h1 {
+      margin: 18px 0 14px;
+      font-size: clamp(34px, 5.4vw, 58px);
+      line-height: 1.03;
+      letter-spacing: -0.05em;
+      max-width: 960px;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 950px;
+      font-size: 18px;
+      line-height: 1.75;
+      color: var(--muted);
+    }
+
+    .hero-grid,
+    .terms-grid,
+    .steps-grid,
+    .cases-grid,
+    .summary-grid,
+    .compare-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero-grid,
+    .summary-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 24px;
+    }
+
+    .compare-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 38px 0 18px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.03em;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel,
+    .formula-box,
+    .step-card,
+    .table-card,
+    .case-card {
+      border-radius: 24px;
+      padding: 24px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .blue {
+      color: var(--blue);
+      background: rgba(13, 94, 124, 0.1);
+    }
+
+    .green {
+      color: var(--green);
+      background: rgba(47, 107, 84, 0.1);
+    }
+
+    .amber {
+      color: var(--amber);
+      background: rgba(138, 105, 44, 0.12);
+    }
+
+    .panel h3,
+    .formula-box h3,
+    .step-card h3,
+    .table-card h3,
+    .case-card h3 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+
+    .panel p,
+    .formula-box p,
+    .step-card p,
+    .table-card p,
+    .case-card p,
+    li {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    .formula-box code {
+      display: block;
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(13, 94, 124, 0.08);
+      color: #10495e;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .terms-grid,
+    .cases-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .term-item,
+    .case-item,
+    .step-row {
+      border-top: 1px dashed rgba(65, 49, 31, 0.16);
+      padding-top: 16px;
+      margin-top: 16px;
+    }
+
+    .term-item:first-child,
+    .case-item:first-child,
+    .step-row:first-child {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+
+    .term-item strong,
+    .case-item strong,
+    .step-row strong {
+      display: block;
+      font-size: 18px;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+
+    .hint {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text);
+      background: rgba(38, 32, 24, 0.05);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+
+    .table th,
+    .table td {
+      padding: 12px 10px;
+      text-align: left;
+      border-top: 1px dashed rgba(65, 49, 31, 0.14);
+      vertical-align: top;
+    }
+
+    .table th {
+      color: var(--text);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .table tr:first-child th,
+    .table tr:first-child td {
+      border-top: 0;
+    }
+
+    .steps-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .step-no {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: rgba(13, 94, 124, 0.1);
+      color: var(--blue);
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .cases-grid ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .summary-value {
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      margin: 4px 0 8px;
+      color: var(--text);
+    }
+
+    .big-number {
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+      margin: 8px 0 10px;
+    }
+
+    .compare-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .compare-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(38, 32, 24, 0.05);
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .compare-item strong {
+      color: var(--text);
+    }
+
+    .summary-label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1080px) {
+      .hero-grid,
+      .terms-grid,
+      .steps-grid,
+      .cases-grid,
+      .summary-grid,
+      .compare-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(100% - 24px, 1320px);
+        padding-top: 18px;
+        padding-bottom: 34px;
+      }
+
+      .hero,
+      .panel,
+      .formula-box,
+      .step-card,
+      .table-card,
+      .case-card {
+        padding: 20px;
+        border-radius: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <span class="eyebrow">账号分公式页 · 拟实施版本 · 便于拍板</span>
+      <h1>这页只回答一件事：<br />账号分到底是怎么一步一步算出来的。</h1>
+      <p>
+        这个公式页不讲抽象概念，直接把每个数值拆开。你可以把它理解成一条流水线：先按产品词和搜索类目去重，再按天聚合，再让最近 7 天更重，最后只给持续性和广度做温和加分。
+      </p>
+
+      <div class="hero-grid">
+        <article class="panel">
+          <span class="badge blue">核心定义</span>
+          <h3>`topic` 是什么</h3>
+          <p>`topic` 就是产品词。比如“友邦财富盈活”“AIA 财富盈活”最后都会归到 `topic = 财富盈活`。</p>
+        </article>
+        <article class="panel">
+          <span class="badge green">核心去重</span>
+          <h3>先按内容和类目去重</h3>
+          <p>同账号、同一天、同 topic、同文章，只记 1 次主分；跨多个搜索类目，也只给小额 bonus。这样同一篇文章不会因为打中多个变体词而被重复抬分。</p>
+        </article>
+        <article class="panel">
+          <span class="badge amber">核心目标</span>
+          <h3>最后算的是研究价值</h3>
+          <p>分数不再等于“命中了多少关键词”，而是更接近“最近 15 天里，跨产品、跨角度、跨多篇文章的稳定竞争力”。</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="section-title">
+      <h2>同一组数据，旧算法到底错在哪里</h2>
+      <span>先看一个最典型的错例，这比看公式更直观</span>
+    </div>
+
+    <section class="compare-grid">
+      <article class="panel">
+        <span class="badge amber">旧算法</span>
+        <h3>同一篇文章打中 5 个相似词，就加 5 次</h3>
+        <p>这 5 个词其实都在讲同一个产品词：财富盈活。但旧算法会把它们当成 5 次独立本事。</p>
+        <div class="compare-list">
+          {% for item in wrong_old_example %}
+          <div class="compare-item">
+            <span>{{ item.keyword }} · 第{{ item.rank }}名</span>
+            <strong>+{{ "%.2f"|format(item.weight) }}</strong>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="big-number">{{ "%.2f"|format(wrong_old_score) }}</div>
+        <p>于是，一篇文章只要覆盖很多变体词，分数就会被冲得很高。这就是 `Amy说港险` 那类账号以前会虚高的原因。</p>
+      </article>
+
+      <article class="panel">
+        <span class="badge green">新算法</span>
+        <h3>同一篇文章、同一天、同一个 topic，只认 1 次主分</h3>
+        <p>新算法会先说一句人话：这 5 个词本质上都还是“财富盈活”，而且还是同一篇文章打中的，所以别重复算；如果它顺手覆盖了几个搜索类目，只给一点角度 bonus。</p>
+        <div class="compare-list">
+          <div class="compare-item">
+            <span>先折叠到同一个 topic</span>
+            <strong>财富盈活</strong>
+          </div>
+          <div class="compare-item">
+            <span>再只取最好名次</span>
+            <strong>第 4 名</strong>
+          </div>
+          <div class="compare-item">
+            <span>最后只记 1 次主分 + 小额 bonus</span>
+            <strong>+{{ "%.2f"|format(wrong_new_score) }}</strong>
+          </div>
+        </div>
+        <div class="big-number">{{ "%.2f"|format(wrong_new_score) }}</div>
+        <p>所以，新算法不是让这个账号没分，而是把“水分”砍掉，只留下真正该记的一次有效命中。</p>
+      </article>
+    </section>
+
+    <div class="section-title">
+      <h2>总公式</h2>
+      <span>先看全貌，再看每个变量</span>
+    </div>
+
+    <section class="formula-box">
+      <span class="badge blue">公式总览</span>
+      <h3>账号分的 5 行主公式</h3>
+      <code>{% for line in formula_lines %}{{ line }}{% if not loop.last %}
+{% endif %}{% endfor %}</code>
+      <p>重点不是系数本身，而是计算顺序。顺序一旦对了，后面数值都可以调；顺序错了，单篇文章打很多词就会把榜单冲歪。</p>
+    </section>
+
+    <div class="section-title">
+      <h2>每个词到底是什么意思</h2>
+      <span>看懂这些，后面公式就不抽象了</span>
+    </div>
+
+    <section class="terms-grid">
+      {% for item in term_explanations %}
+      <article class="panel">
+        <div class="term-item">
+          <strong>{{ item.name }}</strong>
+          <p>{{ item.meaning }}</p>
+          <div class="hint">{{ item.example }}</div>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+    <div class="section-title">
+      <h2>排名权重表</h2>
+      <span>这部分沿用你现在的业务判断，不推翻</span>
+    </div>
+
+    <section class="table-card">
+      <span class="badge amber">rank_weight</span>
+      <h3>名次到分值的映射</h3>
+      <table class="table">
+        <tr>
+          {% for item in weights %}
+          <th>第 {{ item.rank }} 名</th>
+          {% endfor %}
+        </tr>
+        <tr>
+          {% for item in weights %}
+          <td>{{ "%.2f"|format(item.weight) }}</td>
+          {% endfor %}
+        </tr>
+      </table>
+    </section>
+
+    <div class="section-title">
+      <h2>一步一步演算样例</h2>
+      <span>这里故意用一个小样本，把每个数怎么来的都摊开</span>
+    </div>
+
+    <section class="steps-grid">
+      <article class="step-card">
+        <span class="step-no">1</span>
+        <h3>原始命中记录</h3>
+        <table class="table">
+          <tr>
+            <th>日期</th>
+            <th>topic</th>
+            <th>bucket</th>
+            <th>文章</th>
+            <th>打中的关键词</th>
+            <th>名次</th>
+            <th>怎么理解</th>
+          </tr>
+          {% for item in example_hits %}
+          <tr>
+            <td>{{ item.date }}</td>
+            <td>{{ item.topic }}</td>
+            <td>{{ item.bucket }}</td>
+            <td>{{ item.article }}</td>
+            <td>{{ item.keywords | join(' / ') }}</td>
+            <td>{{ item.ranks | join(' / ') }}</td>
+            <td>{{ item.counted_as }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </article>
+
+      <article class="step-card">
+        <span class="step-no">2</span>
+        <h3>先按“同账号 + 同天 + 同 topic + 同文章”去重</h3>
+        <p>比如 2026-06-06 的“文章 A”，虽然它打中了 3 个相近关键词，但主分只认最好的一次，也就是 `best_rank = 4`；剩下只看它额外覆盖了几个搜索类目。</p>
+        <div class="hint">这一刀砍掉的，就是“同一篇文章吃满一堆变体词和相近问法”的虚高分。</div>
+      </article>
+
+      <article class="step-card">
+        <span class="step-no">3</span>
+        <h3>再按“同账号 + 同天 + 同 topic”聚合成一个格子</h3>
+        <table class="table">
+          <tr>
+            <th>格子</th>
+            <th>最好名次</th>
+            <th>位次分</th>
+            <th>类目数</th>
+            <th>角度 bonus</th>
+            <th>文章数</th>
+            <th>内容 bonus</th>
+            <th>原始格子分</th>
+            <th>时间权重</th>
+            <th>加权后</th>
+          </tr>
+          {% for item in day_topic_cells %}
+          <tr>
+            <td>{{ item.cell }}</td>
+            <td>{{ item.best_rank }}</td>
+            <td>{{ "%.2f"|format(item.best_weight) }}</td>
+            <td>{{ item.bucket_count }}</td>
+            <td>{{ "%.2f"|format(item.bucket_bonus) }}</td>
+            <td>{{ item.distinct_articles }}</td>
+            <td>{{ "%.2f"|format(item.article_bonus) }}</td>
+            <td>{{ "%.2f"|format(item.day_topic_score) }}</td>
+            <td>{{ "%.2f"|format(item.time_weight) }}</td>
+            <td>{{ "%.2f"|format(item.weighted_score) }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </article>
+
+      <article class="step-card">
+        <span class="step-no">4</span>
+        <h3>把所有加权格子分相加，得到基础分</h3>
+        <div class="step-row">
+          <strong>base_score = {{ "%.2f"|format(base_score) }}</strong>
+          <p>先算每个主题格子的原始分，再乘时间权重。这样最近 3 到 7 天会更重，8 到 15 天前只保留背景价值。</p>
+        </div>
+        {% for item in day_topic_cells %}
+        <div class="step-row">
+          <strong>{{ item.cell }}</strong>
+          <p>{{ item.reason }}</p>
+        </div>
+        {% endfor %}
+      </article>
+    </section>
+
+    <div class="section-title">
+      <h2>持续性和广度怎么进来</h2>
+      <span>这是让持续强账号和黑马都能排到该去的位置</span>
+    </div>
+
+    <section class="summary-grid">
+      <article class="panel">
+        <span class="badge green">持续性</span>
+        <h3>最近 7 天命中</h3>
+        <div class="summary-value">{{ recent_hit_days }}</div>
+        <div class="summary-label">这一步专门防“老号功勋费”。7 天没上榜，这里就会很难看。</div>
+      </article>
+      <article class="panel">
+        <span class="badge green">持续性</span>
+        <h3>当前连击</h3>
+        <div class="summary-value">{{ current_streak }}</div>
+        <div class="summary-label">如果最近 3 天连着都命中，这里会让黑马明显抬头。</div>
+      </article>
+      <article class="panel">
+        <span class="badge blue">广度</span>
+        <h3>产品广度 / 类目广度</h3>
+        <div class="summary-value">{{ topic_count }} / {{ bucket_count }}</div>
+        <div class="summary-label">前者看产品覆盖，后者看搜索角度覆盖，两个都改成加法奖励。</div>
+      </article>
+    </section>
+
+    <section class="formula-box" style="margin-top: 18px;">
+      <span class="badge amber">最终演算</span>
+      <h3>把最近性、持续性和广度合在一起</h3>
+      <code>continuity = {{ "%.2f"|format(continuity) }}
+breadth = {{ "%.2f"|format(breadth) }}
+final_account_score = {{ "%.2f"|format(base_score) }} × {{ "%.2f"|format(continuity) }} + {{ "%.2f"|format(breadth) }} = {{ "%.2f"|format(final_score) }}</code>
+      <p>这样算出来的账号分，会天然偏爱“最近还在打、而且打得又广又稳”的账号。</p>
+    </section>
+
+    <div class="section-title">
+      <h2>哪些情况不重复加分，哪些情况会真的加分</h2>
+      <span>这一块最容易帮助你判断这套公式是否公允</span>
+    </div>
+
+    <section class="cases-grid">
+      <article class="case-card">
+        <span class="badge blue">不会重复加分</span>
+        <h3>砍掉虚高</h3>
+        <ul>
+          {% for item in no_double_count_cases %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="case-card">
+        <span class="badge green">会真实加分</span>
+        <h3>奖励长期价值</h3>
+        <ul>
+          {% for item in yes_count_cases %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <footer>
+      页面路径：<code>/account-score-formula</code> · 这是一页解释页，不直接改动现有监控页面。
+    </footer>
+  </main>
+</body>
+</html>

@@ -17,9 +17,12 @@ from content_hub.db.migrations import migrate
 from content_hub.db.connection import connect
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import AppError
+from content_hub.services.migration import MigrationResolver, wechat_http_operation
 from content_hub.features.overview.router import router as overview_router
 from content_hub.features.system.router import router as system_router
 from content_hub.features.wechat.router import router as wechat_router
+from content_hub.features.wechat.legacy_aux_router import router as wechat_legacy_aux_router
+from content_hub.features.wechat.legacy_read_router import router as wechat_legacy_read_router
 from content_hub.features.mp.router import router as mp_router
 from content_hub.features.xhs.router import router as xhs_router
 from content_hub.features.geo.router import router as geo_router
@@ -31,16 +34,39 @@ from content_hub.features.jobs.router import router as jobs_router
 from content_hub.features.signals.router import router as signals_router
 from content_hub.features.governance.router import router as governance_router
 from content_hub.legacy_proxy import (
+    legacy_referer_kind,
     proxy_legacy_geo_page,
     proxy_legacy_xhs_page,
     proxy_legacy_static,
     proxy_legacy_wechat_api,
+)
+from content_hub.legacy_pages import (
+    wechat_account_score_analysis,
+    wechat_account_score_formula,
+    wechat_article_hit_detail,
+    wechat_article_detail_demo,
+    wechat_article_detail_demo_root,
+    wechat_keyword_turnover,
 )
 
 from content_hub.logging import configure_logging
 from content_hub.services.writing import backfill_writing_runtime
 
 logger = logging.getLogger("content_hub.http")
+
+_WECHAT_ROOT_AUXILIARY_PATHS = frozenset({
+    "/keyword-turnover",
+    "/article-hit-detail",
+    "/article-hit-detail-demo",
+    "/account-score-analysis",
+    "/account-score-formula",
+})
+_WECHAT_BUSINESS_ISLAND_CSP = (
+    "default-src 'self'; img-src 'self' data: https: http://wx.qlogo.cn; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+    "connect-src 'self'; frame-ancestors 'self'"
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -74,7 +100,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=list(resolved_settings.cors_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Request-ID"],
+        allow_headers=[
+            "Content-Type",
+            "X-Request-ID",
+            "Idempotency-Key",
+            "X-Idempotency-Key",
+            "X-Actor-ID",
+        ],
     )
 
     @app.middleware("http")
@@ -82,7 +114,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         started = time.perf_counter()
         try:
-            response = await call_next(request)
+            referer_kind = legacy_referer_kind(request.headers.get("referer", ""))
+            if referer_kind == "xhs" and (
+                request.url.path == "/api/article-cover-image"
+                or request.url.path == "/api/article-covers"
+                or (
+                    request.url.path.startswith("/api/keywords/")
+                    and request.url.path.endswith("/refresh")
+                )
+            ):
+                legacy_path = request.url.path.removeprefix("/api/")
+                response = await proxy_legacy_wechat_api(legacy_path, request)
+            else:
+                operation = wechat_http_operation(request.method, request.url.path)
+                if operation and operation["kind"] == "write":
+                    MigrationResolver(
+                        resolved_settings,
+                        module_key="wechat-search",
+                        contract_key=operation["contract_key"],
+                    ).require_mode("hub")
+                response = await call_next(request)
+        except AppError as exc:
+            # middleware 自身的迁移写护栏位于 FastAPI exception handler 外层；
+            # 在这里保持统一错误契约，同时继续 fail-closed。
+            response = JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "request_id": request_id,
+                    },
+                },
+            )
         except Exception:
             logger.exception(
                 "请求处理失败",
@@ -93,16 +158,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
-        if request.url.path.startswith("/legacy/"):
+        is_root_wechat_auxiliary = request.url.path in _WECHAT_ROOT_AUXILIARY_PATHS
+        is_wechat_legacy_html = (
+            request.url.path.startswith("/legacy/wechat/")
+            and request.url.path.endswith(".html")
+        )
+        if request.url.path.startswith("/legacy/") or is_root_wechat_auxiliary:
             # 原系统页面含历史 inline handler 与 Chart.js/marked 依赖；
-            # 只对同源业务岛屿放宽，不影响统一工作台主页面。
+            # 微信旧辅助页是同源 business-island 页面；只对这批显式
+            # 白名单放宽，不影响统一工作台主页面和其他根路径。
             response.headers["X-Frame-Options"] = "SAMEORIGIN"
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' data: https:; "
-                "style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
-                "connect-src 'self'; frame-ancestors 'self'"
-            )
+            response.headers["Content-Security-Policy"] = _WECHAT_BUSINESS_ISLAND_CSP
+            if is_root_wechat_auxiliary or is_wechat_legacy_html:
+                response.headers["Cache-Control"] = (
+                    "no-store, no-cache, must-revalidate, max-age=0"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
         else:
             response.headers["X-Frame-Options"] = "DENY"
             response.headers["Content-Security-Policy"] = (
@@ -153,6 +225,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(system_router)
     app.include_router(overview_router)
     app.include_router(wechat_router)
+    # 必须先于 /api/{path:path} catch-all，保持旧微信 GET 响应形状。
+    app.include_router(wechat_legacy_read_router)
+    # AUX 读/写/外部动作必须先于 catch-all，避免被旧代理吞掉。
+    app.include_router(wechat_legacy_aux_router)
     app.include_router(mp_router)
     app.include_router(xhs_router)
     app.include_router(geo_router)
@@ -186,6 +262,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route(
         "/legacy/xhs/keyword-turnover",
         proxy_legacy_xhs_page,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    # 微信旧监控页生成的是根路径；显式映射到原业务页面，不能落入 SPA。
+    app.add_api_route(
+        "/keyword-turnover",
+        wechat_keyword_turnover,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/article-hit-detail",
+        wechat_article_hit_detail,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/article-hit-detail-demo",
+        wechat_article_detail_demo_root,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/account-score-analysis",
+        wechat_account_score_analysis,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/account-score-formula",
+        wechat_account_score_formula,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/wechat/keyword-turnover",
+        wechat_keyword_turnover,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/wechat/article-hit-detail",
+        wechat_article_hit_detail,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/wechat/article-hit-detail-demo",
+        wechat_article_detail_demo,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/wechat/account-score-analysis",
+        wechat_account_score_analysis,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/legacy/wechat/account-score-formula",
+        wechat_account_score_formula,
         methods=["GET"],
         include_in_schema=False,
     )

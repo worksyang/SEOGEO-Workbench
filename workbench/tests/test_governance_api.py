@@ -122,7 +122,13 @@ def test_migration_switches_require_confirmation_and_leave_audit(client):
     assert switched.status_code == 200
     listed = _get(client, "/api/v1/governance/switches")
     assert listed.status_code == 200
-    assert listed.json()["data"]["items"][0]["data_mode"] == "compare"
+    item = next(
+        item
+        for item in listed.json()["data"]["items"]
+        if item["module_key"] == "wechat-search"
+        and item["contract_key"] == "keyword-detail"
+    )
+    assert item["data_mode"] == "compare"
     compared = _post(
         client,
         "/api/v1/governance/comparisons",
@@ -136,6 +142,49 @@ def test_migration_switches_require_confirmation_and_leave_audit(client):
     )
     assert compared.status_code == 200
     assert compared.json()["data"]["status"] == "matched"
+    listed = _get(
+        client,
+        "/api/v1/governance/comparisons?module_key=wechat-search&status=matched"
+        "&since=2026-01-01T00:00:00Z&until=2027-01-01T00:00:00Z&limit=1&offset=0",
+    )
+    assert listed.status_code == 200
+    assert listed.json()["data"]["total"] >= 1
+    comparison_id = listed.json()["data"]["items"][0]["comparison_id"]
+    detail = _get(client, f"/api/v1/governance/comparisons/{comparison_id}")
+    assert detail.status_code == 200
+    assert isinstance(detail.json()["data"]["comparison"]["summary"], dict)
+    assert "diffs" in detail.json()["data"]
+
+
+def test_wechat_atomic_cutover_preflight_and_switch(client):
+    preflight = _post(
+        client,
+        "/api/v1/governance/switches/wechat-search/cutover",
+        json={
+            "data_mode": "compare",
+            "expected_mode": "legacy",
+            "dry_run": True,
+            "actor": "governance-smoke",
+            "reason": "verify all read contracts before compare",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.json()["data"]["changed_count"] == 0
+    assert preflight.json()["data"]["would_change_count"] == 22
+
+    switched = _post(
+        client,
+        "/api/v1/governance/switches/wechat-search/cutover",
+        json={
+            "data_mode": "compare",
+            "expected_mode": "legacy",
+            "actor": "governance-smoke",
+            "reason": "enter compare as one transaction",
+        },
+    )
+    assert switched.status_code == 200
+    assert switched.json()["data"]["changed_count"] == 22
+    assert switched.json()["data"]["previous_mode"] == "legacy"
 
 
 def test_t173_wiki_tree_returns_list(client):

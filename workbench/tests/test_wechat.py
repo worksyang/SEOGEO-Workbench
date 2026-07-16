@@ -41,16 +41,41 @@ def test_wechat_degraded_bootstrap_and_idempotent_import(settings, tmp_path):
                 assert bootstrap.json()["data"]["summary"]["keyword_count"] == 1
                 dry = await client.post("/api/v1/wechat/import", json={"dry_run": True})
                 assert dry.json()["data"]["counts"]["contents"] == 1
-                first = await client.post("/api/v1/wechat/import")
-                second = await client.post("/api/v1/wechat/import")
+                payload = {"confirm": True, "idempotency_key": "route-import-1"}
+                first = await client.post("/api/v1/wechat/import", json=payload)
+                second = await client.post("/api/v1/wechat/import", json=payload)
                 assert first.status_code == second.status_code == 200
                 assert first.json()["data"]["batch_id"] == second.json()["data"]["batch_id"]
                 with connect(configured, readonly=True) as connection:
                     assert connection.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == 1
                     assert connection.execute("SELECT COUNT(*) FROM ingestion_batches").fetchone()[0] == 1
+                    assert connection.execute(
+                        "SELECT status FROM command_runs WHERE module_key='wechat-search' AND idempotency_key='route-import-1'"
+                    ).fetchone()[0] == "succeeded"
                 article = await client.get("/api/v1/wechat/articles/art_1")
                 assert article.status_code == 200
                 assert article.json()["data"]["article"]["title"] == "标题"
+    asyncio.run(run())
+
+
+def test_wechat_full_import_route_requires_confirmation_and_idempotency_key(settings, tmp_path):
+    configured = _fixture_settings(settings, tmp_path)
+
+    async def run():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                assert (await client.post("/api/v1/wechat/import", json={})).status_code == 422
+                assert (await client.post(
+                    "/api/v1/wechat/import", json={"confirm": True}
+                )).status_code == 422
+                assert (await client.post(
+                    "/api/v1/wechat/import",
+                    json={"confirm": True, "idempotency_key": "formal-route"},
+                )).status_code == 200
+
     asyncio.run(run())
 
 
@@ -60,11 +85,25 @@ def test_wechat_refresh_requires_confirmation_and_refuses_unavailable_source(set
         app = create_app(configured)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+                assert (await client.post(
+                    "/api/v1/wechat/import",
+                    json={"confirm": True, "idempotency_key": "refresh-import-1"},
+                )).status_code == 200
                 missing = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={})
                 assert missing.status_code == 422
-                refused = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
+                no_key = await client.post(
+                    "/api/v1/wechat/keywords/kw_1/refresh",
+                    json={"confirm": True},
+                )
+                assert no_key.status_code == 422
+                refused = await client.post(
+                    "/api/v1/wechat/keywords/kw_1/refresh",
+                    json={"confirm": True, "idempotency_key": "disabled-v1"},
+                )
                 assert refused.status_code == 409
-                assert refused.json()["error"]["code"] == "CONFLICT"
+                assert refused.json()["ok"] is False
+                assert refused.json()["data"]["status"] == "blocked"
+                assert refused.json()["data"]["upstream_called"] is False
     asyncio.run(run())
 
 
@@ -103,22 +142,23 @@ def test_wechat_schema_invalid_and_audit_reconcile(settings, tmp_path):
     asyncio.run(run())
 
 
-def test_wechat_refresh_preserves_200_202_409(settings, tmp_path, monkeypatch):
+def test_wechat_service_refresh_is_hub_only(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
-    from content_hub.adapters.wechat import RemoteResponse, WechatAdapter, WechatSourceError
     from content_hub.features.wechat.service import WechatService
-    monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: {"keyword_id": keyword_id, "keyword": "港险"})
-    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "running"}, 200))
+    from content_hub.services.wechat_refresh import FakeWechatRefreshProvider
+
     service = WechatService(configured)
-    assert service.refresh("kw_1", True)["http_status"] == 200
-    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "queued"}, 202))
-    assert service.refresh("kw_1", True)["http_status"] == 202
-    def rejected(self, keyword_id, keyword):
-        raise WechatSourceError("batch running", kind="remote_http", status=409, payload={"status": "rejected", "reason": "batch_running"})
-    monkeypatch.setattr(WechatAdapter, "remote_refresh", rejected)
-    result = service.refresh("kw_1", True)
-    assert result["http_status"] == 409
-    assert result["result"]["status"] == "rejected"
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-refresh-fixture")
+    succeeded = service.refresh(
+        "kw_1",
+        True,
+        idempotency_key="service-hub-success",
+        provider=FakeWechatRefreshProvider(),
+    )
+    assert succeeded["status"] == "succeeded"
+    blocked = service.refresh("kw_1", True, idempotency_key="service-hub-disabled")
+    assert blocked["status"] == "blocked"
+    assert blocked["upstream_called"] is False
 
 
 def test_wechat_snapshot_slice_contract_and_term_features(settings, tmp_path):
@@ -163,14 +203,14 @@ def test_wechat_import_features_platform_and_zero_growth(settings, tmp_path):
     from content_hub.db.migrations import migrate
     migrate(configured)
     service = WechatService(configured)
-    first = service.import_history(dry_run=False, limit=None)
+    first = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-import-features")
     with connect(configured, readonly=True) as con:
         before = {table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("keywords", "creators", "contents", "content_identifiers", "search_snapshots", "search_hits", "content_discoveries", "metric_definitions", "metric_observations", "ingestion_batches")}
         features = con.execute("SELECT features_json,platform FROM search_snapshots WHERE snapshot_id='snap_1'").fetchone()
         assert json.loads(features[0])["suggestions"][0]["term"] == "港险"
         assert features[1] == "wechat-search"
         assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.snapshot_term'").fetchone()[0] == 0
-    second = service.import_history(dry_run=False, limit=None)
+    second = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-import-features")
     assert first["batch_id"] == second["batch_id"]
     with connect(configured, readonly=True) as con:
         after = {table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in before}
@@ -208,7 +248,7 @@ def test_wechat_reconciliation_verified_only_for_exact_full_match(settings, tmp_
 
     migrate(configured)
     service = WechatService(configured)
-    matched = service.import_history(dry_run=False, limit=None)
+    matched = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-reconcile-matched")
     assert matched["audit"]["reconcile"]["verified"] is True
     assert matched["audit"]["reconcile"]["status"] == "matched"
     assert all(
@@ -234,7 +274,7 @@ def test_wechat_reconciliation_verified_only_for_exact_full_match(settings, tmp_
         return result
 
     monkeypatch.setattr(service, "_reconcile_summary", mismatched)
-    mismatch = service.import_history(dry_run=False, limit=None)
+    mismatch = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-reconcile-mismatch")
     assert mismatch["audit"]["reconcile"]["verified"] is False
     assert mismatch["audit"]["reconcile"]["status"] == "mismatch"
     with connect(configured, readonly=True) as connection:
@@ -267,7 +307,7 @@ def test_wechat_rejected_metrics_and_status_time(settings, tmp_path):
         {"observation_id": "bad_2", "article_id": "art_1", "observed_at": "2026-07-14T00:00:00", "read_count": "not-a-number"},
     ]), encoding="utf-8")
     from content_hub.features.wechat.service import WechatService
-    result = WechatService(configured).import_history(dry_run=False, limit=None)
+    result = WechatService(configured).import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-invalid-observations")
     reasons = {item["reason"] for item in result["audit"]["rejected"]}
     assert "invalid_observed_at" in reasons and "invalid_numeric" in reasons
     with connect(configured, readonly=True) as con:
@@ -292,7 +332,7 @@ def test_wechat_metric_collisions_are_canonical_audited_and_idempotent(settings,
     migrate(configured)
     service = WechatService(configured)
     dry = service.import_history(dry_run=True, limit=None)
-    result = service.import_history(dry_run=False, limit=None)
+    result = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-collisions")
     assert dry["audit"]["metric_fact_count"] == result["audit"]["metric_fact_count"] == 4
     assert result["audit"]["metric_unique_count"] == 2
     assert result["audit"]["metric_collision_group_count"] == 2
@@ -303,7 +343,7 @@ def test_wechat_metric_collisions_are_canonical_audited_and_idempotent(settings,
     collisions = result["audit"]["metric_collisions"]
     assert {c["same_value"] for c in collisions} == {True, False}
     assert {candidate["observation_id"] for c in collisions for candidate in c["candidates"]} == {
-        "a_same:wechat.read_count", "z_same:wechat.read_count", "b_diff:wechat.read_count", "c_diff:wechat.read_count",
+        "a_same:wechat.article.read_count", "z_same:wechat.article.read_count", "b_diff:wechat.article.read_count", "c_diff:wechat.article.read_count",
     }
     date_collision = next(c for c in collisions if c["same_value"])
     assert {candidate["observed_at_precision"] for candidate in date_collision["candidates"]} == {"date"}
@@ -312,12 +352,12 @@ def test_wechat_metric_collisions_are_canonical_audited_and_idempotent(settings,
     with connect(configured, readonly=True) as con:
         values = con.execute("SELECT observation_id,numeric_value,snapshot_id FROM metric_observations ORDER BY observed_at,snapshot_id").fetchall()
         assert [(row[0], row[1], row[2]) for row in values] == [
-            ("a_same:wechat.read_count", 3.0, None),
-            ("b_diff:wechat.read_count", 5.0, "snap_1"),
+            ("a_same:wechat.article.read_count", 3.0, None),
+            ("b_diff:wechat.article.read_count", 5.0, "snap_1"),
         ]
         payload = con.execute("SELECT payload_json FROM ingestion_batches WHERE batch_id=?", (result["batch_id"],)).fetchone()[0]
         assert json.loads(payload)["metric_collisions"] == collisions
-    repeated = service.import_history(dry_run=False, limit=None)
+    repeated = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-collisions")
     assert repeated["batch_id"] == result["batch_id"]
     with connect(configured, readonly=True) as con:
         assert con.execute("SELECT observation_id,numeric_value,snapshot_id FROM metric_observations ORDER BY observed_at,snapshot_id").fetchall() == values
@@ -333,13 +373,13 @@ def test_wechat_metric_collision_order_does_not_change_winner(settings, tmp_path
     metric_path.write_text(json.dumps(rows), encoding="utf-8")
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    first = service.import_history(dry_run=False, limit=None)
+    first = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-order-first")
     metric_path.write_text(json.dumps(list(reversed(rows))), encoding="utf-8")
-    second = service.import_history(dry_run=False, limit=None)
-    assert first["audit"]["metric_collisions"][-1]["candidates"][0]["observation_id"] == "loser:wechat.read_count"
+    second = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-order-second")
+    assert first["audit"]["metric_collisions"][-1]["candidates"][0]["observation_id"] == "loser:wechat.article.read_count"
     with connect(configured, readonly=True) as con:
         row = con.execute("SELECT observation_id,numeric_value FROM metric_observations").fetchone()
-        assert tuple(row) == ("loser:wechat.read_count", 9.0)
+        assert tuple(row) == ("loser:wechat.article.read_count", 9.0)
         assert second["audit"]["metric_collision_value_diff_count"] == 1
 
 
@@ -355,11 +395,11 @@ def test_wechat_metric_collision_same_or_missing_id_is_order_independent(setting
     metric_path.write_text(json.dumps(rows), encoding="utf-8")
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    first = service.import_history(dry_run=False, limit=None)
+    first = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-identity-first")
     with connect(configured, readonly=True) as con:
         first_rows = [tuple(row) for row in con.execute("SELECT observation_id,numeric_value,payload_json FROM metric_observations ORDER BY observed_at")]
     metric_path.write_text(json.dumps(list(reversed(rows))), encoding="utf-8")
-    second = service.import_history(dry_run=False, limit=None)
+    second = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-identity-second")
     with connect(configured, readonly=True) as con:
         second_rows = [tuple(row) for row in con.execute("SELECT observation_id,numeric_value,payload_json FROM metric_observations ORDER BY observed_at")]
     assert first["audit"]["metric_collisions"] == second["audit"]["metric_collisions"]
@@ -374,26 +414,26 @@ def test_wechat_metric_collision_replaces_preexisting_noncanonical_row(settings,
     metric_path.write_text(json.dumps([old]), encoding="utf-8")
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-pruning-first")
     canonical = {**old, "observation_id": "a_new", "read_count": 4}
     metric_path.write_text(json.dumps([old, canonical]), encoding="utf-8")
-    result = service.import_history(dry_run=False, limit=None)
+    result = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-metric-pruning-second")
     assert result["audit"]["rejected"] == []
     with connect(configured, readonly=True) as con:
         rows = con.execute("SELECT observation_id,numeric_value FROM metric_observations").fetchall()
-        assert [tuple(row) for row in rows] == [("a_new:wechat.read_count", 4.0)]
+        assert [tuple(row) for row in rows] == [("a_new:wechat.article.read_count", 4.0)]
 
 
 def test_wechat_hit_pk_unique_and_snapshot_unique_conflicts(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-hit-unique-first")
     hits_path = configured.wechat_source_root / "normalized/ranking_hits.json"
     hits_path.write_text(json.dumps([{"hit_id": "hit_new", "snapshot_id": "snap_other", "rank": 1, "article_id": "art_1", "title_raw": "变化"}]), encoding="utf-8")
     snapshots_path = configured.wechat_source_root / "normalized/snapshots.json"
     snapshots_path.write_text(json.dumps([{"snapshot_id": "snap_other", "keyword_id": "kw_1", "captured_at": "2026-07-14T00:00:00", "result_count": 1}]), encoding="utf-8")
-    result = service.import_history(dry_run=False, limit=None)
+    result = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-hit-unique-second")
     assert result["audit"]["rejected"] == []
     with connect(configured, readonly=True) as con:
         assert con.execute("SELECT COUNT(*) FROM search_snapshots").fetchone()[0] == 1
@@ -402,23 +442,33 @@ def test_wechat_hit_pk_unique_and_snapshot_unique_conflicts(settings, tmp_path):
         assert row[0] == "hit_new" and row[1] == "变化"
 
 
-def test_wechat_refresh_route_preserves_http_status_and_body(settings, tmp_path, monkeypatch):
+def test_wechat_refresh_route_preserves_hub_status_and_body(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
-    from content_hub.adapters.wechat import RemoteResponse, WechatAdapter, WechatSourceError
-    monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: {"keyword_id": keyword_id, "keyword": "港险"})
-    monkeypatch.setattr(WechatAdapter, "remote_refresh", lambda self, keyword_id, keyword: RemoteResponse({"status": "queued", "job_id": "job_1"}, 202))
+    from content_hub.services.wechat_refresh import FakeWechatRefreshProvider
+
     async def run():
         app = create_app(configured)
+        app.state.wechat_refresh_provider = FakeWechatRefreshProvider()
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
-                queued = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
-                assert queued.status_code == 202 and queued.json()["data"]["result"]["job_id"] == "job_1"
-                def rejected(self, keyword_id, keyword):
-                    raise WechatSourceError("batch running", kind="remote_http", status=409, payload={"status": "rejected", "reason": "batch_running"})
-                monkeypatch.setattr(WechatAdapter, "remote_refresh", rejected)
-                blocked = await client.post("/api/v1/wechat/keywords/kw_1/refresh", json={"confirm": True})
+                assert (await client.post(
+                    "/api/v1/wechat/import",
+                    json={"confirm": True, "idempotency_key": "refresh-route-import-1"},
+                )).status_code == 200
+                succeeded = await client.post(
+                    "/api/v1/wechat/keywords/kw_1/refresh",
+                    json={"confirm": True, "idempotency_key": "route-hub-success"},
+                )
+                assert succeeded.status_code == 200
+                assert succeeded.json()["data"]["status"] == "succeeded"
+                app.state.wechat_refresh_provider = None
+                blocked = await client.post(
+                    "/api/v1/wechat/keywords/kw_1/refresh",
+                    json={"confirm": True, "idempotency_key": "route-hub-disabled"},
+                )
                 assert blocked.status_code == 409
-                assert blocked.json()["data"]["result"]["reason"] == "batch_running"
+                assert blocked.json()["data"]["status"] == "blocked"
+                assert blocked.json()["data"]["upstream_called"] is False
     asyncio.run(run())
 
 
@@ -474,7 +524,7 @@ def test_wechat_hub_article_snapshots_are_snapshot_objects(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-article-snapshot")
     payload = service.article("art_1")
     assert payload["snapshots"]
     assert "hits" in payload["snapshots"][0]
@@ -488,7 +538,7 @@ def test_wechat_keyword_prefers_hub_after_import_and_keeps_slices(settings, tmp_
     from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
 
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-keyword-hub")
     monkeypatch.setattr(WechatAdapter, "detail_records", lambda self: (_ for _ in ()).throw(AssertionError("不应读取 normalized 详情")))
     monkeypatch.setattr(WechatAdapter, "remote_keyword", lambda self, keyword_id: (_ for _ in ()).throw(WechatSourceError("旧服务不可用")))
     payload = service.keyword("kw_1")
@@ -539,7 +589,7 @@ def test_wechat_article_hub_read_does_not_promote_offline_connection(settings, t
     configured = _fixture_settings(settings, tmp_path)
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-article-offline")
     with connect(configured) as con:
         con.execute(
             "UPDATE system_connections SET status='offline',last_checked_at='2026-07-14T00:00:00Z' WHERE system_key='wechat-search'"
@@ -558,7 +608,7 @@ def test_wechat_import_releases_source_json_cache(settings, tmp_path):
     from content_hub.adapters.wechat import WechatAdapter
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-cache-clear")
     root_key = str(configured.wechat_source_root)
     assert not [key for key in WechatAdapter._json_cache if key[0] == root_key]
 
@@ -579,7 +629,7 @@ def test_wechat_placeholder_url_is_warning_but_invalid_url_is_rejected(settings,
     )
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    placeholder_result = service.import_history(dry_run=False, limit=None)
+    placeholder_result = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-placeholder")
     assert placeholder_result["audit"]["rejected"] == []
     assert placeholder_result["audit"]["placeholder_count"] == 1
     assert placeholder_result["audit"]["placeholder_samples"][0]["value"] == "placeholder://作者/标题"
@@ -609,7 +659,7 @@ def test_wechat_placeholder_url_is_warning_but_invalid_url_is_rejected(settings,
         ], ensure_ascii=False),
         encoding="utf-8",
     )
-    invalid_result = service.import_history(dry_run=False, limit=None)
+    invalid_result = service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-invalid-url")
     assert invalid_result["audit"]["placeholder_count"] == 0
     assert any(
         item["reason"] == "invalid_url"
@@ -631,12 +681,12 @@ def test_wechat_full_sync_archives_keyword_missing_from_current_source(settings,
     configured = _fixture_settings(settings, tmp_path)
     from content_hub.features.wechat.service import WechatService
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-full-sync-first")
     monitor = configured.wechat_source_root / "normalized/monitor-data.json"
     payload = json.loads(monitor.read_text(encoding="utf-8"))
     payload["keywords"] = []
     monitor.write_text(json.dumps(payload), encoding="utf-8")
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-full-sync-second")
     with connect(configured, readonly=True) as con:
         assert con.execute("SELECT status FROM keywords WHERE keyword_id='kw_1'").fetchone()[0] == "archived"
 
@@ -650,7 +700,7 @@ def test_wechat_keyword_read_delta_uses_canonical_metric_keys(settings, tmp_path
         "daily_read_delta_points": [{"date": "2026-07-14", "read_delta": 3}],
     }]), encoding="utf-8")
     from content_hub.features.wechat.service import WechatService
-    result = WechatService(configured).import_history(dry_run=False, limit=None)
+    result = WechatService(configured).import_history(dry_run=False, limit=None, confirm=True, idempotency_key="wechat-keyword-delta")
     with connect(configured, readonly=True) as con:
         rows = con.execute(
             "SELECT subject_type,metric_key,numeric_value FROM metric_observations WHERE subject_id='kw_1' ORDER BY metric_key"

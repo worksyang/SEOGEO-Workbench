@@ -3,6 +3,7 @@ import os
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _WIKI_DEFAULT_ROOTS = ("/Users/works14/Documents/output_md",)
 _DEMO_PUBLISH_ACCOUNT = {
@@ -19,6 +20,45 @@ _MP_ALLOWED_CATEGORIES = (
     "热门产品", "z产品对比", "z香港vs内地", "港险优惠", "美联储降息", "保司盘点",
     "什么是香港保险", "香港储蓄险", "z非热门产品", "其他", "新加坡保险",
 )
+
+_WECHAT_REFERENCE_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_WECHAT_REFERENCE_PORT = 8774
+_WECHAT_LEGACY_SOURCE_ROOT = Path("/Users/works14/.claude/监控/wechat-ybxhyyh-top3").resolve()
+
+
+def _validate_wechat_source_url(raw: str) -> str:
+    """只允许本机隔离参考实例，且把本机别名归一化为稳定地址。"""
+    value = str(raw).strip()
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() != "http":
+        raise ValueError("HUB_WECHAT_SOURCE_URL 只允许 http://127.0.0.1:8774 参考地址。")
+    if parsed.username or parsed.password:
+        raise ValueError("HUB_WECHAT_SOURCE_URL 不允许携带凭据。")
+    if parsed.hostname not in _WECHAT_REFERENCE_HOSTS:
+        raise ValueError("HUB_WECHAT_SOURCE_URL 只允许本机回环地址。")
+    if parsed.port != _WECHAT_REFERENCE_PORT:
+        raise ValueError("HUB_WECHAT_SOURCE_URL 只允许隔离参考端口 8774，禁止 8765 或其他端口。")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("HUB_WECHAT_SOURCE_URL 不允许路径、查询参数或片段。")
+    return f"http://127.0.0.1:{_WECHAT_REFERENCE_PORT}"
+
+
+def _validate_wechat_freeze_root(raw: str | Path, project_root: Path) -> Path:
+    """冻结快照只能落在当前项目的数据隔离区，不能指向旧真实源。"""
+    allowed_root = (project_root / "data/migration/wechat").resolve()
+    candidate = Path(raw).expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(allowed_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"HUB_WECHAT_FREEZE_ROOT 必须位于项目隔离目录 {allowed_root} 下。"
+        ) from exc
+    try:
+        candidate.relative_to(_WECHAT_LEGACY_SOURCE_ROOT)
+    except ValueError:
+        return candidate
+    raise ValueError("HUB_WECHAT_FREEZE_ROOT 不得等于或进入微信旧真实源目录。")
+
 
 def _split_paths(raw: str | None) -> tuple[Path, ...]:
     if not raw:
@@ -156,13 +196,23 @@ class Settings:
             log_level=os.getenv("HUB_LOG_LEVEL", "INFO").upper(),
             allowed_roots=configured_roots or default_roots,
             cors_origins=cors_origins,
-            wechat_source_url=os.getenv("HUB_WECHAT_SOURCE_URL", "http://127.0.0.1:8765"),
-            wechat_source_root=Path(
+            # 默认只指向隔离参考实例；环境变量显式覆盖时也必须过硬护栏。
+            wechat_source_url=_validate_wechat_source_url(
+                os.getenv("HUB_WECHAT_SOURCE_URL", "http://127.0.0.1:8774")
+            ),
+            wechat_source_root=_validate_wechat_freeze_root(
                 os.getenv(
-                    "HUB_WECHAT_SOURCE_ROOT",
-                    "/Users/works14/.claude/监控/wechat-ybxhyyh-top3",
-                )
-            ).expanduser().resolve(),
+                    "HUB_WECHAT_FREEZE_ROOT",
+                    os.getenv(
+                        "HUB_WECHAT_SOURCE_ROOT",
+                        str(
+                            project_root
+                            / "data/migration/wechat/freeze_20260716T024524+0800/payload"
+                        ),
+                    ),
+                ),
+                project_root,
+            ),
             wechat_source_timeout_seconds=float(
                 os.getenv("HUB_WECHAT_SOURCE_TIMEOUT_SECONDS", "3")
             ),

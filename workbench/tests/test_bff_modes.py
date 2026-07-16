@@ -24,7 +24,12 @@ def _switch(settings, module: str, contract: str, mode: str) -> None:
 def test_wechat_compare_records_real_contract_comparison(settings, tmp_path) -> None:
     configured = _fixture_settings(settings, tmp_path)
     service = WechatService(configured)
-    service.import_history(dry_run=False, limit=None)
+    service.import_history(
+        dry_run=False,
+        limit=None,
+        confirm=True,
+        idempotency_key="bff-wechat-compare",
+    )
     _switch(configured, "wechat-search", "bootstrap", "compare")
 
     payload = service.bootstrap()
