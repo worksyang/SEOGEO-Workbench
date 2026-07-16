@@ -17,7 +17,7 @@ export default function MotherPage() {
       style.textContent = `
         .layout { grid-template-columns: 0 minmax(0,1fr) !important; }
         .system-nav { display: none !important; }
-        .work-surface { margin-left: 14px !important; border-left: 1px solid var(--border-color) !important; border-radius: 16px !important; }
+        .work-surface { grid-column: 1 / -1 !important; margin-left: 14px !important; border-left: 1px solid var(--border-color) !important; border-radius: 16px !important; }
       `
       doc.head.appendChild(style)
       // 调用内部 setMode 确保处于母文章铸造模式
