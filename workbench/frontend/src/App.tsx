@@ -174,7 +174,7 @@ export default function App() {
                 {group.items.map(([key, label]) => (
                   <button className={`demo-nav-button${active === key ? ' active' : ''}`} key={key} type="button" onClick={() => navigate(key)} aria-current={active === key ? 'page' : undefined}>
                     <NavIcon name={key} />
-                    <span>{label}</span>
+                    <span>{label}{(key === 'mother' || key === 'batch') && <em className="demo-nav-demo">DEMO</em>}</span>
                     {key !== 'overview' && <small className={`demo-nav-state ${statusClass(navStatus(key as BusinessNavKey))}`}>{statusText(navStatus(key as BusinessNavKey))}</small>}
                   </button>
                 ))}
@@ -193,8 +193,8 @@ export default function App() {
         </div>
       </aside>
 
-      <section className="demo-shell">
-        <header className="demo-top">
+      <section className={`demo-shell${active === 'mother' || active === 'batch' ? ' writing-shell' : ''}`}>
+        {active !== 'mother' && active !== 'batch' && <header className="demo-top">
           <div className="demo-title"><b>{NAV_LABELS[active]}</b><small>从这里进入原来的每一套系统</small></div>
           <div className="demo-search">
             <NavIcon name="overview" />
@@ -202,7 +202,7 @@ export default function App() {
           </div>
           <button className="demo-button" type="button" onClick={() => setGlobalMessage('原系统入口将在对应模块完成 provenance 后开放。')}>打开原系统</button>
           <button className="demo-button primary" type="button" onClick={() => { navigate('overview'); setGlobalMessage('今日流程仅显示已返回的真实任务事件。') }}>查看今日流程</button>
-        </header>
+        </header>}
         {globalMessage && <div className="demo-global-message" role="status">{globalMessage}<button type="button" onClick={() => setGlobalMessage('')}>关闭</button></div>}
         {error && active === 'overview' && <div className="demo-global-error" role="alert"><b>Hub 暂时无法连接</b><span>{error}</span><button type="button" onClick={reload}>重试</button></div>}
         <main className="demo-stage">{renderPage()}</main>

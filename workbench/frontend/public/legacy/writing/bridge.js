@@ -349,6 +349,15 @@
 
   var params = new URLSearchParams(window.location.search);
   var wantedMode = params.get('mode');
+  // 嵌入统一工作台时明确使用老 WritingMoney 的静态 Demo 数据；
+  // 只有独立打开原版页面时，才走 Hub 真实任务读取。
+  var demoMode = true;
+  if (demoMode) {
+    if (typeof setMode === 'function') setMode(wantedMode === 'batch' ? 'batch' : 'mother');
+    interceptWrites();
+    release();
+    return;
+  }
   fetch('/api/v1/writing/jobs?limit=100', { headers: { 'Accept': 'application/json' } })
     .then(function (response) {
       if (!response.ok) throw new Error('Hub 返回 HTTP ' + response.status);

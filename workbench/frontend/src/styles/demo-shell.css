@@ -117,6 +117,15 @@ body {
   white-space: nowrap;
 }
 
+.demo-nav-demo {
+  margin-left: 5px;
+  color: var(--demo-faint);
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+
 .demo-nav-state {
   color: var(--demo-faint);
   font-size: 8px;
@@ -202,6 +211,10 @@ body {
   border-radius: 15px;
   background: var(--demo-paper);
   box-shadow: 0 1px 2px rgb(9 9 11 / 4%), 0 18px 45px rgb(9 9 11 / 4%);
+}
+
+.demo-shell.writing-shell {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .demo-top {
@@ -340,6 +353,14 @@ body {
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--demo-canvas);
+}
+
+.demo-stage > .legacy-writing-island {
+  height: 100%;
+  min-height: 0;
+  display: block;
+  overflow: hidden;
+  background: #fff;
 }
 
 .demo-stage > .geo-island-page {
