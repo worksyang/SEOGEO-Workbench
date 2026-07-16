@@ -76,11 +76,15 @@ GEO 观察
 
 ## 6. Git / GitHub
 
-- 每个完整改动完成后自动提交并推送；commit message 使用中文并准确描述实际改动。
-- 提交前必须执行 `git fetch origin`、`git status --short --branch`、`git log --oneline HEAD..origin/main`，先检查远端和重合改动。
-- 远端领先时先审查差异，再决定 rebase 或人工合并；禁止覆盖他人提交和 `git push --force`。
+- 提交以“逻辑完整单元”为节奏：一个独立功能、一个可验证的 Demo、一个 bug 修复或一组同目的的关联改动完成并通过适用测试后，再创建一次 commit；不要求每改一行或每次保存都提交。
+- 开发中的半成品可以暂留在工作区；但在切换任务、交接 Agent、结束本轮工作或进行高风险操作前，应创建一个可恢复的检查点 commit，或明确记录当前未完成状态。
+- 每个 commit 只表达一个主要目的，commit message 使用中文并准确描述实际改动；避免把无关模块、格式化、缓存、运行库和临时文件混入同一 commit。
+- 提交前必须执行 `git fetch origin`、`git status --short --branch`、`git diff --check`，并检查 `git log --oneline HEAD..origin/<当前分支>`；先确认工作区、暂存区和远端是否存在他人改动。
+- 暂存必须使用明确的文件或目录范围（例如 `git add workbench/frontend/src/features/writing`），禁止在存在其他 Agent 未提交改动时使用 `git add .` 或 `git add -A`。
+- 多 Agent 并行开发时，优先使用独立分支和独立 worktree；若暂时共用工作区，必须尊重其他 Agent 的未提交改动，不得 reset、checkout、clean、覆盖或代替他人提交。
+- 远端领先时先审查差异，再决定 rebase 或人工合并；禁止覆盖他人提交和 `git push --force`。推送是 commit 之后的协作同步动作，不等于每次保存都要推送。
 - 提交前检查暂存区，确认没有秘密、大数据、运行库、缓存或本地镜像。
-- 最终汇报必须说明：改了什么、测试结果、commit id、推送状态、本地是否与 `origin/main` 一致。
+- 最终汇报必须说明：改了什么、测试结果、commit id、推送状态，以及本地与当前跟踪远端分支是否一致。
 
 ## 7. 七套真实系统路径
 
