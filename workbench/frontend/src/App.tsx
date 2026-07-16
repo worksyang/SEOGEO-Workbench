@@ -166,14 +166,20 @@ export default function App() {
     <div className="demo-app">
       <aside className="demo-rail">
         <div className="demo-brand"><b>ContentOS</b><span>你的内容资产总工作台</span></div>
-        <div className="demo-label">Observe · 观察层</div>
-        <nav className="demo-nav" aria-label="主导航">
-          {NAV_GROUPS.flatMap((group) => group.items).map(([key, label]) => (
-            <button className={`demo-nav-button${active === key ? ' active' : ''}`} key={key} type="button" onClick={() => navigate(key)} aria-current={active === key ? 'page' : undefined}>
-              <NavIcon name={key} />
-              <span>{label}</span>
-              {key !== 'overview' && <small className={`demo-nav-state ${statusClass(navStatus(key as BusinessNavKey))}`}>{statusText(navStatus(key as BusinessNavKey))}</small>}
-            </button>
+        <nav aria-label="主导航">
+          {NAV_GROUPS.map((group) => (
+            <div className="demo-nav-group" key={group.label}>
+              <div className="demo-label">{group.label}</div>
+              <div className="demo-nav">
+                {group.items.map(([key, label]) => (
+                  <button className={`demo-nav-button${active === key ? ' active' : ''}`} key={key} type="button" onClick={() => navigate(key)} aria-current={active === key ? 'page' : undefined}>
+                    <NavIcon name={key} />
+                    <span>{label}</span>
+                    {key !== 'overview' && <small className={`demo-nav-state ${statusClass(navStatus(key as BusinessNavKey))}`}>{statusText(navStatus(key as BusinessNavKey))}</small>}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
         <div className="demo-rail-secondary" aria-label="运维入口">
