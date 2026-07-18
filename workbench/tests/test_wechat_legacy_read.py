@@ -14,6 +14,7 @@ from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.features.wechat.service import WechatService
 from content_hub.repositories.wechat_legacy import WechatLegacyRepository
+from content_hub.services.wechat_refresh import FakeWechatRefreshProvider, WechatRefreshService
 
 
 def _fixture(settings, tmp_path: Path):
@@ -67,6 +68,115 @@ def test_hub_legacy_read_shapes_etag_and_safe_content(settings, tmp_path):
                 assert missing.status_code == 404
 
     asyncio.run(run())
+
+
+def test_successful_refresh_overlays_frozen_projection_and_updates_article_library(settings, tmp_path):
+    configured = _fixture(settings, tmp_path)
+    WechatService(configured).import_history(
+        dry_run=False,
+        limit=None,
+        confirm=True,
+        idempotency_key="legacy-live-overlay",
+    )
+    provider = FakeWechatRefreshProvider(
+        {
+            "kw_1": {
+                "captured_at": "2026-07-18T09:30:00",
+                "result_count": 1,
+                "hits": [
+                    {
+                        "rank": 1,
+                        "title_raw": "7月18日新文章",
+                        "url_raw": "https://mp.weixin.qq.com/s/live-overlay",
+                        "creator_name_raw": "新公众号",
+                        "published_at": "2026-07-18 08:00",
+                        "markdown_body": "# 7月18日新文章\n\n正文",
+                    }
+                ],
+                "source_ref": "remote:test:live-overlay",
+            }
+        }
+    )
+    result = WechatRefreshService(
+        configured,
+        provider=provider,
+        max_attempts=1,
+    ).refresh_one(
+        keyword_id="kw_1",
+        request_keyword="港险",
+        key="legacy-live-overlay-refresh",
+    )
+    assert result["status"] == "completed"
+
+    repo = WechatLegacyRepository(
+        configured,
+        clock=lambda: datetime(2026, 7, 18, 12),
+    )
+    bootstrap = repo.bootstrap()
+    full = repo.full()
+    keyword = repo.keyword("kw_1")
+    assert bootstrap["generated_at"] == "2026-07-18T09:30:00"
+    assert bootstrap["window_end"] == "2026-07-18"
+    bootstrap_keyword = next(item for item in bootstrap["keywords"] if item["keyword_id"] == "kw_1")
+    assert bootstrap_keyword["latest_run"]["run_at"] == "2026-07-18 09:30"
+    full_keyword = next(item for item in full["keywords"] if item["keyword_id"] == "kw_1")
+    assert full_keyword["runs"][0]["articles"][0]["title"] == "7月18日新文章"
+    assert keyword["runs"][0]["id"] == full_keyword["runs"][0]["id"]
+
+    articles = repo.articles(
+        sort="todayReads",
+        time_range=15,
+        as_of=datetime(2026, 7, 18, 12),
+    )
+    new_article = next(item for item in articles["articles"] if item["title"] == "7月18日新文章")
+    assert new_article["published_at"] == "2026-07-18 08:00"
+    assert new_article["account_name"] == "新公众号"
+    assert new_article["content_file_path"].startswith("wechat/")
+
+    # 兼容 7 月 16–18 日已经落盘、但 relative_path 尚未回填的真实记录。
+    with writer_lock(configured.lock_path):
+        with connect(configured) as con:
+            with transaction(con):
+                con.execute(
+                    "UPDATE wechat_article_paths SET relative_path=NULL WHERE asset_path=?",
+                    (new_article["content_file_path"],),
+                )
+                con.execute(
+                    """INSERT INTO migration_switches(
+                           switch_id,module_key,contract_key,data_mode,updated_at,updated_by
+                       ) VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(module_key,contract_key) DO UPDATE SET
+                           data_mode=excluded.data_mode,
+                           updated_at=excluded.updated_at,
+                           updated_by=excluded.updated_by""",
+                    (
+                        "sw_live_article_content",
+                        "wechat-search",
+                        "article-content",
+                        "hub",
+                        "2026-07-18T12:00:00Z",
+                        "test",
+                    ),
+                )
+    record = repo.article_content(new_article["content_file_path"])
+    assert record["relative_path"] == new_article["content_file_path"]
+    assert repo.asset_content(record).startswith("# 7月18日新文章")
+
+    async def read_live_article():
+        app = create_app(configured)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                response = await client.get(
+                    "/api/article-content",
+                    params={"path": new_article["content_file_path"]},
+                )
+                assert response.status_code == 200
+                assert response.json()["markdown"].startswith("# 7月18日新文章")
+
+    asyncio.run(read_live_article())
 
 
 def test_golden_legacy_read_routes_and_article_contract(settings, tmp_path):

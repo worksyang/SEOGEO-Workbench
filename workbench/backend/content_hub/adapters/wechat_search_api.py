@@ -315,13 +315,20 @@ class RemoteWechatSearchProvider:
     base_url: str
     timeout_seconds: float = 20.0
     poll_interval_seconds: float = 2.0
-    max_wait_seconds: float = 360.0
-    top_k: int = 10
+    max_wait_seconds: float = 480.0
+    top_k: int = 5
     kind: str = "wechat-search-api"
     opener: Callable[..., Any] = urllib.request.urlopen
     sleep: Callable[[float], None] = time.sleep
 
-    def _request(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:
@@ -329,7 +336,10 @@ class RemoteWechatSearchProvider:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base_url.rstrip("/") + path, data=body, headers=headers, method=method)
         try:
-            with self.opener(request, timeout=self.timeout_seconds) as response:
+            with self.opener(
+                request,
+                timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
+            ) as response:
                 raw = response.read()
                 status = int(getattr(response, "status", 200))
         except urllib.error.HTTPError as exc:
@@ -388,25 +398,15 @@ class RemoteWechatSearchProvider:
             method="POST",
             payload={
                 "keywords": [keyword],
-                "top_k": self.top_k,
-                "async_mode": False,
                 "fetch_depth": 1,
                 "fetch_max_count": self.top_k,
             },
+            # 老版稳定链路是一个同步长请求：连接建立后最多等待 480 秒，
+            # 而不是每 360 秒创建一个新的远端异步任务。
+            timeout_seconds=self.max_wait_seconds,
         )
 
-    def fetch(self, *, keyword_id: str, keyword: str, incremental: bool = False, refresh_round: Any = None) -> dict[str, Any]:
-        queued = self._request(
-            "/search",
-            method="POST",
-            payload={
-                "keywords": [keyword],
-                "top_k": self.top_k,
-                "async_mode": True,
-                "fetch_depth": 1,
-                "fetch_max_count": self.top_k,
-            },
-        )
+    def _poll_queued(self, queued: dict[str, Any], *, keyword: str) -> dict[str, Any]:
         request_id = str(queued.get("request_id") or "").strip()
         if not request_id:
             if str(queued.get("status") or "").lower() in {"completed", "success", "succeeded"}:
@@ -421,22 +421,7 @@ class RemoteWechatSearchProvider:
                 result = self._complete_result(latest, request_id=request_id, keyword=keyword)
                 if result["hits"]:
                     return result
-                # 某些远端版本异步完成态只给统计/摘要，正式同步模式会给
-                # 同一请求的全文结果；只有在确实没有 URL 时才发起同步兜底。
-                sync = self._sync_search(keyword=keyword)
-                sync_id = str(sync.get("request_id") or "").strip()
-                if sync_id:
-                    sync_latest = sync
-                    sync_deadline = time.monotonic() + self.max_wait_seconds
-                    while time.monotonic() <= sync_deadline:
-                        sync_latest = self._request(f"/search/result/{urllib.parse.quote(sync_id, safe='')}")
-                        sync_status = str(sync_latest.get("status") or "").lower()
-                        if sync_status in {"completed", "success", "succeeded", "done"}:
-                            return self._complete_result(sync_latest, request_id=sync_id, keyword=keyword)
-                        if sync_status in {"failed", "error", "cancelled", "canceled"}:
-                            break
-                        self.sleep(min(self.poll_interval_seconds, max(0.05, sync_deadline - time.monotonic())))
-                return self._complete_result(sync, request_id=sync_id or None, keyword=keyword)
+                return result
             if status in {"failed", "error"}:
                 raise WechatSearchRemoteError(
                     str(latest.get("message") or latest.get("error") or "远端搜索失败"),
@@ -455,6 +440,22 @@ class RemoteWechatSearchProvider:
             reason_code="remote_timeout",
             payload={"request_id": request_id, "last_status": latest.get("status")},
         )
+
+    def fetch(self, *, keyword_id: str, keyword: str, incremental: bool = False, refresh_round: Any = None) -> dict[str, Any]:
+        response = self._sync_search(keyword=keyword)
+        status = str(response.get("status") or "").lower()
+        request_id = str(response.get("request_id") or "").strip() or None
+        if status in {"queued", "processing", "running", "pending"} and request_id:
+            # 兼容某些服务部署即使未声明 async_mode 仍返回异步回执；只继续
+            # 等待同一个 request_id，不再为了重试制造新的远端队列任务。
+            return self._poll_queued(response, keyword=keyword)
+        if status in {"failed", "error"}:
+            raise WechatSearchRemoteError(
+                str(response.get("message") or response.get("error") or "远端搜索失败"),
+                reason_code="remote_failed",
+                payload=response,
+            )
+        return self._complete_result(response, request_id=request_id, keyword=keyword)
 
 
 def _json_object(raw: bytes) -> dict[str, Any]:

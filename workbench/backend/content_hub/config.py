@@ -237,10 +237,10 @@ class Settings:
                 os.getenv("HUB_WECHAT_SEARCH_API_POLL_INTERVAL_SECONDS", "2")
             ),
             wechat_search_api_max_wait_seconds=float(
-                os.getenv("HUB_WECHAT_SEARCH_API_MAX_WAIT_SECONDS", "360")
+                os.getenv("HUB_WECHAT_SEARCH_API_MAX_WAIT_SECONDS", "480")
             ),
             wechat_search_api_top_k=max(
-                1, min(100, int(os.getenv("HUB_WECHAT_SEARCH_API_TOP_K", "10")))
+                1, min(100, int(os.getenv("HUB_WECHAT_SEARCH_API_TOP_K", "5")))
             ),
             mp_source_url=os.getenv("HUB_MP_SOURCE_URL", "http://127.0.0.1:28765"),
             mp_source_root=Path(

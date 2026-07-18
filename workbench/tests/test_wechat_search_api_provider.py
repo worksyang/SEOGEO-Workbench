@@ -174,15 +174,13 @@ class _Response:
         return False
 
 
-def test_remote_provider_posts_and_polls_async_result():
+def test_remote_provider_uses_legacy_synchronous_workload_and_waits_for_response():
     calls = []
     responses = iter(
         [
-            _Response({"status": "queued", "request_id": "r-1"}),
-            _Response({"status": "processing", "request_id": "r-1"}),
             _Response(
                 {
-                    "status": "completed",
+                    "status": "success",
                     "request_id": "r-1",
                     "completed_at": "2026-07-16T01:00:00Z",
                     "results": [{"title": "A", "url": "https://example.com/a"}],
@@ -209,10 +207,46 @@ def test_remote_provider_posts_and_polls_async_result():
     assert len(result["hits"]) == 1
     assert calls[0][0].endswith("/search")
     assert calls[0][1] == "POST"
-    assert calls[0][2]["async_mode"] is True
+    assert "async_mode" not in calls[0][2]
     assert calls[0][2]["fetch_depth"] == 1
-    assert calls[0][2]["fetch_max_count"] == 10
-    assert calls[-1][0].endswith("/search/result/r-1")
+    assert calls[0][2]["fetch_max_count"] == 5
+    assert calls[0][3] == 1
+    assert len(calls) == 1
+
+
+def test_remote_provider_polls_same_request_when_server_returns_queue_receipt():
+    calls = []
+    responses = iter(
+        [
+            _Response({"status": "queued", "request_id": "r-queued"}),
+            _Response({"status": "processing", "request_id": "r-queued"}),
+            _Response(
+                {
+                    "status": "completed",
+                    "request_id": "r-queued",
+                    "results": [{"title": "A", "url": "https://example.com/a"}],
+                }
+            ),
+        ]
+    )
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        return next(responses)
+
+    provider = RemoteWechatSearchProvider(
+        "http://192.168.31.238:8000",
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        opener=opener,
+        sleep=lambda _: None,
+    )
+    assert provider.fetch(keyword_id="kw", keyword="测试")["remote_request_id"] == "r-queued"
+    assert calls == [
+        "http://192.168.31.238:8000/search",
+        "http://192.168.31.238:8000/search/result/r-queued",
+        "http://192.168.31.238:8000/search/result/r-queued",
+    ]
 
 
 def test_refresh_api_shared_url_reuses_content_id_and_persists_history(settings):

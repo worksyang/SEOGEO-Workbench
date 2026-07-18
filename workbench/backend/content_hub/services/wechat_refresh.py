@@ -122,6 +122,7 @@ class WechatRefreshService:
     MODULE = "wechat-search"
     PLATFORM = "wechat-search"
     RETRYABLE_REASON_CODES = frozenset({
+        "remote_failed",
         "remote_http",
         "remote_timeout",
         "remote_unavailable",
@@ -141,10 +142,10 @@ class WechatRefreshService:
         self.actor_id = actor_id or "user"
         self.max_attempts = max(
             1,
-            int(max_attempts or os.getenv("HUB_WECHAT_REFRESH_MAX_ATTEMPTS", "3")),
+            int(max_attempts or os.getenv("HUB_WECHAT_REFRESH_MAX_ATTEMPTS", "2")),
         )
         if retry_delays_seconds is None:
-            raw_delays = os.getenv("HUB_WECHAT_REFRESH_RETRY_DELAYS_SECONDS", "20,60")
+            raw_delays = os.getenv("HUB_WECHAT_REFRESH_RETRY_DELAYS_SECONDS", "20")
             retry_delays_seconds = tuple(
                 max(0.0, float(value.strip()))
                 for value in raw_delays.split(",")
@@ -473,14 +474,52 @@ class WechatRefreshService:
             content_id = str(existing["content_id"])
         title = hit.get("title_raw") or hit.get("title")
         author = hit.get("creator_name_raw") or hit.get("account") or hit.get("author")
+        creator_id = None
+        if author:
+            creator = con.execute(
+                """SELECT creator_id FROM creators
+                   WHERE platform=? AND canonical_name=?
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (self.PLATFORM, str(author)),
+            ).fetchone()
+            if creator:
+                creator_id = str(creator["creator_id"])
+            else:
+                creator_id = "acct_" + hashlib.sha256(
+                    str(author).encode("utf-8")
+                ).hexdigest()[:16]
+                con.execute(
+                    """INSERT OR IGNORE INTO creators(
+                        creator_id,canonical_name,platform,external_id,
+                        first_seen_at,updated_at,payload_json
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        creator_id,
+                        str(author),
+                        self.PLATFORM,
+                        creator_id,
+                        captured_at,
+                        captured_at,
+                        _json(
+                            {
+                                "account_id": creator_id,
+                                "canonical_name": str(author),
+                                "first_seen_at": captured_at,
+                                "last_seen_at": captured_at,
+                            }
+                        ),
+                    ),
+                )
         con.execute(
             """INSERT INTO contents(
-                content_id,content_type,title,canonical_url,author_name,first_seen_at,updated_at,
-                payload_json
-            ) VALUES(?,?,?,?,?,?,?,?)
+                content_id,content_type,title,canonical_url,creator_id,author_name,
+                published_at,first_seen_at,updated_at,payload_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(content_id) DO UPDATE SET
                 title=COALESCE(excluded.title,contents.title),
+                creator_id=COALESCE(excluded.creator_id,contents.creator_id),
                 author_name=COALESCE(excluded.author_name,contents.author_name),
+                published_at=COALESCE(excluded.published_at,contents.published_at),
                 updated_at=excluded.updated_at,
                 payload_json=excluded.payload_json""",
             (
@@ -488,7 +527,9 @@ class WechatRefreshService:
                 "wechat_article",
                 str(title) if title is not None else None,
                 url,
+                creator_id,
                 str(author) if author is not None else None,
+                hit.get("published_at"),
                 captured_at,
                 captured_at,
                 _json({key: value for key, value in hit.items() if key != "markdown_body"}),
@@ -535,7 +576,7 @@ class WechatRefreshService:
                ) VALUES(?,?,?,?,?,?)
                ON CONFLICT(article_id,old_article_id,source_ref) DO UPDATE SET
                    asset_path=excluded.asset_path,relative_path=excluded.relative_path""",
-            (content_id, content_id, None, asset_path, path_source, captured_at),
+            (content_id, content_id, asset_path, asset_path, path_source, captured_at),
         )
         return asset_path
 

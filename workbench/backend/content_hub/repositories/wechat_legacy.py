@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import zlib
 from copy import deepcopy
@@ -88,8 +89,18 @@ def _projection_payload(raw: Any) -> dict[str, Any]:
 def _legacy_parse_date(value: Any) -> datetime | None:
     if not value:
         return None
-    text = str(value)
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except ValueError:
+        pass
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%y/%m/%d",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -190,11 +201,344 @@ class WechatLegacyRepository:
         value = _projection_payload(row["payload_json"])
         return value or None
 
+    @staticmethod
+    def _snapshot_run_at(captured_at: Any) -> tuple[str, str, str]:
+        parsed = _legacy_parse_date(captured_at)
+        if parsed is None:
+            text = str(captured_at or "")
+            return text[:10], text[11:16], text.replace("T", " ")[:16]
+        return (
+            parsed.strftime("%Y-%m-%d"),
+            parsed.strftime("%H:%M"),
+            parsed.strftime("%Y-%m-%d %H:%M"),
+        )
+
+    def _dynamic_runs(
+        self,
+        con,
+        *,
+        since: str | None,
+        keyword_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        where = ["s.platform='wechat-search'"]
+        params: list[Any] = []
+        if since:
+            where.append("s.captured_at>?")
+            params.append(since)
+        if keyword_id:
+            where.append("s.keyword_id=?")
+            params.append(keyword_id)
+        snapshots = [
+            dict(row)
+            for row in con.execute(
+                f"""
+                SELECT s.snapshot_id,s.keyword_id,s.keyword,s.captured_at,
+                       s.trigger_type,s.result_count,s.features_json
+                FROM search_snapshots s
+                WHERE {' AND '.join(where)}
+                ORDER BY s.captured_at DESC,s.snapshot_id DESC
+                """,
+                params,
+            )
+        ]
+        if not snapshots:
+            return {}
+
+        snapshot_ids = [str(row["snapshot_id"]) for row in snapshots]
+        placeholders = ",".join("?" for _ in snapshot_ids)
+        hits = [
+            dict(row)
+            for row in con.execute(
+                f"""
+                SELECT h.snapshot_id,h.rank,h.content_id,h.title_raw,h.url_raw,
+                       h.creator_name_raw,h.payload_json,
+                       c.title,c.canonical_url,c.creator_id,c.author_name,
+                       c.published_at,c.payload_json AS content_payload,
+                       COALESCE(p.relative_path,p.asset_path) AS content_path
+                FROM search_hits h
+                LEFT JOIN contents c ON c.content_id=h.content_id
+                LEFT JOIN wechat_article_paths p
+                  ON p.rowid=(
+                    SELECT p2.rowid FROM wechat_article_paths p2
+                    WHERE p2.article_id=h.content_id
+                    ORDER BY p2.created_at DESC,p2.rowid DESC LIMIT 1
+                  )
+                WHERE h.snapshot_id IN ({placeholders})
+                ORDER BY h.snapshot_id,h.rank,h.hit_id
+                """,
+                snapshot_ids,
+            )
+        ]
+        content_ids = {
+            str(row.get("content_id") or "")
+            for row in hits
+            if row.get("content_id")
+        }
+        hit_days: dict[str, int] = {}
+        if content_ids:
+            content_placeholders = ",".join("?" for _ in content_ids)
+            for row in con.execute(
+                f"""
+                SELECT h.content_id,COUNT(DISTINCT substr(s.captured_at,1,10)) AS days
+                FROM search_hits h
+                JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id
+                WHERE s.platform='wechat-search'
+                  AND h.content_id IN ({content_placeholders})
+                GROUP BY h.content_id
+                """,
+                sorted(content_ids),
+            ):
+                hit_days[str(row["content_id"])] = int(row["days"] or 0)
+
+        creators_by_id: dict[str, dict[str, Any]] = {}
+        creators_by_name: dict[str, dict[str, Any]] = {}
+        for row in con.execute(
+            """SELECT creator_id,canonical_name,payload_json
+               FROM creators WHERE platform='wechat-search'"""
+        ):
+            payload = _json_object(row["payload_json"])
+            creator = {
+                **payload,
+                "creator_id": str(row["creator_id"]),
+                "canonical_name": row["canonical_name"] or payload.get("canonical_name") or "",
+            }
+            creators_by_id[creator["creator_id"]] = creator
+            if creator["canonical_name"]:
+                creators_by_name[str(creator["canonical_name"])] = creator
+
+        hits_by_snapshot: dict[str, list[dict[str, Any]]] = {}
+        for row in hits:
+            hit_payload = _json_object(row.get("payload_json"))
+            content_payload = _json_object(row.get("content_payload"))
+            account_name = str(
+                row.get("author_name")
+                or row.get("creator_name_raw")
+                or hit_payload.get("creator_name_raw")
+                or ""
+            )
+            creator = creators_by_id.get(str(row.get("creator_id") or ""))
+            if creator is None and account_name:
+                creator = creators_by_name.get(account_name)
+            article_id = str(row.get("content_id") or hit_payload.get("content_id") or "")
+            hits_by_snapshot.setdefault(str(row["snapshot_id"]), []).append(
+                {
+                    "rank": int(row.get("rank") or hit_payload.get("rank") or 0),
+                    "account": account_name,
+                    "account_id": (creator or {}).get("creator_id") or "",
+                    "account_headimg": (creator or {}).get("headimg_url") or "",
+                    "article_id": article_id,
+                    "title": row.get("title") or row.get("title_raw") or hit_payload.get("title_raw") or "",
+                    "summary": hit_payload.get("summary_raw") or content_payload.get("summary_raw") or "",
+                    "published_at": hit_payload.get("published_at") or row.get("published_at") or "",
+                    "url": row.get("canonical_url") or row.get("url_raw") or hit_payload.get("url_raw") or "",
+                    "cover_url": hit_payload.get("cover_url") or content_payload.get("cover_url"),
+                    "content_path": row.get("content_path") or "",
+                    "hit_days": hit_days.get(article_id, 0),
+                    "read_count": content_payload.get("read_count"),
+                    "like_count": content_payload.get("like_count"),
+                    "friends_follow_count": content_payload.get("friends_follow_count"),
+                    "original_article_count": content_payload.get("original_article_count"),
+                }
+            )
+
+        result: dict[str, list[dict[str, Any]]] = {}
+        for snapshot in snapshots:
+            date, clock, run_at = self._snapshot_run_at(snapshot["captured_at"])
+            try:
+                features = json.loads(snapshot.get("features_json") or "{}")
+            except json.JSONDecodeError:
+                features = {}
+            articles = hits_by_snapshot.get(str(snapshot["snapshot_id"]), [])
+            run = {
+                "id": str(snapshot["snapshot_id"]),
+                "date": date,
+                "time": clock,
+                "run_at": run_at,
+                "trigger_type": snapshot.get("trigger_type") or "manual",
+                "is_primary": True,
+                "result_count": int(snapshot.get("result_count") or len(articles)),
+                "note": "",
+                "articles": articles,
+                "terms": {
+                    "suggestions": features.get("suggestions") or [],
+                    "related": features.get("related") or [],
+                },
+            }
+            result.setdefault(str(snapshot["keyword_id"]), []).append(run)
+        return result
+
+    @staticmethod
+    def _merge_keyword_runs(
+        keyword: dict[str, Any],
+        dynamic_runs: list[dict[str, Any]],
+        *,
+        include_runs: bool,
+        old_window_start: str | None,
+        old_window_days: int,
+        new_window_end: str,
+    ) -> None:
+        if not dynamic_runs:
+            return
+        old_runs = keyword.get("runs") if isinstance(keyword.get("runs"), list) else []
+        combined = {
+            str(run.get("id") or f"{run.get('run_at')}:{index}"): run
+            for index, run in enumerate(old_runs)
+            if isinstance(run, dict)
+        }
+        for run in dynamic_runs:
+            combined[str(run["id"])] = run
+        merged_runs = sorted(
+            combined.values(),
+            key=lambda run: (str(run.get("run_at") or ""), str(run.get("id") or "")),
+            reverse=True,
+        )
+        latest = merged_runs[0]
+        keyword["latest_run"] = (
+            latest
+            if include_runs
+            else {
+                key: latest.get(key)
+                for key in ("id", "date", "time", "run_at", "trigger_type", "result_count")
+            }
+        )
+        latest_articles = [
+            article for article in latest.get("articles", []) if isinstance(article, dict)
+        ]
+        keyword["today_count"] = int(latest.get("result_count") or len(latest_articles))
+        ranks = [int(article.get("rank") or 0) for article in latest_articles if int(article.get("rank") or 0) > 0]
+        keyword["today_best"] = min(ranks) if ranks else 0
+        all_articles = {
+            str(article.get("article_id") or article.get("url") or article.get("title") or "")
+            for run in merged_runs
+            for article in run.get("articles", [])
+            if isinstance(article, dict)
+        }
+        all_accounts = {
+            str(article.get("account_id") or article.get("account") or "")
+            for run in merged_runs
+            for article in run.get("articles", [])
+            if isinstance(article, dict)
+        }
+        keyword["article_count"] = max(int(keyword.get("article_count") or 0), len(all_articles - {""}))
+        keyword["tracked_accounts"] = max(int(keyword.get("tracked_accounts") or 0), len(all_accounts - {""}))
+
+        old_end = _legacy_parse_date(old_window_start)
+        old_hits = list(keyword.get("history_hits") or [])
+        old_best = list(keyword.get("history_best") or [])
+        hits_by_date: dict[str, int] = {}
+        best_by_date: dict[str, int] = {}
+        if old_end:
+            for index in range(old_window_days):
+                date = (old_end + timedelta(days=index)).date().isoformat()
+                if index < len(old_hits):
+                    hits_by_date[date] = int(old_hits[index] or 0)
+                if index < len(old_best):
+                    best_by_date[date] = int(old_best[index] or 0)
+        latest_by_date: dict[str, dict[str, Any]] = {}
+        for run in merged_runs:
+            date = str(run.get("date") or "")
+            if date and date not in latest_by_date:
+                latest_by_date[date] = run
+        for date, run in latest_by_date.items():
+            articles = [x for x in run.get("articles", []) if isinstance(x, dict)]
+            hits_by_date[date] = int(run.get("result_count") or len(articles))
+            ranks = [int(x.get("rank") or 0) for x in articles if int(x.get("rank") or 0) > 0]
+            best_by_date[date] = min(ranks) if ranks else 0
+        parsed_end = _legacy_parse_date(new_window_end)
+        if parsed_end:
+            dates = [
+                (parsed_end - timedelta(days=old_window_days - 1 - index)).date().isoformat()
+                for index in range(old_window_days)
+            ]
+            keyword["history_hits"] = [hits_by_date.get(date, 0) for date in dates]
+            keyword["history_best"] = [best_by_date.get(date, 0) for date in dates]
+            keyword["coverage_days"] = sum(1 for date in dates if hits_by_date.get(date, 0) > 0)
+
+        turnover = {
+            str(run.get("id")): run
+            for run in (keyword.get("turnover_runs") or [])
+            if isinstance(run, dict) and run.get("id")
+        }
+        for run in dynamic_runs:
+            turnover[str(run["id"])] = {
+                "id": run["id"],
+                "date": run["date"],
+                "time": run["time"],
+                "articles": [
+                    {"article_id": article.get("article_id")}
+                    for article in run.get("articles", [])
+                    if isinstance(article, dict) and article.get("article_id")
+                ],
+            }
+        keyword["turnover_runs"] = sorted(
+            turnover.values(),
+            key=lambda run: (str(run.get("date") or ""), str(run.get("time") or "")),
+            reverse=True,
+        )
+        if include_runs:
+            keyword["runs"] = merged_runs
+
+    def _overlay_live_snapshots(
+        self,
+        projected: dict[str, Any],
+        *,
+        include_runs: bool,
+        keyword_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = deepcopy(projected)
+        projection_time = str(result.get("generated_at") or "")
+        with connect(self.settings, readonly=True) as con:
+            latest = con.execute(
+                "SELECT MAX(captured_at) AS latest FROM search_snapshots WHERE platform='wechat-search'"
+            ).fetchone()["latest"]
+            if not latest or (projection_time and str(latest) <= projection_time):
+                return result
+            runs_by_keyword = self._dynamic_runs(
+                con,
+                since=projection_time or None,
+                keyword_id=keyword_id,
+            )
+        if not runs_by_keyword:
+            return result
+        window_days = max(1, int(result.get("window_days") or 15))
+        latest_date, _, _ = self._snapshot_run_at(latest)
+        parsed_latest = _legacy_parse_date(latest_date)
+        window_start = (
+            (parsed_latest - timedelta(days=window_days - 1)).date().isoformat()
+            if parsed_latest
+            else result.get("window_start")
+        )
+        old_window_start = result.get("window_start")
+        keywords = result.get("keywords") if isinstance(result.get("keywords"), list) else []
+        by_id = {
+            str(item.get("keyword_id")): item
+            for item in keywords
+            if isinstance(item, dict) and item.get("keyword_id")
+        }
+        if keyword_id and result.get("keyword_id"):
+            by_id.setdefault(str(result["keyword_id"]), result)
+        for current_keyword_id, runs in runs_by_keyword.items():
+            item = by_id.get(current_keyword_id)
+            if item is None:
+                continue
+            self._merge_keyword_runs(
+                item,
+                runs,
+                include_runs=include_runs,
+                old_window_start=str(old_window_start or "") or None,
+                old_window_days=window_days,
+                new_window_end=latest_date,
+            )
+        result["generated_at"] = str(latest)
+        result["window_end"] = latest_date
+        result["window_start"] = window_start
+        return result
+
     def full(self) -> dict[str, Any]:
         value = self._projection("full")
         if value is None:
             raise NotFoundError("微信兼容投影", "full")
-        return value
+        return self._overlay_live_snapshots(value, include_runs=True)
 
     def runtime(self, subject_id: str, *, subtype: str | None = None) -> dict[str, Any] | None:
         if subtype in {"single_job", "batch"}:
@@ -320,7 +664,7 @@ class WechatLegacyRepository:
     def bootstrap(self) -> dict[str, Any]:
         projected = self._projection("bootstrap")
         if projected is not None:
-            return projected
+            return self._overlay_live_snapshots(projected, include_runs=False)
         with connect(self.settings, readonly=True) as con:
             keywords = self._keywords(con)
             accounts = [
@@ -364,7 +708,11 @@ class WechatLegacyRepository:
             raise NotFoundError("微信关键词", keyword_id)
         projected = self._projection("keyword", keyword_id)
         if projected is not None:
-            return projected
+            return self._overlay_live_snapshots(
+                projected,
+                include_runs=True,
+                keyword_id=keyword_id,
+            )
         with connect(self.settings, readonly=True) as con:
             snapshots = [
                 _row(x) for x in con.execute(
@@ -448,15 +796,22 @@ class WechatLegacyRepository:
                 FROM contents c
                 JOIN wechat_article_paths p ON p.article_id=c.content_id
                 WHERE ({self._wechat_article_predicate('c')})
-                  AND p.relative_path=?
+                  AND (p.relative_path=? OR p.asset_path=?)
                 ORDER BY p.created_at DESC
                 LIMIT 1
                 """,
-                (path,),
+                (path, path),
             ).fetchone()
         if row is None:
             raise NotFoundError("微信正文", path)
-        return dict(row)
+        record = dict(row)
+        # 7 月 16–18 日新刷新链路已经把正文写入 asset_store，但历史记录的
+        # relative_path 为空。前端仍以 asset_path 作为 content_file_path 请求，
+        # 因此读取时把安全的资产相对路径补成兼容字段，避免真实存在的正文被
+        # article-content 路由误判为 404。
+        if not record.get("relative_path") and record.get("asset_path"):
+            record["relative_path"] = record["asset_path"]
+        return record
 
     def asset_content(self, record: dict[str, Any]) -> str:
         asset = record.get("asset_path")
@@ -1058,7 +1413,7 @@ class WechatLegacyRepository:
             snapshots: dict[str, dict[str, Any]] = {}
             for row in con.execute(
                 """
-                SELECT snapshot_id,keyword,keyword_id,payload_json
+                SELECT snapshot_id,keyword,keyword_id,captured_at,payload_json
                 FROM search_snapshots
                 WHERE platform='wechat-search'
                 ORDER BY rowid
@@ -1070,6 +1425,7 @@ class WechatLegacyRepository:
                     **payload,
                     "keyword_id": payload.get("keyword_id") or row["keyword_id"],
                     "keyword": payload.get("keyword") or row["keyword"],
+                    "captured_at": payload.get("captured_at") or row["captured_at"],
                 }
                 snapshots.setdefault(str(row["snapshot_id"]), snapshots[source_id])
 
@@ -1077,7 +1433,7 @@ class WechatLegacyRepository:
             article_days: dict[str, set[str]] = {}
             for row in con.execute(
                 """
-                SELECT h.snapshot_id,h.payload_json
+                SELECT h.snapshot_id,h.content_id,h.payload_json
                 FROM search_hits h
                 JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id
                 WHERE s.platform='wechat-search'
@@ -1085,8 +1441,8 @@ class WechatLegacyRepository:
                 """
             ):
                 payload = _json_object(row["payload_json"])
-                source_article_id = str(payload.get("article_id") or "")
-                if not source_article_id:
+                content_id = str(row["content_id"] or "")
+                if not content_id:
                     continue
                 source_snapshot_id = str(
                     payload.get("snapshot_id") or row["snapshot_id"]
@@ -1098,39 +1454,104 @@ class WechatLegacyRepository:
                     snapshot.get("keyword"),
                 )
                 if text:
-                    article_keywords.setdefault(source_article_id, set()).add(text)
-                snapshot_date = str(snapshot.get("snapshot_date") or "")
+                    article_keywords.setdefault(content_id, set()).add(text)
+                snapshot_date = str(
+                    snapshot.get("snapshot_date")
+                    or snapshot.get("captured_at")
+                    or ""
+                )[:10]
                 if snapshot_date:
-                    article_days.setdefault(source_article_id, set()).add(
+                    article_days.setdefault(content_id, set()).add(
                         snapshot_date
                     )
 
-            rows: list[dict[str, Any]] = []
+            external_ids: dict[str, str] = {}
+            identifier_payloads: dict[str, dict[str, Any]] = {}
             for identifier in con.execute(
                 """
-                SELECT external_id,payload_json
+                SELECT content_id,external_id,payload_json
                 FROM content_identifiers
                 WHERE namespace='wechat_article'
                 ORDER BY rowid
                 """
             ):
-                article_id = str(identifier["external_id"])
-                hit_keywords = article_keywords.get(article_id)
+                content_id = str(identifier["content_id"])
+                external_ids.setdefault(content_id, str(identifier["external_id"]))
+                identifier_payloads.setdefault(
+                    content_id,
+                    _json_object(identifier["payload_json"]),
+                )
+
+            content_paths = {
+                str(row["article_id"]): (
+                    row["relative_path"] or row["asset_path"] or ""
+                )
+                for row in con.execute(
+                    """
+                    SELECT p.article_id,p.relative_path,p.asset_path
+                    FROM wechat_article_paths p
+                    WHERE p.rowid=(
+                        SELECT p2.rowid FROM wechat_article_paths p2
+                        WHERE p2.article_id=p.article_id
+                        ORDER BY p2.created_at DESC,p2.rowid DESC LIMIT 1
+                    )
+                    """
+                )
+            }
+            creators_by_name = {
+                str(value.get("canonical_name") or ""): {
+                    "creator_id": creator_id,
+                    **value,
+                }
+                for creator_id, value in creators.items()
+                if value.get("canonical_name")
+            }
+            rows: list[dict[str, Any]] = []
+            for content in con.execute(
+                f"""
+                SELECT c.*
+                FROM contents c
+                WHERE {self._wechat_article_predicate('c')}
+                ORDER BY c.rowid
+                """
+            ):
+                content_id = str(content["content_id"])
+                hit_keywords = article_keywords.get(content_id)
                 if not hit_keywords:
                     continue
-                raw = _json_object(identifier["payload_json"])
-                account_id = str(raw.get("account_id") or "")
+                content_payload = _json_object(content["payload_json"])
+                raw = {
+                    **identifier_payloads.get(content_id, {}),
+                    **content_payload,
+                }
+                account_name = str(
+                    content["author_name"]
+                    or raw.get("canonical_name")
+                    or raw.get("creator_name_raw")
+                    or raw.get("account")
+                    or ""
+                )
+                account_id = str(content["creator_id"] or raw.get("account_id") or "")
+                if not account_id and account_name:
+                    account_id = str(
+                        creators_by_name.get(account_name, {}).get("creator_id")
+                        or (
+                            "acct_"
+                            + hashlib.sha256(account_name.encode("utf-8")).hexdigest()[:16]
+                        )
+                    )
                 account = creators.get(account_id, {})
                 monitor_account = monitor_accounts.get(account_id, {})
                 sorted_keywords = sorted(hit_keywords)
                 rows.append({
-                    "article_id": article_id,
-                    "title": raw.get("title", ""),
-                    "url": raw.get("normalized_url") or raw.get("raw_url", ""),
+                    "article_id": external_ids.get(content_id, content_id),
+                    "title": content["title"] or raw.get("title") or raw.get("title_raw") or "",
+                    "url": content["canonical_url"] or raw.get("normalized_url") or raw.get("raw_url") or raw.get("url_raw") or "",
                     "account_id": account_id,
                     "account_name": (
                         account.get("canonical_name")
-                        or monitor_account.get("name", "")
+                        or monitor_account.get("name")
+                        or account_name
                     ),
                     "account_headimg": (
                         account.get("headimg_url")
@@ -1140,10 +1561,13 @@ class WechatLegacyRepository:
                     "like_count": raw.get("like_count"),
                     "hit_count": len(sorted_keywords),
                     "hit_keywords": sorted_keywords,
-                    "on_rank_days": len(article_days.get(article_id, set())),
+                    "on_rank_days": len(article_days.get(content_id, set())),
                     "account_score": monitor_account.get("score") or 0,
-                    "published_at": raw.get("published_at"),
-                    "content_file_path": raw.get("content_file_path"),
+                    "published_at": content["published_at"] or raw.get("published_at"),
+                    "content_file_path": (
+                        content_paths.get(content_id)
+                        or raw.get("content_file_path")
+                    ),
                     "cover_url": raw.get("cover_url"),
                 })
 
