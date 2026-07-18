@@ -53,6 +53,7 @@ from content_hub.legacy_pages import (
 
 from content_hub.logging import configure_logging
 from content_hub.services.wechat_refresh import WechatRefreshService
+from content_hub.services.wechat_aux import WechatCdnImageProvider
 from content_hub.services.writing import backfill_writing_runtime
 from content_hub.adapters.wechat_search_api import RemoteWechatSearchProvider
 from content_hub.adapters.xhs_search_provider import DryRunXhsSearchProvider, TikHubSearchProvider
@@ -67,7 +68,8 @@ _WECHAT_ROOT_AUXILIARY_PATHS = frozenset({
     "/account-score-formula",
 })
 _WECHAT_BUSINESS_ISLAND_CSP = (
-    "default-src 'self'; img-src 'self' data: https: http://wx.qlogo.cn; "
+    "default-src 'self'; img-src 'self' data: https: "
+    "http://wx.qlogo.cn http://mmbiz.qpic.cn http://mmecoa.qpic.cn; "
     "style-src 'self' 'unsafe-inline'; "
     "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
     "connect-src 'self'; frame-ancestors 'self'"
@@ -167,6 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.wechat_refresh_recovery_threads = {}
     app.state.wechat_refresh_watchdog_stop = threading.Event()
     app.state.wechat_refresh_watchdog_thread = None
+    app.state.wechat_image_provider = WechatCdnImageProvider()
     if resolved_settings.wechat_search_api_enabled:
         app.state.wechat_refresh_provider = RemoteWechatSearchProvider(
             resolved_settings.wechat_search_api_url,

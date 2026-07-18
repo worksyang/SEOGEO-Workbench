@@ -19,6 +19,7 @@ from content_hub.services.wechat_aux import (
     AuxUpstreamError,
     AuxValidation,
     WechatAuxService,
+    is_trusted_wechat_image_url,
 )
 from content_hub.legacy_proxy import (
     _xhs_article_covers,
@@ -197,6 +198,19 @@ def _external_blocked(path: str) -> PayloadWithHTTPMetadata:
     )
 
 
+def _hub_article_image(request: Request, url: str) -> PayloadWithHTTPMetadata:
+    body, content_type, digest = _service(request).cover_image(url)
+    return PayloadWithHTTPMetadata(
+        body,
+        HTTPMetadata(
+            status_code=200,
+            content_type=content_type,
+            etag=f'"{digest}"',
+            cache_control="public, max-age=86400",
+        ),
+    )
+
+
 @router.get("/api/agent/manifest")
 def agent_manifest(request: Request) -> Any:
     return _aux_read(request, "agent-manifest", "/api/agent/manifest", lambda: _service(request).artifact("manifest"))
@@ -232,12 +246,17 @@ def article_cover_image(request: Request, url: str = "") -> Any:
     if legacy_referer_kind(request.headers.get("referer", "")) == "xhs":
         return _xhs_frozen_cover_image(request)
     try:
+        hub_reader = (
+            (lambda: _hub_article_image(request, url))
+            if is_trusted_wechat_image_url(url)
+            else (lambda: _external_blocked("/api/article-cover-image"))
+        )
         response = _render_read(
             _resolve_read(
                 request,
                 "article-cover-image",
                 "/api/article-cover-image",
-                lambda: _external_blocked("/api/article-cover-image"),
+                hub_reader,
                 hub_metadata=None,
             )
         )

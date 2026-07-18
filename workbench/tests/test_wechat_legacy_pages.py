@@ -136,7 +136,8 @@ def test_wechat_auxiliary_routes_and_root_mappings(settings) -> None:
                     assert "全域内容工作台" not in response.text
 
                 business_island_csp = (
-                    "default-src 'self'; img-src 'self' data: https: http://wx.qlogo.cn; "
+                    "default-src 'self'; img-src 'self' data: https: "
+                    "http://wx.qlogo.cn http://mmbiz.qpic.cn http://mmecoa.qpic.cn; "
                     "style-src 'self' 'unsafe-inline'; "
                     "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
                     "connect-src 'self'; frame-ancestors 'self'"
@@ -171,10 +172,20 @@ def test_wechat_auxiliary_routes_and_root_mappings(settings) -> None:
                     )
                     assert response.headers["pragma"] == "no-cache"
                     assert response.headers["expires"] == "0"
-                assert "http://wx.qlogo.cn" in business_island_csp
-                assert "http:" not in business_island_csp.replace(
-                    "http://wx.qlogo.cn", ""
-                )
+                for image_origin in (
+                    "http://wx.qlogo.cn",
+                    "http://mmbiz.qpic.cn",
+                    "http://mmecoa.qpic.cn",
+                ):
+                    assert image_origin in business_island_csp
+                scrubbed_csp = business_island_csp
+                for image_origin in (
+                    "http://wx.qlogo.cn",
+                    "http://mmbiz.qpic.cn",
+                    "http://mmecoa.qpic.cn",
+                ):
+                    scrubbed_csp = scrubbed_csp.replace(image_origin, "")
+                assert "http:" not in scrubbed_csp
                 assert " *" not in business_island_csp
 
                 ordinary = await client.get("/")

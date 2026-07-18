@@ -376,12 +376,33 @@ def test_w01_uses_hub_after_freeze_removed(settings, tmp_path):
                VALUES(?,?,?,?,?)""",
             ("wechat_article", "legacy-hub-id", "hub-content-1", "2026-01-01T00:00:00Z", "{}"),
         )
+        con.execute(
+            """INSERT INTO contents(content_id,content_type,title,canonical_url,first_seen_at,updated_at,payload_json)
+               VALUES(?,?,?,?,?,?,?)""",
+            (
+                "hub-content-page-only",
+                "external_article",
+                "Only article page",
+                "https://mp.weixin.qq.com/s/article-page-not-image",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                "{}",
+            ),
+        )
         con.commit()
     service = WechatAuxService(replace(settings, wechat_source_root=source))
     shutil.rmtree(source)
     result = service.article_covers([{"article_id": "legacy-hub-id"}])
     assert result == {
         "items": [{"article_id": "legacy-hub-id", "cover_url": "https://cdn.example/hub-cover.png", "status": "cached"}],
+        "count": 1,
+    }
+    assert service.article_covers([{"article_id": "hub-content-page-only"}]) == {
+        "items": [{
+            "article_id": "hub-content-page-only",
+            "cover_url": None,
+            "status": "no_cover",
+        }],
         "count": 1,
     }
 
@@ -463,6 +484,55 @@ def test_r13_cached_only_default_and_explicit_provider(settings, tmp_path, monke
     assert provider.calls == 2
     with connect(settings, readonly=True) as con:
         assert con.execute("SELECT COUNT(*) FROM wechat_aux_cover_cache WHERE asset_hash=?", (digest,)).fetchone()[0] == 2
+
+
+def test_r13_trusted_wechat_cdn_route_serves_image_and_blocks_other_hosts(
+    settings, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "content_hub.services.wechat_aux.socket.getaddrinfo",
+        lambda *a, **k: [(0, 0, 0, "", ("8.8.8.8", 0))],
+    )
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "image/png", "content-length": str(len(_png()))}
+        connected_addresses = ("8.8.8.8",)
+        content = _png()
+
+    class FakeImageProvider:
+        kind = "fake-wechat-cdn"
+
+        def fetch(self, url, *, resolved_addresses):
+            assert url.startswith("https://mmbiz.qpic.cn/")
+            assert resolved_addresses == ("8.8.8.8",)
+            return Response()
+
+    service = WechatAuxService(
+        replace(settings, wechat_source_root=_source(tmp_path)),
+        image_provider=FakeImageProvider(),
+    )
+    app = _app(settings, service)
+    trusted = _request(
+        app,
+        "GET",
+        "/api/article-cover-image",
+        params={"url": "https://mmbiz.qpic.cn/demo/0?wx_fmt=png"},
+    )
+    assert trusted.status_code == 200
+    assert trusted.content == _png()
+    assert trusted.headers["content-type"] == "image/png"
+    assert trusted.headers["cache-control"] == "public, max-age=86400"
+    assert trusted.headers["etag"]
+
+    blocked = _request(
+        app,
+        "GET",
+        "/api/article-cover-image",
+        params={"url": "http://127.0.0.1/secret.png"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "REFERENCE_EXTERNAL_BLOCKED"
 
 
 def test_r13_ssrf_redirect_mime_and_stream_limit(settings, tmp_path, monkeypatch):

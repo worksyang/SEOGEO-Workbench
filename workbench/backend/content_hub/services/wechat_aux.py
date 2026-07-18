@@ -6,18 +6,20 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 import struct
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
@@ -28,6 +30,14 @@ MAX_COVER_BYTES = 8 * 1024 * 1024
 MAX_COVER_BATCH = 10
 EVIDENCE_RE = re.compile(r"[A-Za-z0-9_-]{3,180}\Z")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+WECHAT_IMAGE_HOSTS = frozenset({
+    "mmbiz.qpic.cn",
+    "mmecoa.qpic.cn",
+    "mmbiz.qlogo.cn",
+    "wx.qlogo.cn",
+})
+PROXY_BENCHMARK_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*]\(\s*(https?://[^)\s]+)", re.I)
 SECRET_RE = re.compile(
     r"(token|cookie|password|secret|api[_-]?key|profile[_-]?dir|"
     r"executable[_-]?path|credential|authorization)",
@@ -203,6 +213,87 @@ class RecordedAidsoProvider:
         return value
 
 
+@dataclass(slots=True)
+class _FetchedImageResponse:
+    status_code: int
+    headers: dict[str, str]
+    content: bytes
+    connected_addresses: tuple[str, ...]
+
+
+class WechatCdnImageProvider:
+    """只连接已校验的微信 CDN 公网 IP，并保留原域名用于 Host 与 TLS SNI。"""
+
+    kind = "wechat-cdn"
+
+    def fetch(self, url: str, *, resolved_addresses: tuple[str, ...]) -> _FetchedImageResponse:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if host not in WECHAT_IMAGE_HOSTS:
+            raise AuxValidation("image host is not an approved WeChat CDN")
+
+        # 微信历史 Markdown 中仍有 http 图片；官方 CDN 支持 https，统一升级，
+        # 避免浏览器混合内容和 CSP 差异。
+        secure_url = urlunsplit(("https", host, parsed.path or "/", parsed.query, ""))
+        secure = urlsplit(secure_url)
+        request_path = secure.path or "/"
+        if secure.query:
+            request_path += f"?{secure.query}"
+        headers = {
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Host": host,
+            "Referer": "https://mp.weixin.qq.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        failures: list[str] = []
+        for address in resolved_addresses:
+            connection = _PinnedHTTPSConnection(
+                host=host,
+                address=address,
+                timeout=20,
+            )
+            try:
+                connection.request("GET", request_path, headers=headers)
+                response = connection.getresponse()
+                response_headers = {str(key).lower(): str(value) for key, value in response.getheaders()}
+                declared_size = int(response_headers.get("content-length", "0") or 0)
+                if declared_size > MAX_COVER_BYTES:
+                    raise AuxUpstreamError("image response exceeds size limit")
+                body = response.read(MAX_COVER_BYTES + 1)
+                if len(body) > MAX_COVER_BYTES:
+                    raise AuxUpstreamError("image response exceeds size limit")
+                return _FetchedImageResponse(
+                    status_code=int(response.status),
+                    headers=response_headers,
+                    content=body,
+                    connected_addresses=(address,),
+                )
+            except (OSError, ssl.SSLError, http.client.HTTPException, AuxUpstreamError) as exc:
+                failures.append(f"{address}: {exc}")
+            finally:
+                connection.close()
+        raise AuxUpstreamError(
+            "approved WeChat CDN image could not be fetched"
+            + (f" ({'; '.join(failures[:2])})" if failures else "")
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """把 TCP 固定到已校验 IP，但证书校验和 SNI 仍使用微信 CDN 域名。"""
+
+    def __init__(self, *, host: str, address: str, timeout: float) -> None:
+        super().__init__(host=host, port=443, timeout=timeout, context=ssl.create_default_context())
+        self._address = address
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -299,7 +390,11 @@ def _image_info(data: bytes, content_type: str) -> tuple[str, int | None, int | 
     return kind, width, height
 
 
-def _resolved_public_addresses(host: str) -> tuple[str, ...]:
+def _resolved_public_addresses(
+    host: str,
+    *,
+    allow_proxy_benchmark: bool = False,
+) -> tuple[str, ...]:
     lowered = host.rstrip(".").lower()
     if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith(".localhost"):
         raise AuxValidation("cover url host is not allowed")
@@ -315,6 +410,10 @@ def _resolved_public_addresses(host: str) -> tuple[str, ...]:
             ip = ipaddress.ip_address(raw)
         except ValueError as exc:
             raise AuxUpstreamError("cover host resolved to an invalid address") from exc
+        if allow_proxy_benchmark and ip in PROXY_BENCHMARK_NETWORK:
+            # 本机透明代理/TUN 会把可信 CDN 映射到 RFC 2544 测试网段。
+            # 只对上方精确微信 CDN 白名单放行，不扩大任意 URL 代理边界。
+            continue
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
             raise AuxValidation("cover url resolves to a non-public address")
     return addresses
@@ -327,7 +426,46 @@ def validate_cover_url(url: str) -> tuple[str, tuple[str, ...]]:
         raise AuxValidation("cover url is invalid")
     if parsed.username or parsed.password or parsed.port not in {None, 80, 443}:
         raise AuxValidation("cover url is invalid")
-    return text, _resolved_public_addresses(parsed.hostname)
+    normalized = urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc,
+            parsed.path,
+            parsed.query,
+            "",
+        )
+    )
+    host = parsed.hostname.rstrip(".").lower()
+    return normalized, _resolved_public_addresses(
+        host,
+        allow_proxy_benchmark=host in WECHAT_IMAGE_HOSTS,
+    )
+
+
+def is_trusted_wechat_image_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and (parsed.hostname or "").rstrip(".").lower() in WECHAT_IMAGE_HOSTS
+        and not parsed.username
+        and not parsed.password
+        and port in {None, 80, 443}
+    )
+
+
+def _looks_like_image_url(url: str) -> bool:
+    text = str(url or "").strip()
+    if is_trusted_wechat_image_url(text):
+        return True
+    try:
+        suffix = Path(urlsplit(text).path).suffix.lower()
+    except ValueError:
+        return False
+    return suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _read_json(path: Path) -> Any:
@@ -572,6 +710,43 @@ class WechatAuxService:
                 )
         return body, ctype, digest
 
+    def _cover_from_markdown(self, article: dict[str, Any]) -> str | None:
+        md_path = str(article.get("md_path") or "").strip()
+        if not md_path or not md_path.lower().endswith(".md"):
+            return None
+        root = Path(self.settings.asset_store_path).absolute()
+        candidate = (root / md_path).absolute()
+        if candidate == root or root not in candidate.parents:
+            return None
+        try:
+            _assert_no_symlink(candidate, stop=root)
+        except AuxValidation:
+            return None
+        if not candidate.is_file():
+            return None
+        try:
+            markdown = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        urls = [
+            match.group(1).strip()
+            for match in MARKDOWN_IMAGE_RE.finditer(markdown)
+            if is_trusted_wechat_image_url(match.group(1))
+        ]
+        if not urls:
+            return None
+        # 微信正文开头常有 300px 账号头像；优先选择带正文序号或 640px 的内容图。
+        return next(
+            (
+                url
+                for url in urls
+                if "imgIndex=" in url
+                or "/640?" in url
+                or ("/300?" not in url and "wxfrom=18" not in url and "wxfrom=19" not in url)
+            ),
+            urls[0],
+        )
+
     def article_covers(self, raw_items: Any, *, idempotency_key: str = "", actor_id: str = "user") -> dict[str, Any]:
         if not isinstance(raw_items, list):
             raise AuxValidation("articles must be a list")
@@ -592,14 +767,19 @@ class WechatAuxService:
         # 解析，payload_json 保留导入时的 cover/raw URL。
         with connect(self.settings, readonly=True) as con:
             rows = con.execute(
-                "SELECT content_id,canonical_url,payload_json FROM contents WHERE content_type='external_article'"
+                "SELECT content_id,canonical_url,md_path,payload_json FROM contents WHERE content_type='external_article'"
             ).fetchall()
             for row in rows:
                 payload = _decode_json_object(row["payload_json"])
-                item = {"article_id": row["content_id"], "raw_url": row["canonical_url"], **payload}
+                item = {
+                    "article_id": row["content_id"],
+                    "raw_url": row["canonical_url"],
+                    "md_path": row["md_path"],
+                    **payload,
+                }
                 by_id[str(row["content_id"])] = item
             identifiers = con.execute(
-                """SELECT i.external_id,c.content_id,c.canonical_url,c.payload_json
+                """SELECT i.external_id,c.content_id,c.canonical_url,c.md_path,c.payload_json
                    FROM content_identifiers i JOIN contents c ON c.content_id=i.content_id
                    WHERE i.namespace IN ('wechat_article','wechat_article_id')"""
             ).fetchall()
@@ -610,6 +790,7 @@ class WechatAuxService:
                     "article_id": row["external_id"],
                     "content_id": row["content_id"],
                     "raw_url": row["canonical_url"],
+                    "md_path": row["md_path"],
                     **content_payload,
                     **payload,
                 }
@@ -627,12 +808,38 @@ class WechatAuxService:
             article = by_id.get(item["article_id"])
             if article is None:
                 results.append({"article_id": item["article_id"], "cover_url": None, "status": "missing_article"})
-            elif str(article.get("cover_url") or "").strip():
-                results.append({"article_id": item["article_id"], "cover_url": str(article["cover_url"]).strip(), "status": "cached"})
-            elif item["url"] or str(article.get("raw_url") or "").strip():
-                results.append({"article_id": item["article_id"], "cover_url": item["url"] or str(article.get("raw_url")).strip(), "status": "frozen"})
             else:
-                results.append({"article_id": item["article_id"], "cover_url": None, "status": "no_url"})
+                cached_cover = str(
+                    article.get("cover_url") or article.get("cover_image") or ""
+                ).strip()
+                if cached_cover and _looks_like_image_url(cached_cover):
+                    results.append({
+                        "article_id": item["article_id"],
+                        "cover_url": cached_cover,
+                        "status": "cached",
+                    })
+                    continue
+                markdown_cover = self._cover_from_markdown(article)
+                if markdown_cover:
+                    results.append({
+                        "article_id": item["article_id"],
+                        "cover_url": markdown_cover,
+                        "status": "markdown",
+                    })
+                    continue
+                fallback_url = item["url"] or str(article.get("raw_url") or "").strip()
+                if fallback_url and _looks_like_image_url(fallback_url):
+                    results.append({
+                        "article_id": item["article_id"],
+                        "cover_url": fallback_url,
+                        "status": "frozen",
+                    })
+                else:
+                    results.append({
+                        "article_id": item["article_id"],
+                        "cover_url": None,
+                        "status": "no_cover" if fallback_url else "no_url",
+                    })
         output = {"items": results, "count": len(results)}
         if not key:
             return output
