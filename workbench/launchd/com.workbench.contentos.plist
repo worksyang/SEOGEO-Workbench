@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.workbench.contentos</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/python@3.11/libexec/bin/python3</string>
+    <string>/Users/works14/Documents/zkcode/260712_SEO-GEO/workbench/run.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/works14/Documents/zkcode/260712_SEO-GEO/workbench</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HUB_HOST</key>
+    <string>127.0.0.1</string>
+    <key>HUB_PORT</key>
+    <string>8799</string>
+    <key>HUB_WECHAT_SEARCH_API_ENABLED</key>
+    <string>1</string>
+    <key>HUB_WECHAT_SEARCH_API_URL</key>
+    <string>http://192.168.31.238:8000</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/works14/Documents/zkcode/260712_SEO-GEO/data/runtime/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/works14/Documents/zkcode/260712_SEO-GEO/data/runtime/launchd.err.log</string>
+</dict>
+</plist>

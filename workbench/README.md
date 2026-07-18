@@ -3,7 +3,7 @@
 
 # 全域内容工作台
 
-这是七套旧系统之上的新应用层。`source/`、完整本地镜像和原始 Demo 均保持只读；工作台通过适配器读取旧系统事实，并写入新的 Hub。
+这是七套旧系统之上的新应用层。除 Wiki 的明确授权例外外，`source/`、完整本地镜像和原始 Demo 均保持只读；母文章 Wiki 直接读写 `/Users/works14/Documents/output_md`，工作台通过 Hub 负责路径校验、原子写入、版本和审计。
 
 ## 当前 M0 能力
 
@@ -44,6 +44,19 @@ python3 workbench/run.py --check
 ```bash
 python3 workbench/run.py --backup
 ```
+
+## macOS 常驻运行
+
+工作台和微信定时刷新分别由两个用户级 LaunchAgent 管理。工作台登录后自动启动并在异常退出后拉起；微信调度每 5 分钟检查一次状态，只在到期、没有活跃批次且调度开关启用时调用 Hub。
+
+```bash
+cp workbench/launchd/com.workbench.contentos.plist ~/Library/LaunchAgents/
+cp workbench/launchd/com.workbench.wechat-scheduler.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.workbench.contentos.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.workbench.wechat-scheduler.plist
+```
+
+旧微信 `com.local.wechat-monitor-8765` 和旧 Agent 任务 `com.claude.schedule.wechat-ybxhyyh-top3` 必须保持 disabled，防止旧 Markdown/排名数据继续写入。
 
 ## 测试
 
