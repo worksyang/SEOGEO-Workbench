@@ -64,14 +64,16 @@ def test_wiki_import_projects_manifest_and_baseline_versions_idempotently(wiki_h
         ).fetchall()
     )
 
-    # 工作副本存在后重放导入不得覆盖人工副本。
+    # 即使旧版本留下了工作副本，导入和读取也必须完全忽略它。
     content_id = connection.execute(
         "SELECT content_id FROM contents WHERE title='母文章'"
     ).fetchone()[0]
     workspace = asset / "wiki-workspace" / "files" / "其他" / "母文章.md"
+    workspace.parent.mkdir(parents=True, exist_ok=True)
     workspace.write_text("# 母文章\n\n保留的工作副本", encoding="utf-8")
     service.import_wiki(confirm=True, max_files=10, operator="test")
     assert "保留的工作副本" in workspace.read_text(encoding="utf-8")
+    assert "正文" in service.read(content_id)["body"]
     assert connection.execute(
         "SELECT COUNT(*) FROM wiki_file_versions WHERE content_id=?",
         (content_id,),

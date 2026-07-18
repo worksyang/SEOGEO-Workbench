@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import httpx
@@ -71,7 +71,7 @@ def test_t147_wiki_search_finds_file(hub):
     assert any(item["title"].startswith("友邦") for item in results)
 
 
-def test_t148_wiki_save_writes_versioned_workspace_not_original(hub):
+def test_t148_wiki_save_writes_versioned_real_source(hub):
     conn, _settings, tmp_path = hub
     wiki = tmp_path / "wiki"
     wiki.mkdir(parents=True)
@@ -85,17 +85,16 @@ def test_t148_wiki_save_writes_versioned_workspace_not_original(hub):
     new_body = "---\nschema_version: content-md/1.1\ncontent_id: cnt_wiki00000001\n---\n\n# 测试\n\n新内容\n"
     result = svc.save(cid, body=new_body, operator="test")
     assert result["content_id"] == cid
-    assert "旧文本" in target.read_text(encoding="utf-8")
-    workspace = asset_root / result["workspace_ref"]
-    assert workspace.read_text(encoding="utf-8").endswith("新内容\n")
-    assert result["original_written"] is False
+    assert target.read_text(encoding="utf-8").endswith("新内容\n")
+    assert result["original_written"] is True
+    assert result["workspace_ref"] == "source://wiki/测试.md"
     assert conn.execute(
         "SELECT COUNT(*) FROM wiki_file_versions WHERE content_id=?",
         (cid,),
     ).fetchone()[0] == 2
     second = svc.save(cid, body=new_body.replace("新内容", "再次保存"), operator="test")
     assert second["version_id"] != result["version_id"]
-    assert workspace.read_text(encoding="utf-8").endswith("再次保存\n")
+    assert target.read_text(encoding="utf-8").endswith("再次保存\n")
     assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 
 
@@ -146,7 +145,56 @@ def test_t149b_wiki_source_read_and_save_keep_version_lock(hub):
                 assert conflict.status_code == 409
 
     asyncio.run(scenario())
-    assert original.read_text(encoding="utf-8").endswith("原文\n")
+    assert original.read_text(encoding="utf-8").endswith("工作副本\n")
+
+
+def test_t149c_wiki_delete_removes_the_real_markdown_source(hub):
+    conn, settings, tmp_path = hub
+    root = tmp_path / "source"
+    (root / "wiki").mkdir(parents=True)
+    target = root / "wiki" / "可删除.md"
+    target.write_text("# 可删除\n\n正文\n", encoding="utf-8")
+    asset = tmp_path / "asset"
+    app_settings = replace(
+        settings,
+        wiki_allowed_roots=(root,),
+        asset_store_path=asset,
+    )
+
+    async def scenario():
+        app = create_app(app_settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                loaded = await client.get(
+                    "/api/v1/wiki/source",
+                    params={"source_ref": "wiki/可删除.md"},
+                )
+                assert loaded.status_code == 200
+                deleted = await client.request(
+                    "DELETE",
+                    "/api/v1/wiki/source",
+                    json={
+                        "source_ref": "wiki/可删除.md",
+                        "confirm": True,
+                        "base_version_id": loaded.json()["data"]["version_id"],
+                        "operator": "test",
+                    },
+                )
+                assert deleted.status_code == 200
+                assert deleted.json()["data"]["original_deleted"] is True
+                reread = await client.get(
+                    "/api/v1/wiki/source",
+                    params={"source_ref": "wiki/可删除.md"},
+                )
+                assert reread.status_code == 404
+
+    asyncio.run(scenario())
+    assert not target.exists()
+    audit = conn.execute(
+        "SELECT action, outcome FROM audit_log WHERE action='wiki.source_delete' ORDER BY occurred_at DESC LIMIT 1"
+    ).fetchone()
+    assert tuple(audit) == ("wiki.source_delete", "succeeded")
 
 
 def test_t150_wiki_rejects_path_traversal(hub):
@@ -158,22 +206,22 @@ def test_t150_wiki_rejects_path_traversal(hub):
         resolve_within(Path("/etc/passwd"), [tmp_path])
 
 
-def test_t153_wiki_workspace_rejects_symlink_escape(hub):
+def test_t153_wiki_source_rejects_symlink_escape(hub):
     conn, _settings, tmp_path = hub
     wiki = tmp_path / "wiki"
     wiki.mkdir()
     target = wiki / "测试.md"
     target.write_text("# 测试\n\n旧文本\n", encoding="utf-8")
     asset_root = tmp_path / "asset"
-    (asset_root / "wiki-workspace").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (asset_root / "wiki-workspace" / "files").symlink_to(outside, target_is_directory=True)
+    outside_file = outside / "逃逸.md"
+    outside_file.write_text("# 外部\n\n不应被写入", encoding="utf-8")
+    (wiki / "逃逸.md").symlink_to(outside_file)
     svc = WikiService(connection=conn, asset_root=asset_root, source_roots=[tmp_path])
-    cid = svc.collect()[0]["content_id"]
     with pytest.raises(Exception):
-        svc.save(cid, body="# 测试\n\n新文本\n", operator="test")
-    assert not list(outside.iterdir())
+        svc.save_source_ref("wiki/逃逸.md", body="# 测试\n\n新文本\n", operator="test")
+    assert outside_file.read_text(encoding="utf-8").endswith("不应被写入")
 
 
 def test_t166_wiki_import_dry_run_has_no_database_writes(hub):
@@ -245,8 +293,9 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
 
     saved = svc.save(mother["content_id"], body="# 母文章\n\n编辑后的正文", operator="test")
     assert "正文" in (root / "其他" / "母文章.md").read_text(encoding="utf-8")
-    assert (asset / saved["workspace_ref"]).read_text(encoding="utf-8").endswith("编辑后的正文\n")
-    assert saved["original_written"] is False
+    assert (root / "其他" / "母文章.md").read_text(encoding="utf-8").endswith("编辑后的正文\n")
+    assert saved["original_written"] is True
+    assert saved["workspace_ref"] == "source://其他/母文章.md"
     row = conn.execute(
         "SELECT content_id, content_hash FROM contents WHERE content_id=?",
         (mother["content_id"],),
@@ -254,7 +303,7 @@ def test_t167_wiki_import_confirm_is_idempotent_and_classified(hub):
     assert row["content_id"] == mother["content_id"]
     assert row["content_hash"]
     save_audit = conn.execute(
-        "SELECT details_json FROM audit_log WHERE action='wiki.workspace_save' ORDER BY occurred_at DESC LIMIT 1"
+        "SELECT details_json FROM audit_log WHERE action='wiki.source_save' ORDER BY occurred_at DESC LIMIT 1"
     ).fetchone()[0]
     assert str(root) not in save_audit
     assert "其他/母文章.md" in save_audit

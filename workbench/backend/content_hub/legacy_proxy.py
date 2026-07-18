@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from content_hub.db.connection import connect
 from content_hub.db.writer_lock import writer_lock
+from content_hub.errors import AppError
 from content_hub.services.wiki import WikiService
 from content_hub.validation.timestamps import utc_now_iso
 
@@ -339,6 +340,42 @@ def _load_wiki_ocr(root: Path) -> dict[str, Any]:
         return {}
 
 
+def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
+    """原子更新 Wiki OCR 索引，避免删除图片时留下半截 JSON。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _delete_wiki_ocr_record(root: Path, core: str) -> bool:
+    """按图片 core 清理 output_md/wiki-viewer/ocr-db.json。"""
+    db_path = root / "wiki-viewer" / "ocr-db.json"
+    data = _load_wiki_ocr(root)
+    if not data:
+        return False
+    kept = {
+        key: value
+        for key, value in data.items()
+        if _url_core(key) != core
+    }
+    if len(kept) == len(data):
+        return False
+    _atomic_json_write(db_path, kept)
+    return True
+
+
 def _delete_image_ranges(content: str, core: str) -> tuple[str, int]:
     lines = content.splitlines()
     ranges: list[tuple[int, int]] = []
@@ -369,11 +406,7 @@ async def proxy_legacy_wiki_api(
     path: str,
     request: Request,
 ) -> Response:
-    """兼容原 Wiki UI 的只读 API。
-
-    原始 Markdown 是永久只读事实源；旧前端的写接口必须迁到 Hub 工作副本命令，
-    不能由 iframe 直接覆盖原库。
-    """
+    """兼容原 Wiki UI 的 API；正文和索引都直接操作 output_md。"""
     settings = request.app.state.settings
     root = _wiki_root(settings)
     if root is None:
@@ -381,25 +414,6 @@ async def proxy_legacy_wiki_api(
 
     body = await request.body()
     query = urllib.parse.parse_qs(str(request.url.query))
-    if path in {"save", "bulk-delete-image"} and request.method not in {"GET", "HEAD", "OPTIONS"}:
-        _audit_legacy_write_blocked(
-            settings,
-            legacy_system="wiki",
-            method=request.method,
-            path=path,
-        )
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "blocked": True,
-                "upstream_called": False,
-                "error": {
-                    "code": "LEGACY_WIKI_WRITE_BLOCKED",
-                    "message": "原始 Wiki 目录只读；请使用 Hub 工作副本与版本化保存接口。",
-                },
-            },
-        )
     if path == "list" and request.method == "GET":
         relative = urllib.parse.unquote(query.get("path", [""])[0])
         data = _wiki_list_dir(root, relative)
@@ -516,13 +530,16 @@ async def proxy_legacy_wiki_api(
                     )
                     deleted_files += 1
                     deleted_images += count
+                ocr_db_updated = _delete_wiki_ocr_record(root, core)
             return JSONResponse(content={
                 "ok": True,
                 "deleted_files": deleted_files,
                 "deleted_images": deleted_images,
-                "ocr_db_updated": False,
-                "note": "原始 OCR 数据库镜像保持只读，正文删除已生成 Hub 快照与审计记录。",
+                "ocr_db_updated": ocr_db_updated,
+                "note": "Markdown 已直接写回 output_md，并同步更新 OCR 数据库与审计记录。",
             })
+        except AppError as exc:
+            return JSONResponse(status_code=exc.status_code, content={"ok": False, "error": exc.message})
         except (FileNotFoundError, ValueError, OSError) as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 

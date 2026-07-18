@@ -55,39 +55,47 @@ class WikiService:
         ]
         return sorted(candidates, key=lambda item: str(item))[0] if candidates else None
 
-    def _workspace_path(self, source_ref: str) -> Path:
-        """工作台编辑永远写入 asset_store，不回写原始 Wiki 事实源。"""
-        safe_ref = source_ref.replace("\\", "/").lstrip("/")
-        candidate = self._asset_root / "wiki-workspace" / "files" / safe_ref
-        return resolve_within(candidate, [self._asset_root / "wiki-workspace"])
+    @staticmethod
+    def _source_storage_ref(source_ref: str) -> str:
+        """版本表中的兼容引用；它不是工作副本，也不是本机绝对路径。"""
+        return f"source://{source_ref}"
 
-    def _workspace_bytes(self, source_ref: str, source_path: Path) -> bytes:
-        workspace = self._workspace_path(source_ref)
-        if workspace.is_file():
-            return workspace.read_bytes()
-        return source_path.read_bytes()
+    def _source_path(self, source_ref: str) -> Path | None:
+        """把相对 source_ref 解析成 output_md 内的普通 Markdown 文件。
 
-    def _ensure_workspace_baseline(self, source_ref: str, source_path: Path) -> Path:
-        workspace = self._workspace_path(source_ref)
-        if workspace.exists():
-            return workspace
-        workspace.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(workspace, source_path.read_bytes())
-        return workspace
+        Wiki 的目录树、搜索、正文读取、保存和删除必须共用这一个解析入口，
+        不能再让 asset_store/wiki-workspace/files/ 成为第二个正文来源。
+        """
+        if not isinstance(source_ref, str):
+            return None
+        normalized = source_ref.replace("\\", "/").strip("/")
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or not normalized.lower().endswith(".md")
+            or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        ):
+            return None
+        root = self.import_root()
+        if root is None:
+            return None
+        safe_path, reason = safe_markdown_path(root / normalized, root)
+        if not safe_path or reason:
+            return None
+        return safe_path
 
     def _record_version(
         self,
         *,
         content_id: str,
         source_ref: str,
-        workspace_path: Path,
+        storage_ref: str,
         content: bytes,
         status: str,
         actor_id: str,
         parent_version_id: str | None = None,
     ) -> str:
         version_id = generate_ulid_like("wfv")
-        relative_workspace = workspace_path.relative_to(self._asset_root).as_posix()
         file_hash = hashlib.sha256(content).hexdigest()
         content_hash = hashlib.sha256(content.strip()).hexdigest()
         self._conn.execute(
@@ -101,7 +109,7 @@ class WikiService:
                 version_id,
                 content_id,
                 source_ref,
-                relative_workspace,
+                storage_ref,
                 parent_version_id,
                 file_hash,
                 content_hash,
@@ -121,9 +129,9 @@ class WikiService:
         source_path: Path,
         source_bytes: bytes,
     ) -> str:
-        """为导入文件建立可恢复的 baseline；原始目录永远不写入。
+        """为 output_md 中的真实文件建立可恢复 baseline。
 
-        workspace 是工作副本，首次导入时复制一次，后续导入绝不覆盖它。
+        这里只记录 source:// 引用和哈希，不复制 Markdown，不创建第二份正文。
         版本索引按来源文件 hash 幂等，来源变化时追加新的 baseline，保留旧证据。
         """
         file_hash = hashlib.sha256(source_bytes).hexdigest()
@@ -156,7 +164,6 @@ class WikiService:
                 )
             return str(existing["version_id"])
 
-        workspace_path = self._ensure_workspace_baseline(source_ref, source_path)
         latest = self._latest_version_id(content_id)
         if latest:
             # 只有旧的 baseline 可以被标记为 superseded；草稿/发布版本不可破坏。
@@ -171,7 +178,7 @@ class WikiService:
         return self._record_version(
             content_id=content_id,
             source_ref=source_ref,
-            workspace_path=workspace_path,
+            storage_ref=self._source_storage_ref(source_ref),
             content=source_bytes,
             status="baseline",
             actor_id="system/wiki-import",
@@ -422,7 +429,7 @@ class WikiService:
             return result
         try:
             pipeline_result = WikiIngestionPipeline(self._conn, self._lock_path).run(raw)
-            # 原始目录保持只读；Hub 记录只保存 manifest:// 引用。
+            # 目录树和正文都以 output_md 为事实源；Hub 只保存索引、版本与审计引用。
             for discovery in self._conn.execute(
                 """
                 SELECT rowid, source_ref
@@ -667,7 +674,7 @@ class WikiService:
         if not path:
             return None
         try:
-            text = self._workspace_bytes(entry["source_ref"], path).decode("utf-8")
+            text = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
         return {
@@ -682,11 +689,11 @@ class WikiService:
         root = self.import_root()
         if root is None:
             return None
-        safe_path, reason = safe_markdown_path(root / source_ref, root)
-        if not safe_path or reason:
+        safe_path = self._source_path(source_ref)
+        if not safe_path:
             return None
         try:
-            text = self._workspace_bytes(source_ref, safe_path).decode("utf-8")
+            text = safe_path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -710,12 +717,12 @@ class WikiService:
         operator: str = "user",
         base_version_id: str | None = None,
     ) -> dict[str, Any]:
-        """写入受控工作副本，并为原文建立不可变版本链。"""
+        """直接原子写回 output_md，并为原文建立不可变版本链。"""
         root = self.import_root()
         if root is None:
             raise FileNotFoundError("没有可用的 Wiki 允许根")
-        safe_path, reason = safe_markdown_path(root / source_ref, root)
-        if not safe_path or reason:
+        safe_path = self._source_path(source_ref)
+        if not safe_path:
             raise FileNotFoundError("母文章路径不安全或不可读取")
         if not isinstance(body, str):
             raise ValueError("正文必须是字符串")
@@ -725,7 +732,7 @@ class WikiService:
             parts = text.split("---", 2)
             if len(parts) == 3:
                 content_only = parts[2]
-        old_bytes = self._workspace_bytes(source_ref, safe_path)
+        old_bytes = safe_path.read_bytes()
         # content_id 是 source_ref 的稳定身份，不能因一次编辑后的正文哈希变化而换 ID。
         content_id = content_id_for_source(
             self._conn,
@@ -743,8 +750,8 @@ class WikiService:
             else "mother_article"
         )
         title, _excerpt = _peek_title_and_excerpt(text, fallback=safe_path.stem)
-        workspace_path = self._ensure_workspace_baseline(source_ref, safe_path)
-        self._atomic_write(workspace_path, text.encode("utf-8"))
+        storage_ref = self._source_storage_ref(source_ref)
+        self._atomic_write(safe_path, text.encode("utf-8"))
         now = utc_now_iso()
         self._conn.execute(
             """
@@ -777,19 +784,19 @@ class WikiService:
                     {
                         "asset_kind": content_type,
                         "source_ref": source_ref,
-                        "workspace_ref": workspace_path.relative_to(self._asset_root).as_posix(),
+                        "storage_ref": storage_ref,
+                        "original_written": True,
                     },
                     ensure_ascii=False,
                 ),
             ),
         )
-        # 首次保存先把从原始只读库复制而来的工作副本记为 baseline，之后的草稿
-        # 才形成可回退的不可变版本链。原始文件始终不被覆盖。
+        # 首次保存先记录写入前的原文 baseline，之后的保存形成不可变版本链。
         if latest_version_id is None:
             latest_version_id = self._record_version(
                 content_id=content_id,
                 source_ref=source_ref,
-                workspace_path=workspace_path,
+                storage_ref=storage_ref,
                 content=old_bytes,
                 status="baseline",
                 actor_id="system",
@@ -825,7 +832,7 @@ class WikiService:
         version_id = self._record_version(
             content_id=content_id,
             source_ref=source_ref,
-            workspace_path=workspace_path,
+            storage_ref=storage_ref,
             content=text.encode("utf-8"),
             status="draft",
             actor_id=operator,
@@ -833,13 +840,13 @@ class WikiService:
         )
         self._record_audit(
             operator,
-            "wiki.workspace_save",
+            "wiki.source_save",
             content_id,
             {
                 "source_ref": source_ref,
-                "workspace_ref": workspace_path.relative_to(self._asset_root).as_posix(),
+                "storage_ref": storage_ref,
                 "version_id": version_id,
-                "original_written": False,
+                "original_written": True,
             },
         )
         self._conn.commit()
@@ -848,10 +855,124 @@ class WikiService:
             "source_ref": source_ref,
             "relative_path": source_ref,
             "file_hash": file_hash,
-            "workspace_ref": workspace_path.relative_to(self._asset_root).as_posix(),
+            "storage_ref": storage_ref,
+            # 兼容旧 UI / 调用方字段；它现在是 source:// 引用，不是工作副本路径。
+            "workspace_ref": storage_ref,
             "version_id": version_id,
             "previous_file_hash": hashlib.sha256(old_bytes).hexdigest(),
-            "original_written": False,
+            "original_written": True,
+        }
+
+    def delete_source_ref(
+        self,
+        source_ref: str,
+        *,
+        operator: str = "user",
+        base_version_id: str | None = None,
+    ) -> dict[str, Any]:
+        """直接删除 output_md 中的 Markdown，并保留 Hub 审计/版本证据。"""
+        safe_path = self._source_path(source_ref)
+        if not safe_path:
+            raise FileNotFoundError("母文章路径不安全或不可读取")
+        try:
+            old_bytes = safe_path.read_bytes()
+        except OSError as exc:
+            raise FileNotFoundError("母文章不存在或不可读取") from exc
+
+        content_id = content_id_for_source(
+            self._conn,
+            source_ref,
+            hashlib.sha256(old_bytes).hexdigest(),
+        )
+        latest_version_id = self._latest_version_id(content_id)
+        if base_version_id is not None and latest_version_id not in {None, base_version_id}:
+            raise AppError("WIKI_VERSION_CONFLICT", "正文已被其他会话更新，请重新读取后再删除。", 409)
+
+        storage_ref = self._source_storage_ref(source_ref)
+        previous_file_hash = hashlib.sha256(old_bytes).hexdigest()
+        safe_path.unlink()
+        now = utc_now_iso()
+        content_type = (
+            "knowledge_article"
+            if source_ref == "wiki" or source_ref.startswith("wiki/")
+            else "mother_article"
+        )
+        self._conn.execute(
+            """
+            INSERT INTO contents(
+                content_id, content_type, title, canonical_url, first_seen_at,
+                updated_at, md_path, file_hash, content_hash, domain,
+                entities_json, intents_json, payload_json
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
+            ON CONFLICT(content_id) DO UPDATE SET
+                content_type=excluded.content_type,
+                updated_at=excluded.updated_at,
+                md_path=excluded.md_path,
+                file_hash=excluded.file_hash,
+                content_hash=excluded.content_hash,
+                domain=excluded.domain,
+                payload_json=excluded.payload_json
+            """,
+            (
+                content_id,
+                content_type,
+                safe_path.stem,
+                now,
+                now,
+                source_ref,
+                previous_file_hash,
+                hashlib.sha256(old_bytes.strip()).hexdigest(),
+                str(Path(source_ref).parent).replace(".", "wiki"),
+                json.dumps(
+                    {
+                        "asset_kind": content_type,
+                        "source_ref": source_ref,
+                        "storage_ref": storage_ref,
+                        "deleted": True,
+                        "deleted_at": now,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        if latest_version_id is None:
+            latest_version_id = self._record_version(
+                content_id=content_id,
+                source_ref=source_ref,
+                storage_ref=storage_ref,
+                content=old_bytes,
+                status="superseded",
+                actor_id=operator,
+            )
+        else:
+            self._conn.execute(
+                """
+                UPDATE wiki_file_versions
+                SET version_status='superseded'
+                WHERE version_id=?
+                """,
+                (latest_version_id,),
+            )
+        self._record_audit(
+            operator,
+            "wiki.source_delete",
+            content_id,
+            {
+                "source_ref": source_ref,
+                "storage_ref": storage_ref,
+                "version_id": latest_version_id,
+                "original_deleted": True,
+                "previous_file_hash": previous_file_hash,
+            },
+        )
+        self._conn.commit()
+        return {
+            "content_id": content_id,
+            "source_ref": source_ref,
+            "relative_path": source_ref,
+            "version_id": latest_version_id,
+            "previous_file_hash": previous_file_hash,
+            "original_deleted": True,
         }
 
     def save(

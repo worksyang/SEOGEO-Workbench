@@ -193,8 +193,8 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={`demo-shell${active === 'mother' || active === 'batch' ? ' writing-shell' : ''}`}>
-        {active !== 'mother' && active !== 'batch' && <header className="demo-top">
+      <section className={`demo-shell${active === 'mother' || active === 'batch' ? ' writing-shell' : ''}${active === 'wiki' ? ' wiki-shell' : ''}`}>
+        {active !== 'mother' && active !== 'batch' && active !== 'wiki' && <header className="demo-top">
           <div className="demo-title"><b>{NAV_LABELS[active]}</b><small>从这里进入原来的每一套系统</small></div>
           <div className="demo-search">
             <NavIcon name="overview" />

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def test_legacy_wiki_mirror_and_read_contract(settings) -> None:
     _run(scenario())
 
 
-def test_legacy_wiki_save_is_blocked_until_old_ui_uses_hub_command(settings, tmp_path: Path) -> None:
+def test_legacy_wiki_save_writes_the_real_output_md_source(settings, tmp_path: Path) -> None:
     source_root = tmp_path / "output_md"
     source_root.joinpath("wiki").mkdir(parents=True)
     source_file = source_root / "wiki" / "sample.md"
@@ -77,11 +78,11 @@ def test_legacy_wiki_save_is_blocked_until_old_ui_uses_hub_command(settings, tmp
                     "/api/save",
                     json={"path": "wiki/sample.md", "content": "# 新标题\n\n新正文"},
                 )
-                assert saved.status_code == 409
+                assert saved.status_code == 200
                 data = saved.json()
-                assert data["blocked"] is True
-                assert data["upstream_called"] is False
-                assert source_file.read_text(encoding="utf-8") == "# 原标题\n\n旧正文\n"
+                assert data["ok"] is True
+                assert data["data"]["original_written"] is True
+                assert source_file.read_text(encoding="utf-8") == "# 新标题\n\n新正文\n"
 
                 async with httpx.AsyncClient(
                     transport=transport, base_url="http://testserver"
@@ -98,8 +99,58 @@ def test_legacy_wiki_save_is_blocked_until_old_ui_uses_hub_command(settings, tmp
     connection = sqlite3.connect(test_settings.database_path)
     try:
         audit = connection.execute(
-            "SELECT action, outcome FROM audit_log WHERE action='wiki.legacy_write_blocked' ORDER BY occurred_at DESC LIMIT 1"
+            "SELECT action, outcome FROM audit_log WHERE action='wiki.source_save' ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
-        assert audit == ("wiki.legacy_write_blocked", "blocked")
+        assert audit == ("wiki.source_save", "succeeded")
     finally:
         connection.close()
+
+
+def test_legacy_wiki_bulk_image_delete_updates_all_markdown_and_ocr_db(
+    settings, tmp_path: Path
+) -> None:
+    source_root = tmp_path / "output_md"
+    (source_root / "wiki").mkdir(parents=True)
+    (source_root / "wiki-viewer").mkdir()
+    image = "https://mmbiz.qpic.cn/demo/image-id/640?wx_fmt=png"
+    core = "https://mmbiz.qpic.cn/demo/image-id"
+    first = source_root / "wiki" / "一.md"
+    second = source_root / "wiki" / "二.md"
+    first.write_text(
+        f"# 一\n\n![图]({image})\n\n<!-- OCR内容：文字 -->\n\n---\n\n正文\n",
+        encoding="utf-8",
+    )
+    second.write_text(f"# 二\n\n![图]({image})\n\n结尾\n", encoding="utf-8")
+    ocr_db = source_root / "wiki-viewer" / "ocr-db.json"
+    ocr_db.write_text(
+        json.dumps({core: {"ocr": "文字", "source": "wiki/一.md"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    asset_root = tmp_path / "asset_store"
+    test_settings = replace(
+        settings,
+        wiki_allowed_roots=(source_root,),
+        asset_store_path=asset_root,
+    )
+    migrate(test_settings)
+
+    async def scenario() -> None:
+        app = create_app(test_settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                deleted = await client.post(
+                    "/api/bulk-delete-image",
+                    json={"core": core},
+                )
+                assert deleted.status_code == 200
+                result = deleted.json()
+                assert result["ok"] is True
+                assert result["deleted_files"] == 2
+                assert result["deleted_images"] == 2
+                assert result["ocr_db_updated"] is True
+
+    _run(scenario())
+    assert image not in first.read_text(encoding="utf-8")
+    assert image not in second.read_text(encoding="utf-8")
+    assert core not in json.loads(ocr_db.read_text(encoding="utf-8"))

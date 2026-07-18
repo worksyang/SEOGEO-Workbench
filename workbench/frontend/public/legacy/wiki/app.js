@@ -1,6 +1,6 @@
 let currentFile = null;
 let currentContent = '';   // 当前文件的最新原始 markdown（每次从后端实时拉取）
-let currentVersionId = null; // Hub 工作副本的乐观锁版本，防止覆盖其他会话的编辑
+let currentVersionId = null; // Hub 版本链的乐观锁版本，防止覆盖其他会话的编辑
 let totalCount = 0;        // 全库 md 文件总数
 let toastTimer = null;
 
@@ -65,6 +65,24 @@ async function apiSave(path, content) {
   currentVersionId = d.data && d.data.version_id || currentVersionId;
   return d.data;
 }
+async function apiDelete(path) {
+  const r = await fetch('/api/v1/wiki/source', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_ref: path,
+      confirm: true,
+      base_version_id: currentVersionId,
+      operator: 'legacy-wiki-ui'
+    })
+  });
+  const d = await r.json();
+  if (!r.ok || !d.ok) {
+    const detail = d.detail || (d.error && (d.error.message || d.error)) || '删除失败';
+    throw new Error(detail);
+  }
+  return d.data;
+}
 
 /* ===== 懒加载文件树 ===== */
 // 渲染一层目录内容到指定容器
@@ -117,10 +135,32 @@ async function refreshTree() {
   renderLayer(root, document.getElementById('file-tree'));
   const meta = document.querySelector('#sidebar-header .meta');
   if (meta) meta.textContent = totalCount + ' 个文件 · 全库';
+  loadWikiInfo();
   // wiki 是精炼库，默认展开
   const wikiToggle = document.querySelector('.folder-toggle[data-dir="wiki"]');
   if (wikiToggle) toggleFolder(wikiToggle);
   if (currentFile) highlightActive();
+}
+
+async function loadWikiInfo() {
+  const el = document.getElementById('meta-path');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/v1/wiki/info');
+    const d = await r.json();
+    const data = d && d.data;
+    if (!data || !data.root_path) {
+      el.textContent = '根目录不可用';
+      el.classList.add('empty');
+      return;
+    }
+    el.textContent = data.root_path;
+    el.classList.remove('empty');
+    el.title = data.root_path + ' · ' + (data.file_count || 0) + ' 个 Markdown · 直接读写';
+  } catch (e) {
+    el.textContent = '根目录不可用';
+    el.classList.add('empty');
+  }
 }
 
 /* ===== 收起/展开侧栏（汉堡按钮） ===== */
@@ -143,12 +183,14 @@ async function loadFile(path) {
     currentContent = await apiRead(path);
   } catch (e) {
     document.getElementById('view-mode').innerHTML = '<p style="color:#c0392b">' + e.message + '</p>';
+    document.getElementById('btn-delete').style.display = 'none';
     return;
   }
   renderView(currentContent, path);
   document.getElementById('btn-edit').style.display = 'inline-block';
   document.getElementById('btn-save').style.display = 'none';
   document.getElementById('btn-cancel').style.display = 'none';
+  document.getElementById('btn-delete').style.display = 'inline-block';
   document.getElementById('s-left').textContent = totalCount + ' 文件 · ' + path;
 }
 
@@ -273,14 +315,45 @@ async function saveFile() {
   const newContent = document.getElementById('editor').value;
   try {
     await apiSave(currentFile, newContent);
-    currentContent = newContent;
-    renderView(newContent, currentFile);
+    // 保存后重新从 output_md 读取，避免编辑器内容和真实磁盘内容产生第二份状态。
+    currentContent = await apiRead(currentFile);
+    renderView(currentContent, currentFile);
     cancelEdit();
     const b = document.getElementById('btn-edit');
     b.textContent = '✓ 已保存';
     setTimeout(function () { b.textContent = '✎ 编辑'; }, 2000);
   } catch (e) {
     alert('保存失败：' + e.message);
+  }
+}
+
+async function deleteFile() {
+  if (!currentFile) return;
+  if (isEditing) cancelEdit();
+  const deleting = currentFile;
+  if (!confirm('确定要直接删除 output_md/' + deleting + ' 吗？\n此操作会从目录树和正文源中永久移除 Markdown。')) {
+    return;
+  }
+  try {
+    await apiDelete(deleting);
+    currentFile = null;
+    currentContent = '';
+    currentVersionId = null;
+    document.getElementById('current-path').textContent = '已删除：' + deleting;
+    document.getElementById('view-mode').innerHTML = '<p style="color:#8a5a00">Markdown 已从 output_md 删除。</p>';
+    document.getElementById('edit-mode').style.display = 'none';
+    document.getElementById('btn-edit').style.display = 'none';
+    document.getElementById('btn-save').style.display = 'none';
+    document.getElementById('btn-cancel').style.display = 'none';
+    document.getElementById('btn-delete').style.display = 'none';
+    await refreshTree();
+    // 删除后优先回到统一索引；索引不存在时保持空态。
+    if (deleting !== 'wiki/index.md') {
+      try { await loadFile('wiki/index.md'); } catch (_) {}
+    }
+    showToast('🗑 已删除 Markdown：' + deleting);
+  } catch (e) {
+    alert('删除失败：' + e.message);
   }
 }
 
@@ -474,8 +547,8 @@ async function ocrDeleteImage(imgSrc) {
 
   try {
     await apiSave(currentFile, newContent);
-    currentContent = newContent;
-    renderView(newContent, currentFile);
+    currentContent = await apiRead(currentFile);
+    renderView(currentContent, currentFile);
     document.getElementById('lightbox').style.display = 'none';
     document.getElementById('s-left').textContent = '已删除图片 · ' + currentFile;
     showToast('🗑 已删除图片');
@@ -710,9 +783,9 @@ async function dlgConfirm() {
   const updated = currentContent.slice(0, selState.mdStart) + ed.value + currentContent.slice(selState.mdEnd);
   try {
     await apiSave(currentFile, updated);
-    currentContent = updated;
+    currentContent = await apiRead(currentFile);
     // ★ 保存成功后必须重新渲染整篇文章，保持与最新磁盘内容一致
-    renderView(updated, currentFile);
+    renderView(currentContent, currentFile);
     document.getElementById('edit-dialog').style.display = 'none';
   } catch (e) {
     alert('保存失败：' + e.message);

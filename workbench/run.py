@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confirm-wiki-import",
         action="store_true",
-        help="确认执行 Wiki 导入；只允许写入 Hub 与 asset_store 工作副本，不回写原目录",
+        help="确认执行 Wiki 导入；写入 Hub 的导入索引，不修改 Markdown 正文",
     )
     parser.add_argument(
         "--wiki-max-files",

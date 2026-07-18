@@ -217,6 +217,10 @@ body {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.demo-shell.wiki-shell {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .demo-top {
   min-width: 0;
   display: flex;
@@ -365,6 +369,10 @@ body {
 
 .demo-stage > .geo-island-page {
   grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.demo-stage > .legacy-wiki-island {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .wechat-island-caption {
