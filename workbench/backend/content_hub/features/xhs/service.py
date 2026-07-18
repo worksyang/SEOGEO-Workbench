@@ -9,9 +9,16 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from content_hub.adapters.xhs import XhsAdapter, XhsSourceError, scrub
+from content_hub.adapters.xhs_search_provider import (
+    DryRunXhsSearchProvider,
+    XhsSearchProvider,
+    XhsSearchProviderError,
+    normalize_search_notes_response,
+)
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.features.xhs.legacy_projection import project_hub_payload
 from content_hub.services.dual_write import DualWriteReceiptService
 from content_hub.services.migration import MigrationResolver
 from content_hub.services.search_runtime import SearchRefreshRuntime
@@ -108,14 +115,23 @@ def _scrub_payload(value: Any) -> Any:
     return value
 
 
+def _merge_payload(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if value is not None and value != "":
+            merged[key] = value
+    return merged
+
+
 def _scoped(prefix: str, raw: Any) -> str:
     return _id(prefix, str(raw))
 
 
 class XhsService:
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, provider: XhsSearchProvider | None = None) -> None:
         self.settings = settings
         self.adapter = XhsAdapter(settings)
+        self.provider = provider
 
     def _connection(self, status: str, *, error: str | None = None) -> None:
         checked = _now()
@@ -140,7 +156,7 @@ class XhsService:
                             self.adapter.base_url,
                             status,
                             checked,
-                            '["read","history_import","keyword_refresh_dry_run"]',
+                            '["read","history_import","keyword_refresh_dry_run","shadow_refresh","shadow_batch_refresh"]',
                             _json(details),
                         ),
                     )
@@ -471,13 +487,15 @@ class XhsService:
         payload = self._hub_bootstrap()
         if payload is None:
             raise NotImplementedError("Hub 尚无小红书事实")
+        projected = project_hub_payload(payload)
         if summary:
             return {
-                "source_status": {"status": "healthy", "source": "hub_db"},
-                "counts": payload["counts"],
-                "available_fact_arrays": sorted(k for k, v in payload.items() if isinstance(v, list)),
+                "source_status": projected["source_status"],
+                "counts": projected["counts"],
+                "available_fact_arrays": sorted(k for k, v in projected.items() if isinstance(v, list)),
+                "projection_warnings": projected.get("projection_warnings", []),
             }
-        return {"source_status": {"status": "healthy", "source": "hub_db"}, **payload}
+        return projected
 
     def _bootstrap_legacy(self, *, summary: bool = False) -> dict[str, Any]:
         try:
@@ -533,9 +551,33 @@ class XhsService:
     def _hub_bootstrap(self) -> dict[str, Any] | None:
         with connect(self.settings, readonly=True) as con:
             keywords = []
-            for row in con.execute("SELECT * FROM keywords WHERE platform='xiaohongshu' ORDER BY keyword_id"):
+            for row in con.execute(
+                """SELECT k.*,s.pinned,s.pin_order,s.note,s.group_id,
+                          s.batch_default_selected,s.refresh_strategy,
+                          s.refresh_interval_minutes,g.group_name
+                   FROM keywords k
+                   LEFT JOIN search_keyword_settings s
+                     ON s.keyword_id=k.keyword_id
+                    AND s.system_key='xhs-search' AND s.platform='xiaohongshu'
+                   LEFT JOIN search_keyword_groups g ON g.group_id=s.group_id
+                   WHERE k.platform='xiaohongshu'
+                   ORDER BY k.keyword_id"""
+            ):
                 item = dict(row)
                 item["payload"] = json.loads(item.pop("payload_json") or "{}")
+                item["settings"] = {
+                    key: item.pop(key)
+                    for key in (
+                        "pinned",
+                        "pin_order",
+                        "note",
+                        "group_id",
+                        "batch_default_selected",
+                        "refresh_strategy",
+                        "refresh_interval_minutes",
+                        "group_name",
+                    )
+                }
                 keywords.append(item)
             accounts = []
             for row in con.execute("SELECT * FROM creators WHERE platform='xiaohongshu' ORDER BY creator_id"):
@@ -808,6 +850,405 @@ class XhsService:
         return self._article_hub(article_id)
 
     def refresh(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
+        """旧刷新永久冻结；不会创建旧任务，也不会访问任何上游。"""
+        key = idempotency_key or f"xhs-refresh-frozen:{keyword_id}:{_now()}"
+        receipts = DualWriteReceiptService(self.settings, module_key="xhs-search")
+        if confirm is not True:
+            receipts.record(
+                command_id=None,
+                idempotency_key=key,
+                legacy_status="not_attempted",
+                hub_status="not_attempted",
+                reconcile_status="blocked",
+                details={"keyword_id": keyword_id, "reason_code": "confirm_required"},
+            )
+            raise ValidationAppError("刷新必须明确传入 confirm=true。")
+        runtime = SearchRefreshRuntime(self.settings, system_key="xhs-search", platform="xiaohongshu")
+        command = runtime.begin(
+            keyword_id=keyword_id, actor_id="user",
+            idempotency_key=key,
+        )
+        if command["created"]:
+            runtime.finish(
+                command["refresh_job_id"], status="blocked",
+                external_result={"upstream_called": False, "reason_code": "xhs.legacy_refresh_frozen"},
+                error={"reason_code": "xhs.legacy_refresh_frozen"},
+            )
+        details = {
+            "keyword_id": keyword_id,
+            "upstream_called": False,
+            "reason_code": "xhs.legacy_refresh_blocked",
+            "message": "小红书旧刷新已冻结；请使用搜索级影子刷新。",
+        }
+        self._connection("degraded", error=details["reason_code"])
+        self._audit("xhs.refresh", "blocked", details, subject_id=keyword_id)
+        receipt = receipts.record(
+            command_id=command["command_id"],
+            idempotency_key=key,
+            legacy_status="not_attempted",
+            hub_status="not_implemented",
+            reconcile_status="blocked",
+            details={**details, "hub_reason_code": "xhs.hub_refresh_not_implemented"},
+        )
+        return {
+            "http_status": 409,
+            "source_status": {"status": "blocked", "source": "hub_policy"},
+            "blocked": True,
+            "upstream_called": False,
+            "refresh_job_id": command["refresh_job_id"],
+            "command_id": command["command_id"],
+            "dual_write_receipt": receipt,
+            **details,
+        }
+
+    def shadow_refresh(
+        self,
+        keyword_id: str,
+        *,
+        dry_run: bool = True,
+        idempotency_key: str = "",
+        provider: XhsSearchProvider | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """执行关键词级影子刷新并保存原始响应、快照、排名和去重笔记。"""
+        key = idempotency_key or f"xhs-shadow:{keyword_id}:{_now()}"
+        selected = provider or self.provider or DryRunXhsSearchProvider()
+        runtime = SearchRefreshRuntime(self.settings, system_key="xhs-search", platform="xiaohongshu")
+        with connect(self.settings, readonly=True) as con:
+            row = con.execute(
+                """SELECT keyword_id,keyword FROM keywords
+                   WHERE platform='xiaohongshu'
+                     AND (keyword_id=? OR json_extract(payload_json,'$.source_keyword_id')=?)
+                   ORDER BY CASE WHEN keyword_id=? THEN 0 ELSE 1 END
+                   LIMIT 1""",
+                (keyword_id, keyword_id, keyword_id),
+            ).fetchone()
+        if not row:
+            raise NotFoundError("小红书关键词", keyword_id)
+        internal_keyword_id = str(row["keyword_id"])
+        keyword = str(row["keyword"] or "").strip()
+        command = runtime.begin(keyword_id=internal_keyword_id, actor_id="user", idempotency_key=key)
+        if not command["created"]:
+            return {
+                "http_status": 200,
+                "source_status": {"status": "healthy", "source": "hub_runtime"},
+                "replayed": True,
+                "refresh_job_id": command["refresh_job_id"],
+                "command_id": command["command_id"],
+                "status": command["status"],
+            }
+        if not dry_run and getattr(selected, "is_live", False):
+            try:
+                if confirm is not True:
+                    raise ValidationAppError("真实小红书 Provider 必须明确传入 confirm=true。")
+                if not getattr(self.settings, "xhs_tikhub_token_configured", False):
+                    raise ConflictError("未配置小红书 Provider token；真实刷新保持关闭。")
+            except Exception as exc:
+                error = {"reason_code": "xhs.live_provider_gate_failed", "message": str(exc)}
+                runtime.finish(command["refresh_job_id"], status="failed", error=error)
+                self._audit("xhs.shadow_refresh", "failed", {
+                    "keyword_id": keyword_id, "upstream_called": False, **error,
+                }, subject_id=keyword_id)
+                raise
+        if dry_run:
+            selected = DryRunXhsSearchProvider()
+        try:
+            response = selected.search(keyword_id=keyword_id, keyword=keyword)
+            result = self._persist_shadow_response(
+                command=command, keyword_id=internal_keyword_id, keyword=keyword,
+                provider_kind=getattr(selected, "kind", "injected"),
+                response=response, dry_run=dry_run,
+            )
+            runtime.finish(command["refresh_job_id"], status="succeeded", external_result=result)
+            self._audit("xhs.shadow_refresh", "succeeded", result, subject_id=internal_keyword_id)
+            return {"http_status": 200, "source_status": {"status": "healthy", "source": "shadow_provider"}, **result}
+        except Exception as exc:
+            error = {
+                "reason_code": getattr(exc, "reason_code", "xhs.shadow_refresh_failed"),
+                "message": str(exc),
+            }
+            runtime.finish(command["refresh_job_id"], status="failed", error=error)
+            details = {"keyword_id": internal_keyword_id, "upstream_called": bool(getattr(selected, "is_live", False)), **error}
+            self._audit("xhs.shadow_refresh", "failed", details, subject_id=internal_keyword_id)
+            return {
+                "http_status": 502 if isinstance(exc, XhsSearchProviderError) else 500,
+                "source_status": {"status": "failed", "source": "shadow_provider"},
+                "failed": True,
+                "refresh_job_id": command["refresh_job_id"],
+                "command_id": command["command_id"],
+                **details,
+            }
+
+    def _persist_shadow_response(
+        self, *, command: dict[str, Any], keyword_id: str, keyword: str,
+        provider_kind: str, response: dict[str, Any], dry_run: bool,
+    ) -> dict[str, Any]:
+        if not isinstance(response, dict):
+            raise ValueError("影子 Provider 必须返回 JSON object。")
+        raw = _scrub_payload(response)
+        raw_hash = hashlib.sha256(_json(raw).encode()).hexdigest()
+        captured = _now()
+        response_id = _id("xhs_shadow_response", f"{command['refresh_job_id']}:{raw_hash}")
+        snapshot_id = _id("xhs_shadow_snapshot", f"{keyword_id}:{captured}:{raw_hash}")
+        converted = normalize_search_notes_response(response)
+        raw_hits = converted["hits"] if converted["envelope_valid"] else (
+            response.get("results") or response.get("hits") or response.get("notes") or []
+        )
+        if not isinstance(raw_hits, list):
+            raw_hits = []
+        accepted: list[dict[str, Any]] = []
+        seen_note_ids: set[str] = set()
+        seen_urls: set[str] = set()
+        for rank, item in enumerate(raw_hits, 1):
+            if not isinstance(item, dict):
+                continue
+            normalized = item if converted["envelope_valid"] else item
+            note_id = str(normalized.get("note_id") or normalized.get("id") or normalized.get("noteId") or "").strip()
+            url = _trusted_url(normalized.get("canonical_url") or normalized.get("url") or normalized.get("url_raw") or normalized.get("link"))
+            if not note_id and not url:
+                continue
+            if (note_id and note_id in seen_note_ids) or (url and url in seen_urls):
+                continue
+            if note_id:
+                seen_note_ids.add(note_id)
+            if url:
+                seen_urls.add(url)
+            accepted.append({"rank": normalized.get("rank") or rank, "item": normalized, "note_id": note_id, "url": url})
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    con.execute(
+                        """INSERT OR IGNORE INTO xhs_shadow_responses
+                        (response_id,refresh_job_id,refresh_item_id,keyword_id,provider_kind,captured_at,response_sha256,payload_json)
+                        VALUES(?,?,?,?,?,?,?,?)""",
+                        (response_id, command["refresh_job_id"], command.get("item_id"), keyword_id,
+                         provider_kind, captured, raw_hash, _json(raw)),
+                    )
+                    con.execute(
+                        """INSERT OR IGNORE INTO search_snapshots
+                        (snapshot_id,platform,keyword,keyword_id,captured_at,trigger_type,result_count,source_ref,payload_json)
+                        VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (snapshot_id, "xiaohongshu", keyword, keyword_id, captured, "shadow",
+                         len(accepted), f"xhs-shadow://{response_id}",
+                         _json({"response_id": response_id, "raw_sha256": raw_hash})),
+                    )
+                    for entry in accepted:
+                        item = entry["item"]
+                        note_id = entry["note_id"]
+                        canonical_url = entry["url"]
+                        owners: set[str] = set()
+                        if note_id:
+                            for namespace in ("xiaohongshu_note", "xiaohongshu_article"):
+                                owner = con.execute(
+                                    "SELECT content_id FROM content_identifiers WHERE namespace=? AND external_id=?",
+                                    (namespace, note_id),
+                                ).fetchone()
+                                if owner:
+                                    owners.add(str(owner["content_id"]))
+                        if canonical_url:
+                            owner = con.execute(
+                                "SELECT content_id FROM contents WHERE canonical_url=?",
+                                (canonical_url,),
+                            ).fetchone()
+                            if owner:
+                                owners.add(str(owner["content_id"]))
+                        if len(owners) > 1:
+                            raise ValueError(
+                                f"小红书搜索结果身份冲突：note_id={note_id or ''}, url={canonical_url or ''}"
+                            )
+                        content_id = next(iter(owners), _id("xhs_shadow_note", note_id or canonical_url))
+                        title = str(item.get("title_raw") or item.get("title") or "").strip() or None
+                        creator_external_id = str(item.get("creator_id") or "").strip() or None
+                        creator_id = None
+                        creator_name = str(item.get("creator_name_raw") or "").strip() or None
+                        if creator_external_id:
+                            creator_row = con.execute(
+                                "SELECT creator_id,payload_json FROM creators WHERE platform=? AND external_id=?",
+                                ("xiaohongshu", creator_external_id),
+                            ).fetchone()
+                            creator_id = str(creator_row["creator_id"]) if creator_row else _id(
+                                "xhs_creator", creator_external_id
+                            )
+                            old_creator_payload = (
+                                json.loads(creator_row["payload_json"] or "{}")
+                                if creator_row
+                                else {}
+                            )
+                            creator_payload = _merge_payload(
+                                old_creator_payload,
+                                {
+                                    "source": "xhs-shadow",
+                                    "external_id": creator_external_id,
+                                    "name": creator_name,
+                                    "avatar_url": item.get("avatar_url"),
+                                },
+                            )
+                            con.execute(
+                                """INSERT INTO creators(
+                                    creator_id,canonical_name,platform,external_id,
+                                    first_seen_at,updated_at,payload_json
+                                ) VALUES(?,?,?,?,?,?,?)
+                                ON CONFLICT(creator_id) DO UPDATE SET
+                                    canonical_name=COALESCE(excluded.canonical_name,creators.canonical_name),
+                                    updated_at=excluded.updated_at,
+                                    payload_json=excluded.payload_json""",
+                                (
+                                    creator_id,
+                                    creator_name,
+                                    "xiaohongshu",
+                                    creator_external_id,
+                                    captured,
+                                    captured,
+                                    _json(creator_payload),
+                                ),
+                            )
+                        existing_content = con.execute(
+                            "SELECT creator_id,author_name,published_at,payload_json FROM contents WHERE content_id=?",
+                            (content_id,),
+                        ).fetchone()
+                        existing_content_payload = (
+                            json.loads(existing_content["payload_json"] or "{}")
+                            if existing_content
+                            else {}
+                        )
+                        content_payload = _merge_payload(
+                            existing_content_payload,
+                            {
+                                "shadow": True,
+                                "keyword_id": keyword_id,
+                                "note_id": entry["note_id"],
+                                "raw": item,
+                                "source_ref": f"xhs-shadow://{response_id}",
+                            },
+                        )
+                        con.execute(
+                            """INSERT INTO contents(
+                                content_id,content_type,title,canonical_url,creator_id,author_name,
+                                published_at,first_seen_at,updated_at,domain,payload_json
+                            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(content_id) DO UPDATE SET
+                                title=COALESCE(excluded.title,contents.title),
+                                canonical_url=COALESCE(contents.canonical_url,excluded.canonical_url),
+                                creator_id=COALESCE(excluded.creator_id,contents.creator_id),
+                                author_name=COALESCE(excluded.author_name,contents.author_name),
+                                published_at=COALESCE(excluded.published_at,contents.published_at),
+                                updated_at=excluded.updated_at,
+                                payload_json=excluded.payload_json""",
+                            (
+                                content_id,
+                                "social_note",
+                                title,
+                                canonical_url,
+                                creator_id,
+                                creator_name,
+                                _time(item.get("published_at")),
+                                captured,
+                                captured,
+                                "www.xiaohongshu.com" if canonical_url else None,
+                                _json(content_payload),
+                            ),
+                        )
+                        if creator_id and creator_name is None and existing_content:
+                            creator_name = existing_content["author_name"]
+                        if note_id:
+                            for namespace in ("xiaohongshu_note", "xiaohongshu_article"):
+                                con.execute(
+                                    """INSERT OR IGNORE INTO content_identifiers
+                                    (namespace,external_id,content_id,first_seen_at,payload_json)
+                                    VALUES(?,?,?,?,?)""",
+                                    (namespace, note_id, content_id, captured,
+                                     _json({"source": "xhs-shadow", "keyword_id": keyword_id})),
+                                )
+                        con.execute(
+                            """INSERT OR IGNORE INTO content_discoveries(
+                                discovery_id,content_id,discovery_system,discovery_channel,
+                                discovered_at,snapshot_id,source_ref,payload_json
+                            ) VALUES(?,?,?,?,?,?,?,?)""",
+                            (
+                                _id("xhs_shadow_discovery", f"{content_id}:{snapshot_id}"),
+                                content_id,
+                                "xhs-search",
+                                "keyword-rank",
+                                captured,
+                                snapshot_id,
+                                f"xhs-shadow://{response_id}",
+                                _json({"keyword_id": keyword_id, "rank": entry["rank"]}),
+                            ),
+                        )
+                        con.execute(
+                            """INSERT OR IGNORE INTO search_hits
+                            (hit_id,snapshot_id,rank,content_id,title_raw,url_raw,payload_json)
+                            VALUES(?,?,?,?,?,?,?)""",
+                            (_id("xhs_shadow_hit", f"{snapshot_id}:{entry['rank']}"), snapshot_id,
+                             entry["rank"], content_id, title, entry["url"], _json(item)),
+                        )
+                        for field, metric_key, display_name in (
+                            ("liked_count", "xhs.note.like", "小红书点赞"),
+                            ("collected_count", "xhs.note.collect", "小红书收藏"),
+                            ("comment_count", "xhs.note.comment", "小红书评论"),
+                            ("shared_count", "xhs.note.share", "小红书分享"),
+                        ):
+                            value = _number(item.get(field))
+                            if value is None:
+                                continue
+                            con.execute(
+                                """INSERT OR IGNORE INTO metric_definitions(
+                                    metric_key,platform,subject_type,display_name,
+                                    value_type,unit,accumulation_mode,description
+                                ) VALUES(?,?,?,?,?,?,?,?)""",
+                                (
+                                    metric_key,
+                                    "xiaohongshu",
+                                    "content",
+                                    display_name,
+                                    "number",
+                                    "count",
+                                    "gauge",
+                                    "小红书搜索级影子刷新观测",
+                                ),
+                            )
+                            con.execute(
+                                """INSERT OR IGNORE INTO metric_observations(
+                                    observation_id,subject_type,subject_id,metric_key,
+                                    observed_at,numeric_value,snapshot_id,source_ref,payload_json
+                                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                                (
+                                    _id("xhs_shadow_observation", f"{snapshot_id}:{content_id}:{metric_key}"),
+                                    "content",
+                                    content_id,
+                                    metric_key,
+                                    captured,
+                                    value,
+                                    snapshot_id,
+                                    f"xhs-shadow://{response_id}",
+                                    _json({"keyword_id": keyword_id, "note_id": note_id}),
+                                ),
+                            )
+                    con.execute(
+                        """UPDATE search_refresh_items
+                           SET status='succeeded',current_phase='completed',
+                               snapshot_id=?,finished_at=?
+                           WHERE refresh_item_id=?""",
+                        (snapshot_id, captured, command.get("item_id")),
+                    )
+        return {
+            "refresh_job_id": command["refresh_job_id"], "command_id": command["command_id"],
+            "response_id": response_id, "snapshot_id": snapshot_id, "provider": provider_kind,
+            "dry_run": dry_run, "upstream_called": bool(response.get("upstream_called", not dry_run)),
+            "result_count": len(accepted),
+            "deduplicated_count": int(converted.get("raw_count", len(raw_hits))) - len(accepted),
+            "scope": "keyword_search_only",
+        }
+
+    def frozen_state(self) -> dict[str, Any]:
+        provider_kind = getattr(self.provider, "kind", None) or "dry-run"
+        return {
+            "legacy_refresh": "frozen", "scheduler_writes": "frozen", "settings_writes": "frozen",
+            "tikhub_called": False,
+            "shadow_refresh": {"enabled": True, "default_provider": provider_kind, "scope": "keyword_search_only"},
+        }
+
+    def _refresh_legacy_removed(self, keyword_id: str, confirm: bool, *, idempotency_key: str = "") -> dict[str, Any]:
         key = idempotency_key or f"xhs-refresh:{keyword_id}:{_now()}"
         resolver = MigrationResolver(self.settings, module_key="xhs-search", contract_key="refresh")
         receipts = DualWriteReceiptService(self.settings, module_key="xhs-search")
@@ -962,10 +1403,16 @@ class XhsService:
                 "source_status": {"status": "degraded", "source": "hub_runtime"},
                 "result": runtime,
             }
-        try:
-            response = self.adapter.refresh_status(job_id)
-            self._connection("healthy")
-            return {"http_status": response.status, "source_status": {"status": "healthy", "source": "legacy_http"}, "result": _scrub_payload(response.payload)}
-        except XhsSourceError as exc:
-            self._connection("degraded" if exc.status else "offline", error=str(exc))
-            raise ConflictError(f"{exc.kind}: {exc}") from exc
+        details = {
+            "job_id": job_id,
+            "upstream_called": False,
+            "reason_code": "xhs.legacy_refresh_status_frozen",
+            "message": "小红书旧刷新状态查询已冻结；工作台只返回 Hub 运行记录。",
+        }
+        self._audit("xhs.refresh_status", "blocked", details, subject_id=job_id)
+        return {
+            "http_status": 409,
+            "source_status": {"status": "blocked", "source": "freeze_policy"},
+            "blocked": True,
+            **details,
+        }

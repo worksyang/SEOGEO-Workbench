@@ -55,6 +55,7 @@ from content_hub.logging import configure_logging
 from content_hub.services.wechat_refresh import WechatRefreshService
 from content_hub.services.writing import backfill_writing_runtime
 from content_hub.adapters.wechat_search_api import RemoteWechatSearchProvider
+from content_hub.adapters.xhs_search_provider import DryRunXhsSearchProvider, TikHubSearchProvider
 
 logger = logging.getLogger("content_hub.http")
 
@@ -162,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved_settings
+    app.state.xhs_refresh_tasks = {}
     app.state.wechat_refresh_recovery_threads = {}
     app.state.wechat_refresh_watchdog_stop = threading.Event()
     app.state.wechat_refresh_watchdog_thread = None
@@ -173,6 +175,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_wait_seconds=resolved_settings.wechat_search_api_max_wait_seconds,
             top_k=resolved_settings.wechat_search_api_top_k,
         )
+    # 小红书影子刷新默认 dry-run；只有显式 kind + token + GET endpoint 才启用 live。
+    shadow_kind = resolved_settings.xhs_shadow_provider_kind
+    if shadow_kind in {"tikhub", "tikhub-search_notes", "live"}:
+        try:
+            app.state.xhs_shadow_provider = TikHubSearchProvider.from_environment()
+        except ValueError:
+            # 配置不完整时 fail-closed，不能因为 token 缺失而偷偷启用 live。
+            app.state.xhs_shadow_provider = DryRunXhsSearchProvider()
+    else:
+        app.state.xhs_shadow_provider = DryRunXhsSearchProvider()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(resolved_settings.cors_origins),
@@ -193,14 +205,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         started = time.perf_counter()
         try:
             referer_kind = legacy_referer_kind(request.headers.get("referer", ""))
-            if referer_kind == "xhs" and (
-                request.url.path == "/api/article-cover-image"
-                or request.url.path == "/api/article-covers"
-                or (
-                    request.url.path.startswith("/api/keywords/")
-                    and request.url.path.endswith("/refresh")
-                )
+            if (
+                referer_kind == "xhs"
+                and request.url.path.startswith("/api/")
+                and not request.url.path.startswith("/api/v1/")
             ):
+                # 小红书原版页面与微信原版页面使用了大量同名根 API。
+                # 必须在进入显式微信兼容路由前按业务岛屿分流，避免读取、
+                # 刷新进度和写操作落到微信模块。
                 legacy_path = request.url.path.removeprefix("/api/")
                 response = await proxy_legacy_wechat_api(legacy_path, request)
             else:

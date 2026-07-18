@@ -160,6 +160,8 @@ class Settings:
     writing_provider_status: str = "unconfigured"
     publish_bridge_kind: str = "disabled"
     publish_bridge_status: str = "unconfigured"
+    xhs_shadow_provider_kind: str = "dry-run"
+    xhs_tikhub_token_configured: bool = False
 
     @classmethod
     def load(cls, *, host: str | None = None, port: int | None = None) -> "Settings":
@@ -300,6 +302,8 @@ class Settings:
             writing_provider_status=os.getenv("HUB_WRITING_PROVIDER_STATUS", "demo_only").strip() or "demo_only",
             publish_bridge_kind=os.getenv("HUB_PUBLISH_BRIDGE_KIND", "disabled").strip() or "disabled",
             publish_bridge_status=os.getenv("HUB_PUBLISH_BRIDGE_STATUS", "unconfigured").strip() or "unconfigured",
+            xhs_shadow_provider_kind=os.getenv("HUB_XHS_SHADOW_PROVIDER_KIND", "dry-run").strip().lower() or "dry-run",
+            xhs_tikhub_token_configured=bool(os.getenv("HUB_XHS_TIKHUB_TOKEN", "").strip()),
         )
         settings.ensure_directories()
         return settings

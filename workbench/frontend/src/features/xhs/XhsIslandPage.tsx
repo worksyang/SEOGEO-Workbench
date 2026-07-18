@@ -39,7 +39,7 @@ export default function XhsIslandPage({onSourceStatus}: {onSourceStatus: (status
       <iframe
         className="wechat-legacy-frame"
         title="小红书关键词原系统业务岛屿"
-        src="/legacy/xhs/monitor.html"
+        src="/legacy/xhs/monitor.html?wbv=xhs-v4"
       />
     </div>
   )

@@ -24,7 +24,18 @@ body { font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif; ba
 .col-left { width:560px; flex-shrink:0; border-right:1px solid #e2e4e8; background:#fff; display:flex; flex-direction:column; overflow:hidden; }
 .col-left-head { padding:10px 16px; border-bottom:1px solid #f0f0f0; display:flex; align-items:center; gap:10px; }
 .col-left-head .hint { font-size:11px; color:#aaa; }
+.col-left-head-main { flex:1; min-width:0; }
 .col-left-toolbar { display:flex; align-items:center; gap:10px; flex:1; min-width:0; justify-content:flex-end; }
+.xhs-freeze-notice {
+  margin-top:8px;
+  padding:8px 10px;
+  border:1px solid #fed7aa;
+  border-radius:8px;
+  background:#fff7ed;
+  color:#9a3412;
+  font-size:11px;
+  line-height:1.5;
+}
 .acct-sort-tabs { display:flex; gap:4px; }
 .acct-sort-tab { font-size:11px; padding:2px 8px; border:1px solid #e0e0e0; border-radius:10px; background:#fff; color:#888; cursor:pointer; }
 .acct-sort-tab.active { background:#111; color:#fff; border-color:#111; }
@@ -220,6 +231,14 @@ body { font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif; ba
   color:#334155;
 }
 .kw-refresh-trigger.hidden { display:none; }
+.xhs-frozen-control,
+button:disabled.xhs-frozen-control,
+input:disabled.xhs-frozen-control,
+select:disabled.xhs-frozen-control,
+textarea:disabled.xhs-frozen-control {
+  opacity: .55;
+  cursor: not-allowed;
+}
 
 .kw-refresh-history-btn {
   height:32px;

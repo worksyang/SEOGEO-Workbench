@@ -12,6 +12,58 @@ const KEYWORD_API_BASE = '/api/keywords';
 const COVER_API_URL = '/api/article-covers';
 const COVER_PLACEHOLDER_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="60" height="38" viewBox="0 0 60 38"%3E%3Crect fill="%23f0ece4" width="60" height="38" rx="4"/%3E%3Cpath d="M20 12h20v2H20zM20 18h14v2H20z" fill="%23c9c2b5"/%3E%3C/svg%3E';
 const COVER_NO_URL_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxIDEnPjwvc3ZnPg==';
+const XHS_MIGRATION_FROZEN = true;
+const XHS_FREEZE_MESSAGE = '小红书迁移期间已全部冻结：刷新、恢复和设置写入均已停用，当前页面只读。';
+
+function xhsShowFrozenToast() {
+  if (typeof kmShowToast === 'function') {
+    kmShowToast(XHS_FREEZE_MESSAGE, false);
+    return;
+  }
+  window.alert(XHS_FREEZE_MESSAGE);
+}
+
+function xhsApplyFrozenUi() {
+  if (!XHS_MIGRATION_FROZEN) return;
+  const selectors = [
+    '#kwRefreshTrigger',
+    '#kwProgressCancel',
+    '#kmRefreshConfirmBtn',
+    '#kmBatchAddInput',
+    '#kmBatchAddGroup',
+    '#kmSettingsModal input',
+    '#kmSettingsModal button:not(.km-modal-close)',
+    '#kmGroupModal #kmModalInput',
+    '#kmGroupModal .km-btn-primary',
+    '#kmKeywordModal input',
+    '#kmKeywordModalDelete',
+    '#signalTermModal select',
+    '#signalTermConfirmBtn',
+    '#kmCancelConfirmBtn',
+    '#colRight button.pin-btn',
+    '#colRight input[list="topicSuggestions"]',
+    '#colRight input[list="bucketSuggestions"]',
+    '.km-quick-add-side button',
+    '.km-manage-keyword-input',
+    '.km-manage-note-input',
+    '.km-manage-actions button',
+    '.km-row-danger',
+    '.km-settings-keyword-row button',
+    '.km-refresh-add-input',
+    '.km-refresh-add-btn',
+    '.km-refresh-delete',
+    '.km-history-resume',
+    '#kmRefreshModal .km-refresh-check input',
+  ];
+  document.querySelectorAll(selectors.join(',')).forEach((element) => {
+    element.disabled = true;
+    element.setAttribute('aria-disabled', 'true');
+    element.title = XHS_FREEZE_MESSAGE;
+    element.classList.add('xhs-frozen-control');
+  });
+  const notice = document.getElementById('xhsFreezeNotice');
+  if (notice) notice.textContent = XHS_FREEZE_MESSAGE + ' 刷新历史仍可查看。';
+}
 
 marked.setOptions({
   gfm: true,
@@ -999,6 +1051,7 @@ function applyArticleCover(item) {
 }
 
 async function loadQueuedArticleCovers() {
+  if (XHS_MIGRATION_FROZEN) return;
   if (coverBatchInFlight) return;
 
   const batch = [];
@@ -1924,8 +1977,10 @@ async function loadData(options = {}) {
       .sort()
       .pop();
     const pinnedCount = ALL_KEYWORDS.filter(k => k.is_pinned).length;
+    const source = String(MONITOR_DATA.source_status?.source || '');
+    const sourceLabel = source.startsWith('hub_') ? 'Hub 冻结数据' : '旧系统读取';
     const meta = latestRun
-      ? `最近抓取：${latestRun} · TikHub 实时 · 置顶 ${pinnedCount} 个 · ${MONITOR_DATA.window_days} 天窗口`
+      ? `最近抓取：${latestRun} · ${sourceLabel} · 置顶 ${pinnedCount} 个 · ${MONITOR_DATA.window_days} 天窗口`
       : `置顶 ${pinnedCount} 个 · ${MONITOR_DATA.window_days}天窗口`;
     document.querySelector('.topbar-right').textContent = `默认入口：关键词 · ${meta}`;
   }
@@ -3261,11 +3316,13 @@ function refresh() {
 
   if (mode === 'keywordManage') {
     loadKeywordManageView();
+    xhsApplyFrozenUi();
     return;
   }
 
   if (mode === 'articleList') {
     if (window.alInit) window.alInit();
+    xhsApplyFrozenUi();
     return;
   }
 
@@ -3273,10 +3330,12 @@ function refresh() {
   if (mode === 'keyword') {
     if (!curKeyword && ALL_KEYWORDS[0]) curKeyword = ALL_KEYWORDS[0].keyword;
     renderKeywordDetail(curKeyword);
+    xhsApplyFrozenUi();
     return;
   }
   if (!curAccount && ALL_ACCOUNTS[0]) curAccount = ALL_ACCOUNTS[0].name;
   renderAccountDetail(curAccount);
+  xhsApplyFrozenUi();
   window.__XHS_PERF__.render.end = performance.now();
 }
 
@@ -3524,6 +3583,10 @@ function closeDrawer() {
 
 async function toggleKeywordPin(event, keywordId, keyword, nextPinned) {
   if (event) event.stopPropagation();
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   try {
     const endpoint = `${KEYWORD_API_BASE}/${encodeURIComponent(keywordId)}/${nextPinned ? 'pin' : 'unpin'}`;
     const resp = await fetch(endpoint, {
@@ -3543,6 +3606,10 @@ async function toggleKeywordPin(event, keywordId, keyword, nextPinned) {
 }
 
 async function saveKeywordTopic(keywordId, keyword) {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const input = document.getElementById(keywordTopicInputId(keywordId));
   const topic = input ? input.value.trim() : '';
   try {
@@ -3570,6 +3637,10 @@ async function resetKeywordTopic(keywordId, keyword) {
 }
 
 async function saveKeywordBucket(keywordId, keyword) {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const input = document.getElementById(keywordBucketInputId(keywordId));
   const keyword_bucket = input ? input.value.trim() : '';
   try {
@@ -3635,8 +3706,8 @@ const REFRESH_ALL_STATUS_URL = '/api/refresh-all/status';
 const REFRESH_ALL_LAUNCH_URL = '/api/refresh-all';
 const REFRESH_ALL_CANCEL_URL = '/api/refresh-all/cancel';
 const REFRESH_ALL_RESUME_URL = '/api/refresh-all/resume';
-const KM_REFRESH_BATCH_STORAGE_KEY = 'km-refresh-batch-state-v2';
-const KM_REFRESH_LEGACY_STORAGE_KEY = 'km-refresh-demo-state-v1';
+const KM_REFRESH_BATCH_STORAGE_KEY = 'xhs-refresh-batch-state-v2';
+const KM_REFRESH_LEGACY_STORAGE_KEY = 'xhs-refresh-demo-state-v1';
 const KM_REFRESH_DONE_HOLD_MS = 8000;
 const KM_REFRESH_POLL_MS = 3000;
 let KM_DATA = null;
@@ -3912,6 +3983,18 @@ function kmSyncInlineRefreshUi() {
   const cancelBtn = document.getElementById('kwProgressCancel');
   if (!slot || !trigger || !progress || !label || !bar || !meta || !cancelBtn) return;
 
+  if (XHS_MIGRATION_FROZEN) {
+    slot.classList.toggle('active', mode === 'keyword');
+    trigger.disabled = true;
+    trigger.textContent = '刷新已冻结';
+    trigger.title = XHS_FREEZE_MESSAGE;
+    progress.classList.remove('active');
+    cancelBtn.classList.remove('visible');
+    kmStopBatchPolling();
+    xhsApplyFrozenUi();
+    return;
+  }
+
   const showSlot = mode === 'keyword';
   slot.classList.toggle('active', showSlot);
   if (!showSlot) {
@@ -3980,6 +4063,10 @@ function kmSyncInlineRefreshUi() {
 }
 
 async function kmProgressCancel() {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   if (!kmActiveBatchId || kmCancelBatchPending) return;
   const snapshot = kmBuildRefreshSnapshot();
   if (snapshot.phase !== 'running') return;
@@ -3993,6 +4080,10 @@ function kmCloseCancelConfirm() {
 }
 
 async function kmConfirmCancelAndClose() {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const btn = document.getElementById('kmCancelConfirmBtn');
   if (btn) {
     btn.disabled = true;
@@ -4100,6 +4191,7 @@ function kmRenderRefreshHistory(history) {
   if (!list) return;
   if (!history.length) {
     list.innerHTML = '<div style="padding:24px;text-align:center;color:#999">暂无刷新记录</div>';
+    xhsApplyFrozenUi();
     return;
   }
   list.innerHTML = history.map((item, i) => {
@@ -4165,6 +4257,7 @@ function kmRenderRefreshHistory(history) {
   list.querySelectorAll('.km-history-resume[data-batch-id]').forEach((btn) => {
     btn.addEventListener('click', () => kmResumeBatch(btn.dataset.batchId || ''));
   });
+  xhsApplyFrozenUi();
 }
 
 function kmUpdateHistoryBtnState(history) {
@@ -4188,6 +4281,10 @@ async function kmOpenRefreshHistory() {
 }
 
 async function kmResumeBatch(batchId) {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   if (!batchId) return;
   try {
     const data = await kmApiFetch(REFRESH_ALL_RESUME_URL, {
@@ -4218,9 +4315,19 @@ async function kmInitRefreshHistoryBtn() {
 }
 
 async function kmApiFetch(url, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (XHS_MIGRATION_FROZEN && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    xhsShowFrozenToast();
+    throw new Error(XHS_FREEZE_MESSAGE);
+  }
   const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    const message = data && typeof data.error === 'object'
+      ? data.error.message
+      : data.error;
+    throw new Error(message || data.message || `HTTP ${r.status}`);
+  }
   return data;
 }
 
@@ -4342,6 +4449,10 @@ function kmBindRefreshUiEvents() {
 }
 
 async function kmOpenRefreshModal() {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const ok = await kmEnsureDataLoaded({ silent: true });
   if (!ok || !KM_DATA) {
     kmShowToast('关键词列表加载失败', false);
@@ -4399,6 +4510,10 @@ function kmCloseRefreshModal() {
 }
 
 async function kmConfirmRefresh() {
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const list = document.getElementById('kmRefreshKeywordList');
   if (!list) return;
   const checkboxes = list.querySelectorAll('input[type="checkbox"]:checked');
@@ -4461,9 +4576,11 @@ function renderKeywordManageView() {
   if (!wrap) return;
   if (!KM_DATA.groups.length) {
     wrap.innerHTML = `<div class="km-empty-group">暂无分组，请先在刷新弹窗或接口里创建一个分组。</div>`;
+    xhsApplyFrozenUi();
     return;
   }
   wrap.innerHTML = KM_DATA.groups.map(group => kmRenderManageGroup(group)).join('');
+  xhsApplyFrozenUi();
 }
 
 function kmRenderBatchAddGroups() {
@@ -4621,8 +4738,9 @@ function kmRenderSettingsGroups() {
   const title = document.getElementById('kmSettingsModalTitle');
   if (title) title.textContent = `${group.label} · 设置`;
   const desc = document.getElementById('kmSettingsModalDesc');
-  if (desc) desc.textContent = '只管理当前分类：添加关键词、删除关键词、改名或删除空分组。';
+  if (desc) desc.textContent = '迁移保护已开启：当前设置只读，暂不允许添加、删除、改名或修改备注。';
   wrap.innerHTML = kmRenderSingleGroupSettings(group);
+  xhsApplyFrozenUi();
 }
 
 function kmRenderSingleGroupSettings(group) {
@@ -5122,6 +5240,10 @@ const _refreshJobs = {};  // keywordId -> jobId
 
 async function startKeywordRefresh(event, keywordId, keyword) {
   if (event) event.stopPropagation();
+  if (XHS_MIGRATION_FROZEN) {
+    xhsShowFrozenToast();
+    return;
+  }
   const btn = document.getElementById(`refresh-btn-${keywordId}`);
   if (btn) { btn.textContent = '搜索中…'; btn.disabled = true; }
   try {
@@ -5275,3 +5397,10 @@ async function signalTermConfirm() {
   const ok = await loadData();
   if (ok) refresh();
 })();
+
+const xhsRefreshHistoryButton = document.getElementById('kwRefreshHistoryBtn');
+if (xhsRefreshHistoryButton) {
+  xhsRefreshHistoryButton.onclick = () => {
+    void kmOpenRefreshHistory();
+  };
+}

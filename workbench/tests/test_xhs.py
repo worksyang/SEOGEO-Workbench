@@ -18,6 +18,22 @@ from content_hub.features.xhs.service import XhsService
 from content_hub.errors import ConflictError
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_xhs_frontend_refresh_state_is_namespaced_from_wechat() -> None:
+    xhs_source = (
+        ROOT / "workbench/frontend/public/legacy/xhs/static/js/monitor.js"
+    ).read_text(encoding="utf-8")
+    wechat_source = (
+        ROOT / "workbench/frontend/public/legacy/wechat/static/js/monitor.js"
+    ).read_text(encoding="utf-8")
+    assert "xhs-refresh-batch-state-v2" in xhs_source
+    assert "xhs-refresh-demo-state-v1" in xhs_source
+    assert "const KM_REFRESH_BATCH_STORAGE_KEY = 'km-refresh-batch-state-v2';" in wechat_source
+    assert "xhs-refresh-batch-state-v2" not in wechat_source
+
+
 def _source(tmp_path: Path, *, changed: bool = False) -> Path:
     root = tmp_path / "normalized"
     root.mkdir(parents=True)
@@ -314,11 +330,10 @@ def test_xhs_live_bootstrap_fallback_and_empty_terms(settings, tmp_path, monkeyp
 
     monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, {"keywords": [], "snapshot_terms": None, "token": "secret"}))
     degraded = service.bootstrap()
-    assert degraded["source_status"]["source"] == "hub_db"
+    assert degraded["source_status"]["source"] == "hub_db_projection"
     assert degraded["counts"]["keywords"] == 1
-    payload = {"keywords": [], "accounts": [], "snapshots": [], "ranking_hits": [], "articles": [], "snapshot_terms": [], "counts": {"keywords": 9}}
-    monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, payload))
-    assert service.bootstrap()["counts"] == {"keywords": 9}
+    monkeypatch.setattr(service.adapter, "bootstrap", lambda: Response(200, {"token": "secret"}))
+    assert service.bootstrap()["counts"]["keywords"] == 1
 
 
 def test_xhs_refresh_does_not_forward_legacy_identifier(settings, tmp_path, monkeypatch):
@@ -365,14 +380,12 @@ def test_xhs_adapter_refresh_payload_contains_keyword_and_confirm(settings, tmp_
 
 def test_xhs_live_account_normalizes_name_and_score_preserving_raw(settings, tmp_path, monkeypatch):
     service = XhsService(replace(settings, xhs_settings_db_path=tmp_path / "settings.db"))
-    monkeypatch.setattr(service.adapter, "account", lambda _: RemoteResponse({"accountNickname": "  作者 ", "accountScore": "98.5", "token": "secret"}, 200))
-    result = service.account("acct-1")
-    account = result["account"]
-    assert account["name"] == "作者"
-    assert account["canonical_name"] == "作者"
-    assert account["score"] == 98.5
-    assert account["raw_evidence"]["accountNickname"] == "  作者 "
-    assert account["raw_evidence"]["token"] == "[REDACTED]"
+    result = service._normalize_live_account({"accountNickname": "  作者 ", "accountScore": "98.5", "token": "secret"})
+    assert result["name"] == "作者"
+    assert result["canonical_name"] == "作者"
+    assert result["score"] == 98.5
+    assert result["raw_evidence"]["accountNickname"] == "  作者 "
+    assert result["raw_evidence"]["token"] == "[REDACTED]"
 
 
 def test_xhs_empty_settings_uses_normalized_active_and_audits_warning(xhs_settings):
@@ -411,8 +424,8 @@ def test_xhs_live_account_proxy_and_hub_fallback(xhs_settings, monkeypatch):
         payload = {"account_id": "b" * 24, "token": "secret"}
     monkeypatch.setattr(service.adapter, "account", lambda _: Response())
     remote = service.account("b" * 24)
-    assert remote["source_status"]["source"] == "legacy_http"
-    assert remote["account"]["token"] == "[REDACTED]"
+    assert remote["source_status"]["source"] == "hub_db"
+    assert remote["account"]["external_id"] == "b" * 24
     monkeypatch.setattr(service.adapter, "account", lambda _: (_ for _ in ()).throw(XhsSourceError("offline")))
     fallback = service.account("b" * 24)
     assert fallback["source_status"]["source"] == "hub_db"
@@ -483,7 +496,8 @@ def test_xhs_bootstrap_offline_uses_hub_fallback(xhs_settings):
     XhsService(xhs_settings).import_history(dry_run=False)
     xhs_settings = replace(xhs_settings, xhs_source_url="http://127.0.0.1:1")
     result = XhsService(xhs_settings).bootstrap()
-    assert result["source_status"]["status"] == "degraded"
+    assert result["source_status"]["status"] == "healthy"
+    assert result["source_status"]["source"] == "hub_db_projection"
     assert result["counts"]["keywords"] == 1
     assert isinstance(result["snapshot_terms"], list)
     assert isinstance(result["articles"][0]["payload"], dict)
@@ -493,7 +507,7 @@ def test_xhs_keyword_offline_returns_real_history(xhs_settings):
     XhsService(xhs_settings).import_history(dry_run=False)
     xhs_settings = replace(xhs_settings, xhs_source_url="http://127.0.0.1:1")
     result = XhsService(xhs_settings).keyword("kw_1")
-    assert result["source_status"]["status"] == "degraded"
+    assert result["source_status"]["status"] == "healthy"
     assert len(result["snapshots"]) == 1
     assert len(result["hits"]) == 1
     assert len(result["articles"]) == 1
@@ -548,12 +562,13 @@ def test_xhs_api_articles_article_and_account_fallback(xhs_settings, monkeypatch
                 articles = await client.get("/api/v1/xhs/articles")
                 article = await client.get("/api/v1/xhs/articles/xhs_tk_" + "a" * 24)
                 dry = await client.post("/api/v1/xhs/import", json={"dry_run": True})
-                assert account.status_code == 200 and account.json()["data"]["source_status"]["status"] == "degraded"
+                assert account.status_code == 200 and account.json()["data"]["source_status"]["status"] == "healthy"
                 assert isinstance(articles.json()["data"]["articles"][0]["payload"], dict)
                 assert isinstance(article.json()["data"]["article"]["payload"], dict)
                 assert isinstance(article.json()["data"]["hits"][0]["payload"], dict)
                 assert isinstance(article.json()["data"]["observations"][0]["payload"], dict)
-                assert dry.status_code == 200 and dry.json()["data"]["dry_run"] is True
+                assert dry.status_code == 409
+                assert dry.json()["error"]["code"] == "XHS_MIGRATION_FROZEN"
     asyncio.run(run())
 
 
@@ -593,5 +608,6 @@ def test_xhs_api_confirm_required(xhs_settings):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/api/v1/xhs/keywords/kw_1/refresh", json={"confirm": False})
-                assert response.status_code == 422
+                assert response.status_code == 409
+                assert response.json()["error"]["code"] == "XHS_MIGRATION_FROZEN"
     asyncio.run(run())
