@@ -994,13 +994,20 @@ def test_successful_snapshot_touches_keyword_creator_and_runs_linkage(settings):
         "kw_linkage": {
             "captured_at": "2026-07-18T01:00:00Z",
             "result_count": 1,
-            "hits": [{"rank": 1, "title_raw": "联动文章", "url_raw": "https://example.invalid/linkage", "account": "联动账号"}],
+            "hits": [{
+                "rank": 1,
+                "title_raw": "联动文章",
+                "url_raw": "https://example.invalid/linkage",
+                "account": "联动账号",
+                "markdown_body": "正文阅读123\n\n# 阅读42\n\n点赞7\n\nEndFragment",
+            }],
             "source_ref": "provider:test-linkage",
         }
     })
     result = WechatRefreshService(settings, provider=provider).refresh_batch(keyword_ids=["kw_linkage"], key="linkage-success")
     assert result["hub_status"] == "succeeded"
     assert result["post_refresh_linkage"]["status"] == "succeeded"
+    assert result["post_refresh_linkage"]["steps"]["metrics_backfill"]["status"] != "skipped"
     with connect(settings, readonly=True) as con:
         keyword = con.execute("SELECT updated_at,payload_json FROM keywords WHERE keyword_id='kw_linkage'").fetchone()
         creator = con.execute("SELECT updated_at,payload_json FROM creators WHERE canonical_name='联动账号'").fetchone()
@@ -1008,6 +1015,12 @@ def test_successful_snapshot_touches_keyword_creator_and_runs_linkage(settings):
         assert json.loads(keyword["payload_json"])["latest_snapshot_id"]
         assert creator["updated_at"] == "2026-07-18T01:00:00Z"
         assert json.loads(creator["payload_json"])["latest_snapshot_id"]
+        metric = con.execute(
+            """SELECT numeric_value FROM metric_observations
+               WHERE metric_key='wechat.article.read_count'
+               ORDER BY observed_at DESC LIMIT 1"""
+        ).fetchone()
+        assert metric["numeric_value"] == 42
         assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.refresh_all.linkage' AND outcome='succeeded'").fetchone()[0] == 1
 
 

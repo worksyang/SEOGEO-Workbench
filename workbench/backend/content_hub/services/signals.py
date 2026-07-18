@@ -26,7 +26,14 @@ _SYSTEM_PLATFORM_ALIASES = {
 }
 
 
-def _invoke_optional_service(module_names: tuple[str, ...], *, connection, settings, job_id: str) -> dict[str, Any]:
+def _invoke_optional_service(
+    module_names: tuple[str, ...],
+    *,
+    connection,
+    settings,
+    job_id: str,
+    call_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run an optional post-refresh service without making it a hard dependency.
 
     Newer deployments may provide metric backfill/live projection modules while
@@ -48,6 +55,7 @@ def _invoke_optional_service(module_names: tuple[str, ...], *, connection, setti
     candidates = (
         "backfill",
         "backfill_metrics",
+        "backfill_wechat_article_metrics",
         "backfill_contents",
         "run",
         "project_live",
@@ -89,8 +97,33 @@ def _invoke_optional_service(module_names: tuple[str, ...], *, connection, setti
         }.items()
         if key in parameters
     }
+    if call_kwargs:
+        kwargs.update({key: value for key, value in call_kwargs.items() if key in parameters})
     result = callable_obj(**kwargs)
     return {"status": "succeeded", "module": module.__name__, "result": result}
+
+
+def _refresh_snapshot_context(connection, job_id: str) -> dict[str, Any]:
+    rows = connection.execute(
+        """SELECT DISTINCT s.snapshot_id,s.captured_at,s.source_ref,h.content_id
+           FROM search_refresh_items i
+           JOIN search_snapshots s ON s.snapshot_id=i.snapshot_id
+           LEFT JOIN search_hits h ON h.snapshot_id=s.snapshot_id
+          WHERE i.refresh_job_id=? AND i.status='succeeded'
+          ORDER BY s.captured_at,s.snapshot_id""",
+        (job_id,),
+    ).fetchall()
+    snapshot_ids = [str(row["snapshot_id"]) for row in rows]
+    content_ids = sorted({str(row["content_id"]) for row in rows if row["content_id"]})
+    captured_ats = [str(row["captured_at"]) for row in rows if row["captured_at"]]
+    source_refs = sorted({str(row["source_ref"]) for row in rows if row["source_ref"]})
+    return {
+        "snapshot_ids": snapshot_ids,
+        "content_ids": content_ids,
+        "observed_at": max(captured_ats) if captured_ats else None,
+        "source_ref": f"wechat-refresh:{job_id}:snapshots:{','.join(snapshot_ids)}",
+        "snapshot_source_refs": source_refs,
+    }
 
 
 def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, Any]:
@@ -101,11 +134,36 @@ def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, 
     """
     steps: dict[str, Any] = {}
     failures: dict[str, str] = {}
+    context = _refresh_snapshot_context(connection, job_id)
+    try:
+        metrics_module = importlib.import_module("content_hub.services.wechat_article_metrics")
+        metrics_kwargs = {
+            "observed_at": context["observed_at"],
+            "source_ref": context["source_ref"],
+            "content_ids": context["content_ids"],
+        }
+        steps["metrics_backfill"] = _invoke_optional_service(
+            ("content_hub.services.wechat_article_metrics",),
+            connection=connection,
+            settings=settings,
+            job_id=job_id,
+            call_kwargs=metrics_kwargs,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name != "content_hub.services.wechat_article_metrics":
+            failures["metrics_backfill"] = f"{type(exc).__name__}: {exc}"
+            steps["metrics_backfill"] = {"status": "failed", "error": failures["metrics_backfill"]}
+        else:
+            steps["metrics_backfill"] = {"status": "skipped", "reason": "module_missing"}
+    except Exception as exc:
+        failures["metrics_backfill"] = f"{type(exc).__name__}: {exc}"
+        steps["metrics_backfill"] = {"status": "failed", "error": failures["metrics_backfill"]}
+
+    optional_metrics_module = "content_hub.services.wechat_article_metrics" in steps["metrics_backfill"].get("module", "")
     for name, modules in (
         ("metrics_backfill", (
             "content_hub.services.metrics_backfill",
             "content_hub.services.metric_backfill",
-            "content_hub.services.wechat_article_metrics",
         )),
         ("live_projection", (
             "content_hub.services.live_projection",
@@ -113,6 +171,8 @@ def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, 
             "content_hub.services.wechat_live_projection",
         )),
     ):
+        if name == "metrics_backfill" and optional_metrics_module:
+            continue
         try:
             steps[name] = _invoke_optional_service(modules, connection=connection, settings=settings, job_id=job_id)
         except Exception as exc:
@@ -126,7 +186,12 @@ def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, 
     except Exception as exc:
         failures["signals"] = f"{type(exc).__name__}: {exc}"
         steps["signals"] = {"status": "failed", "error": failures["signals"]}
-    return {"status": "succeeded" if not failures else "failed", "steps": steps, "failures": failures}
+    return {
+        "status": "succeeded" if not failures else "failed",
+        "context": context,
+        "steps": steps,
+        "failures": failures,
+    }
 def load_platform_rules(path: Path | None) -> dict[str, str]:
     """读取 GEO 已有的平台别名规则；文件不存在时不推断新别名。"""
     if path is None or not path.is_file():
