@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
-import types
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Event
@@ -999,7 +997,7 @@ def test_successful_snapshot_touches_keyword_creator_and_runs_linkage(settings):
                 "title_raw": "联动文章",
                 "url_raw": "https://example.invalid/linkage",
                 "account": "联动账号",
-                "markdown_body": "正文阅读123\n\n# 阅读42\n\n点赞7\n\nEndFragment",
+                "markdown_body": "正文阅读123\n\n阅读42\n\n# 文章底部\n\n点赞7\n\nEndFragment",
             }],
             "source_ref": "provider:test-linkage",
         }
@@ -1036,11 +1034,10 @@ def test_scheduler_budget_recomputes_business_date_instead_of_payload_date(setti
 
 def test_post_refresh_linkage_failure_is_observable(settings, monkeypatch):
     _keyword(settings, "kw_linkage_failure")
-    module = types.ModuleType("content_hub.services.metrics_backfill")
     def fail(**_kwargs):
         raise RuntimeError("metrics backfill exploded")
-    module.backfill = fail
-    monkeypatch.setitem(sys.modules, module.__name__, module)
+    import content_hub.services.wechat_article_metrics as module
+    monkeypatch.setattr(module, "backfill_wechat_article_metrics", fail)
     result = WechatRefreshService(settings, provider=FakeWechatRefreshProvider()).refresh_batch(keyword_ids=["kw_linkage_failure"], key="linkage-failure")
     assert result["hub_status"] == "partial_failed"
     assert result["post_refresh_linkage"]["status"] == "failed"
