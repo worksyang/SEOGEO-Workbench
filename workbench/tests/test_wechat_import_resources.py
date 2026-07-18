@@ -776,11 +776,28 @@ def test_streaming_import_persists_exact_runtime_projections_idempotently(
         use_persisted_config=True,
     )
     repository = WechatLegacyRepository(configured)
-    assert repository.runtime_history() == expected_history
+    expected_by_started_at = sorted(
+        expected_history,
+        key=lambda row: row["started_at"],
+        reverse=True,
+    )
+    assert repository.runtime_history() == expected_by_started_at
     assert [row["batch_id"] for row in repository.runtime_history()] == [
-        "batch_mtime_first", "batch_started_first", "discovery_today",
+        "batch_started_first", "discovery_today", "batch_mtime_first",
     ]
-    assert repository.scheduler_runtime() == expected_scheduler
+    with connect(configured, readonly=True) as con:
+        stored_started_at = con.execute(
+            "SELECT json_extract(payload_json, '$.started_at') "
+            "FROM wechat_legacy_projections "
+            "WHERE projection_kind='runtime' AND subject_id='batch_mtime_first'"
+        ).fetchone()[0]
+    assert stored_started_at == "2026-01-01T00:00:00"
+    expected_effective_scheduler = {
+        **expected_scheduler,
+        "is_active": False,
+        "last_run_at": None,
+    }
+    assert repository.scheduler_runtime() == expected_effective_scheduler
     assert expected_scheduler["budget"]["reserved_count"] == 4
     assert expected_scheduler["budget_breakdown"]["discovery"]["used"] == 2
     with connect(configured, readonly=True) as con:
@@ -811,8 +828,11 @@ def test_streaming_import_persists_exact_runtime_projections_idempotently(
     assert core_after == core_before
     assert projection_count_after == projection_count_before
     # A fresh repository/connection after the second import proves restart read.
-    assert WechatLegacyRepository(configured).runtime_history() == expected_history
-    assert WechatLegacyRepository(configured).scheduler_runtime() == expected_scheduler
+    assert WechatLegacyRepository(configured).runtime_history() == expected_by_started_at
+    assert (
+        WechatLegacyRepository(configured).scheduler_runtime()
+        == expected_effective_scheduler
+    )
 
 
 def test_frozen_reference_runtime_r19_r20_payload_hashes() -> None:

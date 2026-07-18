@@ -128,6 +128,12 @@ class Settings:
     wechat_source_url: str
     wechat_source_root: Path
     wechat_source_timeout_seconds: float
+    wechat_search_api_url: str
+    wechat_search_api_enabled: bool
+    wechat_search_api_timeout_seconds: float
+    wechat_search_api_poll_interval_seconds: float
+    wechat_search_api_max_wait_seconds: float
+    wechat_search_api_top_k: int
     mp_source_url: str
     mp_source_root: Path
     mp_source_timeout_seconds: float
@@ -215,6 +221,24 @@ class Settings:
             ),
             wechat_source_timeout_seconds=float(
                 os.getenv("HUB_WECHAT_SOURCE_TIMEOUT_SECONDS", "3")
+            ),
+            wechat_search_api_url=os.getenv(
+                "HUB_WECHAT_SEARCH_API_URL", "http://192.168.31.238:8000"
+            ).rstrip("/"),
+            wechat_search_api_enabled=os.getenv(
+                "HUB_WECHAT_SEARCH_API_ENABLED", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            wechat_search_api_timeout_seconds=float(
+                os.getenv("HUB_WECHAT_SEARCH_API_TIMEOUT_SECONDS", "20")
+            ),
+            wechat_search_api_poll_interval_seconds=float(
+                os.getenv("HUB_WECHAT_SEARCH_API_POLL_INTERVAL_SECONDS", "2")
+            ),
+            wechat_search_api_max_wait_seconds=float(
+                os.getenv("HUB_WECHAT_SEARCH_API_MAX_WAIT_SECONDS", "360")
+            ),
+            wechat_search_api_top_k=max(
+                1, min(100, int(os.getenv("HUB_WECHAT_SEARCH_API_TOP_K", "10")))
             ),
             mp_source_url=os.getenv("HUB_MP_SOURCE_URL", "http://127.0.0.1:28765"),
             mp_source_root=Path(

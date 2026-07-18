@@ -1396,6 +1396,7 @@ class WechatService:
             key=idempotency_key,
             request_id=request_id,
             confirm=True,
+            semantic=True,
         )
 
     def refresh_status(self, job_id: str) -> dict[str, Any]:
@@ -1409,7 +1410,11 @@ class WechatService:
         return result
 
     def _refresh_status_hub(self, job_id: str) -> dict[str, Any]:
-        runtime = WechatRefreshService(self.settings).runtime(job_id, batch=False)
+        runtime = WechatRefreshService(self.settings).runtime(
+            job_id,
+            batch=False,
+            semantic=True,
+        )
         return {
             "source_status": {"status": "healthy", "source": "hub_runtime"},
             "result": runtime,
@@ -2821,27 +2826,16 @@ class WechatService:
     ) -> None:
         """Upsert an imported runtime projection without leaking Hub metadata.
 
-        R19's legacy order is directory-mtime order, while the existing
-        repository intentionally orders batches by JSON ``started_at``.
-        SQLite JSON1 reads the first duplicate key and Python's json decoder
-        keeps the last value.  A private first ``started_at`` therefore carries
-        only the legacy sort rank; repository output retains the real value and
-        the recursively sorted Flask payload order.
+        The old importer used to prepend a duplicate ``started_at`` key to
+        preserve directory-mtime order.  That made SQLite JSON1 and Python
+        disagree about the timestamp.  Keep the business payload canonical:
+        history ordering is determined by the decoded ``started_at`` value.
         """
         ordered = _sorted_json_value(payload)
         projection_hash = _projection_hash(ordered)
-        parts = [
-            json.dumps("runtime_subtype") + ":" + json.dumps(subtype)
-        ]
+        parts = [json.dumps("runtime_subtype") + ":" + json.dumps(subtype)]
         for key, value in ordered.items():
             encoded_key = json.dumps(key, ensure_ascii=False)
-            if key == "started_at" and sort_rank is not None:
-                parts.append(
-                    encoded_key + ":" + json.dumps(
-                        f"legacy-mtime-rank:{sort_rank:06d}",
-                        ensure_ascii=False,
-                    )
-                )
             parts.append(
                 encoded_key + ":" + json.dumps(
                     value, ensure_ascii=False, separators=(",", ":"), default=str
@@ -2869,6 +2863,30 @@ class WechatService:
                 manifest_ref("wechat-search", manifest_id, "data/runs"), now,
             ),
         )
+        if subtype == "scheduler":
+            con.execute(
+                """
+                INSERT INTO search_scheduler_state(
+                    system_key,platform,enabled,next_run_at,last_run_at,
+                    updated_at,payload_json
+                ) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(system_key,platform) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    next_run_at=excluded.next_run_at,
+                    last_run_at=excluded.last_run_at,
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    "wechat-search",
+                    "wechat-search",
+                    int(bool(ordered.get("enabled", False))),
+                    ordered.get("next_run_at"),
+                    ordered.get("last_run_at"),
+                    ordered.get("updated_at") or now,
+                    _json(ordered),
+                ),
+            )
 
     @staticmethod
     def _stream_keyword_manage_payload(

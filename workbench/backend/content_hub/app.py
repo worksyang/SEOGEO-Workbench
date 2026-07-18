@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -50,7 +52,9 @@ from content_hub.legacy_pages import (
 )
 
 from content_hub.logging import configure_logging
+from content_hub.services.wechat_refresh import WechatRefreshService
 from content_hub.services.writing import backfill_writing_runtime
+from content_hub.adapters.wechat_search_api import RemoteWechatSearchProvider
 
 logger = logging.getLogger("content_hub.http")
 
@@ -85,8 +89,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 connection.commit()
         if backfilled:
             logger.info("WritingMoney v3.3 运行层回填完成", extra={"count": backfilled})
+        provider = getattr(app.state, "wechat_refresh_provider", None)
+        if provider is not None:
+            recovery_service = WechatRefreshService(
+                resolved_settings,
+                provider=provider,
+                actor_id="system/recovery",
+            )
+            def schedule_recovery(job_id: str, *, force: bool = False) -> None:
+                existing = app.state.wechat_refresh_recovery_threads.get(job_id)
+                if not force and existing is not None and existing.is_alive():
+                    return
+
+                def resume(refresh_job_id: str = job_id) -> None:
+                    try:
+                        recovery_service.run_batch(refresh_job_id)
+                    except Exception:
+                        logger.exception(
+                            "微信刷新批次恢复失败",
+                            extra={"refresh_job_id": refresh_job_id},
+                        )
+
+                thread = threading.Thread(
+                    target=resume,
+                    name=f"wechat-refresh-recovery-{job_id[-8:]}",
+                    daemon=True,
+                )
+                app.state.wechat_refresh_recovery_threads[job_id] = thread
+                thread.start()
+
+            recovered_jobs = recovery_service.recover_active_batches()
+            for job_id in recovered_jobs:
+                schedule_recovery(job_id)
+            if recovered_jobs:
+                logger.warning(
+                    "微信刷新批次已从持久检查点恢复",
+                    extra={"refresh_job_ids": recovered_jobs},
+                )
+            watchdog_interval = max(
+                10.0,
+                float(os.getenv("HUB_WECHAT_REFRESH_WATCHDOG_INTERVAL_SECONDS", "60")),
+            )
+
+            def watchdog() -> None:
+                while not app.state.wechat_refresh_watchdog_stop.wait(watchdog_interval):
+                    try:
+                        stale_jobs = recovery_service.recover_stale_batches()
+                        for job_id in stale_jobs:
+                            schedule_recovery(job_id, force=True)
+                        if stale_jobs:
+                            logger.warning(
+                                "微信刷新看门狗已恢复超时关键词",
+                                extra={"refresh_job_ids": stale_jobs},
+                            )
+                    except Exception:
+                        logger.exception("微信刷新看门狗巡检失败")
+
+            app.state.wechat_refresh_watchdog_thread = threading.Thread(
+                target=watchdog,
+                name="wechat-refresh-watchdog",
+                daemon=True,
+            )
+            app.state.wechat_refresh_watchdog_thread.start()
         logger.info("全域内容工作台启动")
         yield
+        app.state.wechat_refresh_watchdog_stop.set()
         logger.info("全域内容工作台停止")
 
     app = FastAPI(
@@ -95,6 +162,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved_settings
+    app.state.wechat_refresh_recovery_threads = {}
+    app.state.wechat_refresh_watchdog_stop = threading.Event()
+    app.state.wechat_refresh_watchdog_thread = None
+    if resolved_settings.wechat_search_api_enabled:
+        app.state.wechat_refresh_provider = RemoteWechatSearchProvider(
+            resolved_settings.wechat_search_api_url,
+            timeout_seconds=resolved_settings.wechat_search_api_timeout_seconds,
+            poll_interval_seconds=resolved_settings.wechat_search_api_poll_interval_seconds,
+            max_wait_seconds=resolved_settings.wechat_search_api_max_wait_seconds,
+            top_k=resolved_settings.wechat_search_api_top_k,
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(resolved_settings.cors_origins),

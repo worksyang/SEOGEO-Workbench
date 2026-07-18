@@ -72,6 +72,7 @@ def refresh(keyword_id: str, request: Request, body: dict[str, Any] | None = Non
         key=idempotency_key,
         request_id=request.headers.get("X-Request-ID"),
         confirm=True,
+        semantic=True,
     )
     semantic_status = str(result.get("status") or "")
     if result.get("blocked") is True or semantic_status == "blocked":

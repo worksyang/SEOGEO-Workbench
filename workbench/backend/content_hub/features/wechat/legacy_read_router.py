@@ -390,6 +390,7 @@ def refresh_keyword_write(keyword_id: str, request: Request, body: dict[str, Any
             confirm=payload.get("confirm", True) is not False,
         )
         if result.get("blocked"):
+            result = {**result, "status": "failed", "hub_status": "blocked"}
             status = 409
         elif result.get("status") == "failed":
             result = {**result, "status": "rejected"}
@@ -454,7 +455,7 @@ def refresh_all_write(request: Request, body: dict[str, Any] | None = None) -> R
             refresh_round=refresh_round,
             request_id=request.headers.get("X-Request-ID"),
         )
-        status = 409 if result.get("status") in {"failed", "blocked"} else 202
+        status = 409 if result.get("status") in {"failed", "completed_with_failures"} or result.get("hub_status") in {"failed", "partial_failed", "blocked"} else 202
         return Response(json.dumps(result, ensure_ascii=False, default=str).encode(), status_code=status, media_type="application/json")
     except Exception as exc:
         return _legacy_error(exc)

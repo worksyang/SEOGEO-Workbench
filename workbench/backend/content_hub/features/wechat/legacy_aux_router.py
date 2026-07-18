@@ -20,6 +20,11 @@ from content_hub.services.wechat_aux import (
     AuxValidation,
     WechatAuxService,
 )
+from content_hub.legacy_proxy import (
+    _xhs_article_covers,
+    _xhs_frozen_cover_image,
+    legacy_referer_kind,
+)
 
 router = APIRouter(tags=["wechat-legacy-aux"])
 _NO_STORE_HEADERS = {
@@ -224,6 +229,8 @@ def account_aliases(request: Request) -> Any:
 
 @router.get("/api/article-cover-image")
 def article_cover_image(request: Request, url: str = "") -> Any:
+    if legacy_referer_kind(request.headers.get("referer", "")) == "xhs":
+        return _xhs_frozen_cover_image(request)
     try:
         response = _render_read(
             _resolve_read(
@@ -243,6 +250,8 @@ def article_cover_image(request: Request, url: str = "") -> Any:
 async def article_covers(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
+        if legacy_referer_kind(request.headers.get("referer", "")) == "xhs":
+            return _xhs_article_covers(request, payload if isinstance(payload, dict) else {})
         result = _service(request).article_covers(
             payload.get("articles", []) if isinstance(payload, dict) else [],
             idempotency_key=request.headers.get("Idempotency-Key")

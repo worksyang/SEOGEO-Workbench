@@ -36,6 +36,19 @@ def _runtime_value(raw: Any) -> dict[str, Any] | None:
     return value
 
 
+def _runtime_history_sort_key(value: dict[str, Any]) -> tuple[int, float, str]:
+    """Sort history by business start time, newest first."""
+    raw_started_at = value.get("started_at")
+    if not isinstance(raw_started_at, str) or not raw_started_at.strip():
+        return (1, float("inf"), str(value.get("batch_id") or ""))
+    normalized = raw_started_at.strip().replace("Z", "+00:00")
+    try:
+        timestamp = datetime.fromisoformat(normalized).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return (1, float("inf"), str(value.get("batch_id") or ""))
+    return (0, -timestamp, str(value.get("batch_id") or ""))
+
+
 def _json_object(raw: Any) -> dict[str, Any]:
     try:
         value = json.loads(raw or "{}")
@@ -184,6 +197,20 @@ class WechatLegacyRepository:
         return value
 
     def runtime(self, subject_id: str, *, subtype: str | None = None) -> dict[str, Any] | None:
+        if subtype in {"single_job", "batch"}:
+            with connect(self.settings, readonly=True) as con:
+                job = con.execute(
+                    """SELECT refresh_job_id
+                       FROM search_refresh_jobs
+                       WHERE refresh_job_id=?
+                         AND system_key='wechat-search'
+                         AND platform='wechat-search'""",
+                    (subject_id,),
+                ).fetchone()
+                if job:
+                    from content_hub.services.wechat_refresh import WechatRefreshService
+
+                    return WechatRefreshService(self.settings)._job_payload(con, subject_id)
         subtype_clause = ""
         params: list[Any] = [subject_id]
         if subtype:
@@ -205,32 +232,59 @@ class WechatLegacyRepository:
     def runtime_history(self) -> list[dict[str, Any]]:
         with connect(self.settings, readonly=True) as con:
             rows = con.execute(
-                """SELECT payload_json FROM wechat_legacy_projections
+                """SELECT payload_json, updated_at FROM wechat_legacy_projections
                    WHERE projection_kind='runtime'
-                     AND json_extract(payload_json, '$.runtime_subtype')='batch'
-                   ORDER BY COALESCE(json_extract(payload_json, '$.started_at'),
-                                    json_extract(payload_json, '$.created_at'),
-                                    updated_at) DESC"""
+                     AND json_extract(payload_json, '$.runtime_subtype')='batch'"""
             ).fetchall()
-        result = []
+        latest_by_batch: dict[str, tuple[str, dict[str, Any]]] = {}
         for row in rows:
             value = _runtime_value(row["payload_json"])
             if value is None:
                 continue
             if isinstance(value, dict):
-                result.append(value)
-        return result
+                batch_id = str(value.get("batch_id") or "")
+                previous = latest_by_batch.get(batch_id)
+                updated_at = str(row["updated_at"] or "")
+                if previous is None or updated_at >= previous[0]:
+                    latest_by_batch[batch_id] = (updated_at, value)
+        return sorted(
+            (value for _, value in latest_by_batch.values()),
+            key=_runtime_history_sort_key,
+        )
 
     def active_batch_runtime(self) -> dict[str, Any] | None:
         with connect(self.settings, readonly=True) as con:
+            # New batches persist their compatibility projection immediately,
+            # but older/in-flight rows may predate that write. Read the runtime
+            # tables directly as a compatibility fallback so status never
+            # regresses to idle while a provider is still running.
+            row = con.execute(
+                """SELECT refresh_job_id
+                   FROM search_refresh_jobs
+                   WHERE system_key='wechat-search' AND platform='wechat-search'
+                     AND trigger_type IN ('manual','scheduled')
+                     AND status IN ('queued','running')
+                     AND cancel_requested=0
+                   ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+            if row:
+                from content_hub.services.wechat_refresh import WechatRefreshService
+
+                return WechatRefreshService(self.settings)._job_payload(con, row["refresh_job_id"])
             row = con.execute(
                 """SELECT payload_json FROM wechat_legacy_projections
+                   JOIN search_refresh_jobs j
+                     ON j.refresh_job_id=wechat_legacy_projections.subject_id
                    WHERE projection_kind='runtime'
                      AND json_extract(payload_json, '$.runtime_subtype')='batch'
-                     AND json_extract(payload_json, '$.status') IN ('queued','running')
+                     AND j.system_key='wechat-search'
+                     AND j.platform='wechat-search'
+                   AND j.status IN ('queued','running')
+                   AND j.cancel_requested=0
+                   AND json_extract(payload_json, '$.status') IN ('queued','running')
                    ORDER BY COALESCE(json_extract(payload_json, '$.started_at'),
                                     json_extract(payload_json, '$.created_at'),
-                                    updated_at) DESC LIMIT 1"""
+                                    wechat_legacy_projections.updated_at) DESC LIMIT 1"""
             ).fetchone()
         if not row:
             return None
@@ -238,17 +292,30 @@ class WechatLegacyRepository:
 
     def scheduler_runtime(self) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
-            row = con.execute(
+            projection = con.execute(
                 """SELECT payload_json FROM wechat_legacy_projections
                    WHERE projection_kind='runtime' AND subject_id='scheduler'
                      AND json_extract(payload_json, '$.runtime_subtype')='scheduler'
                    ORDER BY updated_at DESC LIMIT 1"""
             ).fetchone()
-        if row:
-            value = _runtime_value(row["payload_json"]) if row else None
-            if value is not None:
-                return value
-        return {"enabled": False, "is_active": False}
+            state = con.execute(
+                """SELECT enabled,next_run_at,last_run_at,active_refresh_job_id,payload_json
+                   FROM search_scheduler_state
+                   WHERE system_key='wechat-search' AND platform='wechat-search'"""
+            ).fetchone()
+        value = _runtime_value(projection["payload_json"]) if projection else None
+        result = value if value is not None else {}
+        if state:
+            result.update(_json_object(state["payload_json"]))
+            result.update(
+                {
+                    "enabled": bool(state["enabled"]),
+                    "is_active": bool(state["active_refresh_job_id"]),
+                    "next_run_at": state["next_run_at"],
+                    "last_run_at": state["last_run_at"],
+                }
+            )
+        return result or {"enabled": False, "is_active": False}
 
     def bootstrap(self) -> dict[str, Any]:
         projected = self._projection("bootstrap")

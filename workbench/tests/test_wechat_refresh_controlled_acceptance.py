@@ -187,7 +187,7 @@ def test_w17_w18_w19_w21_controlled_refresh_replay_cancel_and_recovery(settings)
                 job_id = one.json()["job_id"]
                 assert (
                     await client.get(f"/api/refresh-status/{job_id}")
-                ).json()["status"] == "succeeded"
+                ).json()["status"] == "completed"
 
                 # W18: duplicates are normalized, one provider failure remains auditable.
                 batch = await client.post(
@@ -198,10 +198,15 @@ def test_w17_w18_w19_w21_controlled_refresh_replay_cancel_and_recovery(settings)
                         "idempotency_key": "w18",
                     },
                 )
-                assert batch.status_code == 202
+                assert batch.status_code == 409
                 batch_body = batch.json()
                 assert batch_body["total"] == 2
-                assert batch_body["status"] == "partial_failed"
+                assert batch_body["status"] == "completed_with_failures"
+                assert batch_body["hub_status"] == "partial_failed"
+                assert all(
+                    isinstance(item, dict) and {"keyword", "reason"} <= set(item)
+                    for item in batch_body["failed_keywords"]
+                )
                 batch_id = batch_body["batch_id"]
 
                 # Explicit replay is stable; same key with changed input is a 409.
@@ -213,7 +218,7 @@ def test_w17_w18_w19_w21_controlled_refresh_replay_cancel_and_recovery(settings)
                         "idempotency_key": "w18",
                     },
                 )
-                assert replay.status_code == 202
+                assert replay.status_code == 409
                 assert replay.json()["batch_id"] == batch_id
                 changed = await client.post(
                     "/api/refresh-all",
@@ -285,11 +290,14 @@ def test_w17_w18_w19_w21_controlled_refresh_replay_cancel_and_recovery(settings)
                     },
                 )
                 assert cancelled.status_code == 200
-                assert cancelled.json()["status"] == "cancelling"
+                assert cancelled.json()["status"] == "running"
+                assert cancelled.json()["hub_status"] == "cancelling"
                 status = await client.get(
                     "/api/refresh-all/status?batch_id=srj_cancel_controlled"
                 )
                 assert status.json()["status"] == "cancelled"
+                assert status.json()["cancel_reason"] == "user_requested"
+                assert status.json()["snapshot_count"] == 0
 
                 # W21: failure survives restart, and a new key is an independent recovery attempt.
                 failed = await client.post(
@@ -312,7 +320,7 @@ def test_w17_w18_w19_w21_controlled_refresh_replay_cancel_and_recovery(settings)
         request_keyword="受控关键词-kw_w18_b",
         key="w21-recovery",
     )
-    assert recovered["status"] == "succeeded"
+    assert recovered["status"] == "completed"
     with connect(settings, readonly=True) as con:
         assert con.execute(
             "SELECT COUNT(*) FROM audit_log WHERE action IN "
