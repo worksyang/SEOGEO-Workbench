@@ -1,303 +1,218 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WritingMoney 写作工作台 Demo</title>
-<link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css">
-<style>
-#realDataMask{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:#fff;color:#09090b;font-size:13px;text-align:center}
-#realDataMask span{max-width:520px;color:#71717a;font-size:12px;line-height:1.6}
-#realDataMask.hidden{display:none}
-#realDataMask.is-final{background:#fff7f7;color:#991b1b}
-#realDataMask.is-final span{color:#7f1d1d}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>批量成稿 · Agent 生产台 Demo</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-<div id="realDataMask"><strong>正在读取 Hub 写作任务…</strong><span>原版 WritingMoney 界面保持不变，页面只显示已持久化的真实任务。</span></div>
-<div class="layout">
-  <aside class="system-nav">
-    <div class="nav-brand-block">
-      <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="切换任务列表">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-      <div>
-        <div class="logo">WritingMoney</div>
-        <div class="nav-caption">Writing OS</div>
-      </div>
-    </div>
-    <div class="mode-switch" id="modeSwitch">
-      <button class="mode-btn active" data-mode="mother">母文章铸造</button>
-      <button class="mode-btn" data-mode="batch">批量成稿</button>
-    </div>
-    <div class="nav-meta">
-      <div><span id="navMetaLabel1">项目</span><b id="jobCountTop">3</b></div>
-      <div><span id="navMetaLabel2">待确认</span><b id="waitingCountTop">2</b></div>
-    </div>
-    <div class="nav-foot">静态 Demo<br>WritingSpace 工作流</div>
-  </aside>
+  <div class="demo-shell-note">
+    <span class="demo-dot"></span>
+    静态 Demo · Agent 路由、生成、轨迹和效果数据均为演示数据
+  </div>
 
-  <div class="work-surface">
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-head">
-        <div class="sidebar-title-row">
-          <div class="sidebar-title" id="sidebarTitle">文章项目</div>
-          <div class="sidebar-actions" id="sidebarActions">
-            <button class="icon-btn primary" id="newJobBtn" title="新建文章项目">新建</button>
-            <button class="icon-btn primary hidden" id="newBatchBtn" title="新建批次">新建批次</button>
-            <button class="icon-btn" id="collapseArchivedBtn" title="切换归档显示">归档</button>
-          </div>
-        </div>
-        <div class="sidebar-desc" id="sidebarDesc">多篇文章可以并行推进，绿点代表等你确认下一步。</div>
-        <input class="search-input" id="jobSearch" placeholder="搜索选题 / 状态 / 目录…">
-        <input class="search-input hidden" id="batchSearch" placeholder="搜索批次 / 来源 / 状态…">
+  <div class="layout">
+    <aside class="system-nav" aria-hidden="true">
+      <div class="nav-brand-block">
+        <div class="logo">WritingMoney</div>
+        <div class="nav-caption">Agent Production Desk</div>
       </div>
-      <div class="job-list" id="jobList"></div>
+      <div class="nav-mode-chip">批量成稿</div>
+      <div class="nav-meta">
+        <div><span>任务包</span><b id="navPackageCount">3</b></div>
+        <div><span>有提示</span><b id="navWarningCount">2</b></div>
+      </div>
+      <div class="nav-foot">任务包生产<br>Agent 审计控制台</div>
     </aside>
 
-    <div class="mobile-overlay" id="mobileOverlay"></div>
-
-    <main class="main">
-      <div class="main-shell">
-        <section class="hero">
-          <div class="hero-main">
-            <div class="eyebrow" id="jobFolder">WritingSpace/260706_友邦环宇盈活提领/</div>
-            <div class="hero-title" id="jobTitle">友邦环宇盈活提领</div>
-            <div class="purpose-box">
-              <div class="purpose-head">
-                <span>写作目的</span>
-                <button class="text-btn" data-action="edit-purpose">编辑</button>
-              </div>
-              <div class="hero-desc" id="jobPurpose">想写给已经拿到计划书、关心未来养老提领的客户，让他意识到环宇盈活不是不能买，而是不能把它当高频提领工具。</div>
+    <div class="work-surface">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <div class="sidebar-title-row">
+            <div>
+              <div class="sidebar-kicker">CONTENT PRODUCTION</div>
+              <div class="sidebar-title">任务包</div>
             </div>
+            <button class="icon-btn primary" id="newPackageBtn" type="button">新建</button>
           </div>
-          <div class="hero-actions">
-            <button class="mini-btn" data-action="open-job-detail">项目详情</button>
-            <button class="mini-btn" data-action="simulate-running">模拟运行</button>
+          <div class="sidebar-desc">Claude Code -p 全自动生产；提示只用于复盘，不阻断生成。</div>
+          <div class="sidebar-search">
+            <span>⌕</span>
+            <input id="packageSearch" type="search" placeholder="搜索任务包 / 关键词">
           </div>
-        </section>
+          <div class="sidebar-filter-row" id="packageFilters">
+            <button class="filter-chip active" type="button" data-package-filter="active">进行中</button>
+            <button class="filter-chip" type="button" data-package-filter="warning">有提示</button>
+            <button class="filter-chip" type="button" data-package-filter="done">已完成</button>
+            <button class="filter-chip" type="button" data-package-filter="archived">归档</button>
+          </div>
+        </div>
+        <div class="package-list" id="packageList"></div>
+        <div class="sidebar-foot">
+          <span class="status-pulse"></span>
+          <span>演示数据 · 不连接真实 Provider</span>
+        </div>
+      </aside>
 
-        <section class="progress-card">
-          <div class="step-track" id="stepTrack"></div>
-        </section>
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-context">
+            <span class="topbar-breadcrumb">内容生产 / 批量成稿</span>
+            <span class="topbar-divider">/</span>
+            <strong id="topbarPackageName">—</strong>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-btn" id="openOutputBtn" type="button">打开输出目录</button>
+            <button class="ghost-btn" id="copyManifestBtn" type="button">复制批次摘要</button>
+            <button class="primary-btn" id="newPackageTopBtn" type="button">＋ 新建任务包</button>
+          </div>
+        </header>
 
-        <section class="workspace-card" id="workspaceCard"></section>
-      </div>
-    </main>
+        <div class="main-scroll">
+          <section class="package-hero" id="packageHero"></section>
+          <section class="metric-grid" id="metricGrid"></section>
+          <section class="control-strip" id="controlStrip"></section>
+          <section class="queue-section">
+            <div class="section-head">
+              <div>
+                <div class="section-eyebrow">KEYWORD TASKS</div>
+                <h2>关键词任务队列</h2>
+              </div>
+              <div class="section-head-actions">
+                <div class="queue-search">
+                  <span>⌕</span>
+                  <input id="taskSearch" type="search" placeholder="筛选关键词">
+                </div>
+                <select id="taskFilter" class="select-control" aria-label="筛选任务">
+                  <option value="all">全部任务</option>
+                  <option value="warning">有提示</option>
+                  <option value="running">生成中</option>
+                  <option value="done">已完成</option>
+                  <option value="blocked">阻塞 / 失败</option>
+                </select>
+              </div>
+            </div>
+            <div class="queue-table-wrap">
+              <div class="queue-table-head">
+                <span>关键词任务</span>
+                <span>生成篇数</span>
+                <span>路由结果</span>
+                <span>生成模式</span>
+                <span>进度 / 状态</span>
+                <span>操作</span>
+              </div>
+              <div id="taskQueue"></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
   </div>
 
-</div>
-
-<div class="drawer-mask" id="drawerMask"></div>
-<aside class="drawer" id="drawer">
-  <div class="drawer-head">
-    <div>
-      <div class="drawer-kicker" id="drawerKicker">详情</div>
-      <h3 id="drawerTitle">项目详情</h3>
-    </div>
-    <button class="drawer-close" id="drawerClose" aria-label="关闭">×</button>
-  </div>
-  <div class="drawer-body" id="drawerBody"></div>
-</aside>
-
-<div class="modal-mask" id="newJobModal">
-  <div class="modal">
-    <div class="modal-head">
-      <div>
-        <h3>新建文章项目</h3>
-        <div class="modal-desc">静态 Demo 会把新任务插入列表，不真实写入磁盘。</div>
+  <aside class="detail-drawer" id="detailDrawer" aria-hidden="true">
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <div class="drawer-panel">
+      <div class="drawer-head">
+        <div>
+          <div class="drawer-kicker" id="drawerKicker">关键词任务</div>
+          <h2 id="drawerTitle">—</h2>
+          <div class="drawer-subtitle" id="drawerSubtitle">—</div>
+        </div>
+        <button class="drawer-close" id="drawerClose" type="button" aria-label="关闭">×</button>
       </div>
-      <button class="modal-close" id="closeNewJob" aria-label="关闭">×</button>
+      <div class="drawer-tabs" id="drawerTabs">
+        <button class="drawer-tab active" type="button" data-detail-tab="articles">文章计划</button>
+        <button class="drawer-tab" type="button" data-detail-tab="route">路由方案</button>
+        <button class="drawer-tab" type="button" data-detail-tab="trace">Agent 对话</button>
+        <button class="drawer-tab" type="button" data-detail-tab="review">复盘</button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+      <div class="drawer-foot" id="drawerFoot"></div>
     </div>
-    <div class="form-grid">
-      <label>
-        <span>选题 / 关键词</span>
-        <input id="topicInput" class="text-input" value="保诚信守明天分红实现率">
-      </label>
-      <label>
-        <span>写作目的</span>
-        <textarea id="purposeInput" class="text-area">写给已经被信守明天收益吸引、但担心保诚分红兑现能力的客户。</textarea>
-      </label>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelNewJob">取消</button>
-      <button class="mini-btn primary" id="confirmNewJob">创建静态项目</button>
-    </div>
-  </div>
-</div>
+  </aside>
 
-<div class="modal-mask" id="purposeModal" aria-hidden="true">
-  <div class="modal purpose-modal" role="dialog" aria-modal="true" aria-labelledby="purposeModalTitle">
-    <div class="modal-head">
-      <div>
-        <h3 id="purposeModalTitle">编辑写作目的</h3>
-        <div class="modal-desc">这段内容会进入写作包，作为 Agent 写作时优先读取的目标说明。</div>
+  <div class="modal-backdrop" id="packageModal" aria-hidden="true">
+    <div class="modal-card new-package-card" role="dialog" aria-modal="true" aria-labelledby="newPackageTitle">
+      <div class="modal-head">
+        <div>
+          <div class="section-eyebrow">NEW TASK PACKAGE</div>
+          <h2 id="newPackageTitle">新建任务包</h2>
+          <p>输入关键词即可。Claude Code -p 会自动完成选材、路由、写作与落盘；异常只留下提示与证据。</p>
+        </div>
+        <button class="drawer-close" id="modalClose" type="button" aria-label="关闭">×</button>
       </div>
-      <button class="modal-close" id="closePurposeEditor" aria-label="关闭">×</button>
-    </div>
-    <div class="form-grid">
-      <label>
-        <span>写作目的</span>
-        <textarea id="purposeEditor" class="text-area purpose-textarea"></textarea>
-      </label>
-      <div class="editor-meta">
-        <span id="purposeDirtyState">未修改</span>
-        <span><b id="purposeCharCount">0</b> 字</span>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelPurposeEdit">取消</button>
-      <button class="mini-btn primary" id="savePurposeEdit">确认</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="urlModal" aria-hidden="true">
-  <div class="modal url-modal" role="dialog" aria-modal="true" aria-labelledby="urlModalTitle">
-    <div class="modal-head">
-      <div>
-        <h3 id="urlModalTitle">添加 URL 临时素材</h3>
-        <div class="modal-desc">输入公众号文章链接；真实版本会解析正文、图片 OCR 和表格摘要。</div>
-      </div>
-      <button class="modal-close" id="closeUrlModal" aria-label="关闭">×</button>
-    </div>
-    <div class="form-grid">
-      <label>
-        <span>微信文章 URL</span>
-        <input id="urlInput" class="text-input" placeholder="https://mp.weixin.qq.com/s/...">
-      </label>
-      <label>
-        <span>备注（可选）</span>
-        <input id="urlNoteInput" class="text-input" placeholder="例如：客户转来的环宇盈活提领文章">
-      </label>
-      <div class="url-modal-note">确认后会进入下方“URL 临时素材”区，先显示解析中；你可以把它标记为必用、参考或不用。</div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelUrlModal">取消</button>
-      <button class="mini-btn primary" id="confirmUrlModal">开始解析</button>
+      <form id="newPackageForm">
+        <label class="field-label">
+          <span>任务包名称 <em>可选</em></span>
+          <input id="newPackageName" class="text-input" placeholder="例如：7 月 16 日高价值关键词生产">
+        </label>
+        <label class="field-label">
+          <span>关键词 <em>支持逗号、中文逗号、分号、换行</em></span>
+          <textarea id="newPackageKeywords" class="text-area keyword-input" placeholder="永明心核传承，保诚分红实现率&#10;盛利2提领&#10;港险保费融资"></textarea>
+        </label>
+        <div class="parse-preview" id="parsePreview">
+          <span class="parse-count">0 个关键词</span>
+          <span>提交后自动去重并创建任务</span>
+        </div>
+        <label class="field-label">
+          <span>本批次写作要求 <em>自然语言，可留空</em></span>
+          <textarea id="newPackageBrief" class="text-area" placeholder="例如：热点词优先快速覆盖，复杂机制型关键词使用深度 Agent。"></textarea>
+        </label>
+        <label class="field-label">
+          <span>默认生成模式</span>
+          <select id="newPackageMode" class="select-control wide">
+            <option value="llm">快速 LLM · Agent 先编译写作包</option>
+            <option value="agent">深度 Agent · Claude Code -p 继续写作</option>
+          </select>
+        </label>
+        <label class="field-label">
+          <span>输出目录 <em>可选</em></span>
+          <input id="newPackageOutput" class="text-input" placeholder="留空则按日期时间和核心关键词自动生成">
+        </label>
+        <div class="modal-foot">
+          <button class="ghost-btn" id="modalCancel" type="button">取消</button>
+          <button class="primary-btn" type="submit">创建任务包</button>
+        </div>
+      </form>
     </div>
   </div>
-</div>
 
-<div class="modal-mask confirm-mask" id="purposeConfirmModal" aria-hidden="true">
-  <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="purposeConfirmTitle">
-    <div class="modal-head compact">
-      <div>
-        <h3 id="purposeConfirmTitle">确认修改</h3>
-        <div class="modal-desc" id="purposeConfirmDesc">写作目的已修改，要保存这次修改吗？</div>
+  <div class="modal-backdrop" id="revisionModal" aria-hidden="true">
+    <div class="modal-card revision-card" role="dialog" aria-modal="true" aria-labelledby="revisionTitle">
+      <div class="modal-head">
+        <div>
+          <div class="section-eyebrow">CONTINUE SESSION</div>
+          <h2 id="revisionTitle">让 Agent 继续修改</h2>
+          <p>修改要求会发送到当前关键词的同一个 Claude Code -p Session；Agent 更新计划后自动继续生成。</p>
+        </div>
+        <button class="drawer-close" id="revisionClose" type="button" aria-label="关闭">×</button>
       </div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="purposeConfirmTertiary">继续编辑</button>
-      <button class="mini-btn danger" id="purposeConfirmSecondary">不保存关闭</button>
-      <button class="mini-btn primary" id="purposeConfirmPrimary">保存并关闭</button>
+      <label class="field-label">
+        <span>告诉 Agent 你想改什么</span>
+        <textarea id="revisionInput" class="text-area revision-input" placeholder="例如：补充一篇底层认知，不要把文章写成产品介绍，重点回到养老提领。"></textarea>
+      </label>
+      <div class="modal-foot">
+        <button class="ghost-btn" id="revisionCancel" type="button">取消</button>
+        <button class="primary-btn" id="revisionSubmit" type="button">发送并自动继续</button>
+      </div>
     </div>
   </div>
-</div>
 
-
-<div class="modal-mask" id="newBatchModal" aria-hidden="true">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="newBatchTitle">
-    <div class="modal-head">
-      <div>
-        <h3 id="newBatchTitle">新建批次</h3>
-        <div class="modal-desc">创建后自动按关键词匹配母文章，推荐钩子和生成篇数。</div>
+  <div class="image-lightbox" id="imageLightbox" aria-hidden="true">
+    <button class="image-lightbox-close" type="button" data-action="close-lightbox" aria-label="关闭图片预览">×</button>
+    <div class="image-lightbox-inner">
+      <img id="lightboxImage" src="" alt="">
+      <div class="image-lightbox-meta">
+        <div><b id="lightboxImageTitle">Markdown 图片</b><span id="lightboxImagePath">—</span></div>
+        <button class="ghost-btn" type="button" data-action="copy-image-path">复制图片路径</button>
       </div>
-      <button class="modal-close" id="closeNewBatchModal" aria-label="关闭">×</button>
-    </div>
-    <div class="form-grid">
-      <label>
-        <span>批次名称</span>
-        <input id="batchNameInput" class="text-input" placeholder="例如：分红实现率热点追踪">
-      </label>
-      <label>
-        <span>本批次写作要求</span>
-        <textarea id="batchBriefInput" class="text-area" placeholder="例如：今天分红实现率是热点，相关关键词多写几篇。"></textarea>
-      </label>
-      <label>
-        <span>关键词（每行一个）</span>
-        <textarea id="batchKeywordsInput" class="text-area batch-keywords-textarea" placeholder="友邦分红实现率2026&#10;保诚分红实现率低于预期怎么办&#10;安盛盛利2分红实现率测算"></textarea>
-      </label>
-      <label>
-        <span>输出目录</span>
-        <input id="batchOutputDirInput" class="text-input" placeholder="WritingSpace/BatchQueue/批次名/">
-      </label>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelNewBatch">取消</button>
-      <button class="mini-btn primary" id="confirmNewBatch">创建并智能匹配</button>
     </div>
   </div>
-</div>
 
-<div class="modal-mask" id="batchKeywordModal" aria-hidden="true">
-  <div class="modal keyword-modal" role="dialog" aria-modal="true" aria-labelledby="batchKeywordTitle">
-    <div class="modal-head">
-      <div>
-        <h3 id="batchKeywordTitle">编辑关键词</h3>
-        <div class="modal-desc">修改关键词文本和写作目的，影响这一批次内所有相关成稿。</div>
-      </div>
-      <button class="modal-close" id="closeBatchKeywordEditor" aria-label="关闭">×</button>
-    </div>
-    <div class="form-grid">
-      <label>
-        <span>关键词</span>
-        <input id="batchKeywordInput" class="text-input">
-      </label>
-      <label>
-        <span>写作目的</span>
-        <textarea id="batchKeywordPurposeInput" class="text-area batch-keyword-purpose-textarea" placeholder="例如：写给被 6.5% 演示吸引的人，提醒他先分清长期静态收益和提领后的账户稳定性。"></textarea>
-      </label>
-      <div class="editor-meta">
-        <span id="batchKeywordDirtyState">未修改</span>
-        <span><b id="batchKeywordCharCount">0</b> 字</span>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelBatchKeyword">取消</button>
-      <button class="mini-btn primary" id="saveBatchKeyword">确认</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask confirm-mask" id="backToMotherModal" aria-hidden="true">
-  <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="backToMotherTitle">
-    <div class="modal-head compact">
-      <div>
-        <h3 id="backToMotherTitle">去铸造母文章</h3>
-        <div class="modal-desc" id="backToMotherModalDesc">以下关键词缺少匹配的母文章，确认切换到母文章模式去铸造吗？</div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelBackToMother">取消</button>
-      <button class="mini-btn primary" id="confirmBackToMother">确认切换到母文章模式</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="batchMotherModal" aria-hidden="true">
-  <div class="modal mother-modal" role="dialog" aria-modal="true" aria-labelledby="batchMotherTitle">
-    <div class="modal-head">
-      <div>
-        <h3 id="batchMotherTitle">调整母文章匹配</h3>
-        <div class="modal-desc" id="batchMotherDesc">为当前关键词选择 0 篇或多篇母文章。确认后会清除该批次已有队列。</div>
-      </div>
-      <button class="modal-close" id="closeBatchMotherModal" aria-label="关闭">×</button>
-    </div>
-    <div class="form-grid">
-      <div class="mother-match-list" id="batchMotherList"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="mini-btn" id="cancelBatchMother">取消</button>
-      <button class="mini-btn primary" id="saveBatchMother">确认</button>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script src="app.js?v=2"></script>
-<script src="bridge.js?v=3"></script>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

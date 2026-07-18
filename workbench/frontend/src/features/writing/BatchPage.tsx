@@ -34,7 +34,7 @@ export default function BatchPage() {
         className="wechat-legacy-frame"
         ref={iframeRef}
         title="批量成稿原版业务岛屿"
-        src="/legacy/writing/index.html?mode=batch&demo=1&v=2"
+        src="/legacy/writing/index.html?mode=batch&demo=1&v=5"
         onLoad={handleLoad}
         onError={() => setState('error')}
       />
