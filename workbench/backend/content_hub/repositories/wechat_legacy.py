@@ -5,13 +5,17 @@ import hashlib
 import json
 import zlib
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from content_hub.db.connection import connect
 from content_hub.errors import NotFoundError, ValidationAppError
+
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _row(value: Any) -> dict[str, Any]:
@@ -92,7 +96,9 @@ def _legacy_parse_date(value: Any) -> datetime | None:
     text = str(value).strip()
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+        if parsed.tzinfo:
+            return parsed.astimezone(LOCAL_TIMEZONE).replace(tzinfo=None)
+        return parsed
     except ValueError:
         pass
     for fmt in (
@@ -106,6 +112,165 @@ def _legacy_parse_date(value: Any) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def _legacy_timestamp(value: Any) -> float:
+    parsed = _legacy_parse_date(value)
+    if parsed is None:
+        return float("-inf")
+    return parsed.replace(tzinfo=LOCAL_TIMEZONE).timestamp()
+
+
+def _legacy_display_date(value: Any) -> datetime | None:
+    """Parse stored timestamps in UTC for the public legacy date labels.
+
+    Canonical snapshots are stored with a ``Z`` suffix.  Converting a late
+    July 18 UTC snapshot to Asia/Shanghai before rendering made the UI show
+    July 19 even though the source snapshot itself was still July 18.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _legacy_display_iso(value: Any) -> str:
+    parsed = _legacy_display_date(value)
+    if parsed is None:
+        return str(value or "")
+    return (
+        parsed.isoformat(timespec="microseconds")
+        .rstrip("0")
+        .rstrip(".")
+    )
+
+
+def _compact_bootstrap_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep the legacy list view fast without dropping detail endpoints.
+
+    The live projection stores raw compatibility payloads and full account
+    article histories for audit/replay.  Sending those fields in the initial
+    bootstrap made the browser parse roughly 190 MB before it could render the
+    first row.  The legacy page fetches keyword/account detail lazily, so the
+    bootstrap only needs list metrics, short history bars and the latest-run
+    summary.
+    """
+    result = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"keywords", "accounts"}
+    }
+    compact_keywords: list[dict[str, Any]] = []
+    for source in payload.get("keywords") or []:
+        if not isinstance(source, dict):
+            continue
+        item = {
+            key: value
+            for key, value in source.items()
+            if key not in {
+                "payload_json",
+                "payload",
+                "setting_payload_json",
+                "setting_payload",
+                "runs",
+            }
+        }
+        latest_run = source.get("latest_run")
+        if isinstance(latest_run, dict):
+            item["latest_run"] = {
+                key: latest_run.get(key)
+                for key in (
+                    "id",
+                    "date",
+                    "time",
+                    "run_at",
+                    "trigger_type",
+                    "result_count",
+                )
+                if key in latest_run
+            }
+        else:
+            item["latest_run"] = None
+        compact_keywords.append(item)
+
+    compact_accounts: list[dict[str, Any]] = []
+    for source in payload.get("accounts") or []:
+        if not isinstance(source, dict):
+            continue
+        item = {
+            key: value
+            for key, value in source.items()
+            if key not in {
+                "_today_article_ids",
+                "_today_article_titles",
+                "payload_json",
+                "payload",
+                "setting_payload_json",
+                "setting_payload",
+                "topics",
+                "keywords",
+                "history",
+            }
+        }
+
+        # The account list uses a 15-cell rank heat bar.  The live projection
+        # keeps raw article events for the detail endpoint; derive the compact
+        # best-rank-per-day shape expected by the legacy renderer.
+        day_scores = source.get("day_scores")
+        window_size = len(day_scores) if isinstance(day_scores, list) else 0
+        history = [0] * window_size
+        for event in source.get("history") or []:
+            if not isinstance(event, dict):
+                continue
+            try:
+                day_index = int(event.get("_day_idx"))
+                rank = int(event.get("rank"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= day_index < window_size and rank > 0:
+                history[day_index] = min(history[day_index] or rank, rank)
+        item["history"] = history
+
+        topics = source.get("topics")
+        if isinstance(topics, dict):
+            item["topic_names"] = [
+                str(info.get("label") or topic)
+                for topic, info in topics.items()
+                if isinstance(info, dict) and str(info.get("label") or topic).strip()
+            ][:12]
+        else:
+            item["topic_names"] = []
+
+        keywords = source.get("keywords")
+        if isinstance(keywords, dict):
+            keyword_names = keywords.keys()
+        elif isinstance(keywords, list):
+            keyword_names = keywords
+        else:
+            keyword_names = ()
+        item["keyword_names"] = [str(value) for value in keyword_names][:120]
+        compact_accounts.append(item)
+
+    result["keywords"] = compact_keywords
+    result["accounts"] = compact_accounts
+    return result
 
 
 def _legacy_batch_id(source_path: Any) -> str:
@@ -203,7 +368,7 @@ class WechatLegacyRepository:
 
     @staticmethod
     def _snapshot_run_at(captured_at: Any) -> tuple[str, str, str]:
-        parsed = _legacy_parse_date(captured_at)
+        parsed = _legacy_display_date(captured_at)
         if parsed is None:
             text = str(captured_at or "")
             return text[:10], text[11:16], text.replace("T", " ")[:16]
@@ -222,9 +387,6 @@ class WechatLegacyRepository:
     ) -> dict[str, list[dict[str, Any]]]:
         where = ["s.platform='wechat-search'"]
         params: list[Any] = []
-        if since:
-            where.append("s.captured_at>?")
-            params.append(since)
         if keyword_id:
             where.append("s.keyword_id=?")
             params.append(keyword_id)
@@ -241,6 +403,20 @@ class WechatLegacyRepository:
                 params,
             )
         ]
+        if since:
+            since_timestamp = _legacy_timestamp(since)
+            snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if _legacy_timestamp(snapshot.get("captured_at")) > since_timestamp
+            ]
+        snapshots.sort(
+            key=lambda snapshot: (
+                _legacy_timestamp(snapshot.get("captured_at")),
+                str(snapshot.get("snapshot_id") or ""),
+            ),
+            reverse=True,
+        )
         if not snapshots:
             return {}
 
@@ -488,10 +664,22 @@ class WechatLegacyRepository:
         result = deepcopy(projected)
         projection_time = str(result.get("generated_at") or "")
         with connect(self.settings, readonly=True) as con:
-            latest = con.execute(
-                "SELECT MAX(captured_at) AS latest FROM search_snapshots WHERE platform='wechat-search'"
-            ).fetchone()["latest"]
-            if not latest or (projection_time and str(latest) <= projection_time):
+            snapshot_rows = con.execute(
+                "SELECT snapshot_id,captured_at FROM search_snapshots WHERE platform='wechat-search'"
+            ).fetchall()
+            latest_row = max(
+                snapshot_rows,
+                key=lambda row: (
+                    _legacy_timestamp(row["captured_at"]),
+                    str(row["snapshot_id"] or ""),
+                ),
+                default=None,
+            )
+            latest = latest_row["captured_at"] if latest_row else None
+            if not latest or (
+                projection_time
+                and _legacy_timestamp(latest) <= _legacy_timestamp(projection_time)
+            ):
                 return result
             runs_by_keyword = self._dynamic_runs(
                 con,
@@ -501,7 +689,7 @@ class WechatLegacyRepository:
         if not runs_by_keyword:
             return result
         window_days = max(1, int(result.get("window_days") or 15))
-        latest_date, _, _ = self._snapshot_run_at(latest)
+        latest_date, _, latest_run_at = self._snapshot_run_at(latest)
         parsed_latest = _legacy_parse_date(latest_date)
         window_start = (
             (parsed_latest - timedelta(days=window_days - 1)).date().isoformat()
@@ -529,7 +717,7 @@ class WechatLegacyRepository:
                 old_window_days=window_days,
                 new_window_end=latest_date,
             )
-        result["generated_at"] = str(latest)
+        result["generated_at"] = _legacy_display_iso(latest)
         result["window_end"] = latest_date
         result["window_start"] = window_start
         return result
@@ -664,7 +852,9 @@ class WechatLegacyRepository:
     def bootstrap(self) -> dict[str, Any]:
         projected = self._projection("bootstrap")
         if projected is not None:
-            return self._overlay_live_snapshots(projected, include_runs=False)
+            return _compact_bootstrap_payload(
+                self._overlay_live_snapshots(projected, include_runs=False)
+            )
         with connect(self.settings, readonly=True) as con:
             keywords = self._keywords(con)
             accounts = [
@@ -672,19 +862,29 @@ class WechatLegacyRepository:
                     "SELECT * FROM creators WHERE platform='wechat-search' ORDER BY canonical_name,creator_id"
                 )
             ]
-            latest = con.execute(
-                "SELECT MAX(captured_at) AS latest FROM search_snapshots WHERE platform='wechat-search'"
-            ).fetchone()["latest"]
-        return {
-            "generated_at": latest,
+            snapshot_rows = con.execute(
+                "SELECT snapshot_id,captured_at FROM search_snapshots WHERE platform='wechat-search'"
+            ).fetchall()
+            latest_row = max(
+                snapshot_rows,
+                key=lambda row: (
+                    _legacy_timestamp(row["captured_at"]),
+                    str(row["snapshot_id"] or ""),
+                ),
+                default=None,
+            )
+            latest = latest_row["captured_at"] if latest_row else None
+            latest_date, _, latest_run_at = self._snapshot_run_at(latest)
+        return _compact_bootstrap_payload({
+            "generated_at": latest_run_at.replace(" ", "T") if latest else None,
             "window_days": None,
             "window_start": None,
-            "window_end": latest,
+            "window_end": latest_date if latest else None,
             "scope": {"total": len(keywords), "pinned": sum(bool(x.get("pinned")) for x in keywords)},
             "keywords": [self.keyword_summary(x) for x in keywords],
             "accounts": accounts,
             "bucket_options": sorted({x.get("keyword_bucket") for x in keywords if x.get("keyword_bucket")}),
-        }
+        })
 
     @staticmethod
     def keyword_summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -1285,6 +1485,25 @@ class WechatLegacyRepository:
             WHERE s.platform='wechat-search'
             """
         ).fetchone()
+        content_stats = con.execute(
+            """
+            SELECT COUNT(*) AS total,COALESCE(MAX(rowid),0) AS latest,
+                   COALESCE(MAX(updated_at),'') AS latest_update
+            FROM contents
+            """
+        ).fetchone()
+        metric_stats = con.execute(
+            """
+            SELECT COUNT(*) AS total,COALESCE(MAX(rowid),0) AS latest,
+                   COALESCE(MAX(observed_at),'') AS latest_observed
+            FROM metric_observations
+            WHERE subject_type='content'
+              AND metric_key IN (
+                'wechat.read_count','wechat.like_count',
+                'wechat.article.read_count','wechat.article.like_count'
+              )
+            """
+        ).fetchone()
         keyword_version = con.execute(
             """
             SELECT COALESCE(MAX(updated_at),'') AS latest
@@ -1323,6 +1542,12 @@ class WechatLegacyRepository:
             snapshot_stats["latest"],
             hit_stats["total"],
             hit_stats["latest"],
+            content_stats["total"],
+            content_stats["latest"],
+            content_stats["latest_update"],
+            metric_stats["total"],
+            metric_stats["latest"],
+            metric_stats["latest_observed"],
             keyword_version["latest"],
             keyword_setting_version["total"],
             keyword_setting_version["latest_row"],
@@ -1428,6 +1653,23 @@ class WechatLegacyRepository:
                     "captured_at": payload.get("captured_at") or row["captured_at"],
                 }
                 snapshots.setdefault(str(row["snapshot_id"]), snapshots[source_id])
+
+            metric_fallbacks: dict[str, dict[str, Any]] = {}
+            for row in con.execute(
+                """
+                SELECT subject_id,metric_key,numeric_value,observed_at,observation_id
+                FROM metric_observations
+                WHERE subject_type='content'
+                  AND metric_key IN (
+                    'wechat.read_count','wechat.like_count',
+                    'wechat.article.read_count','wechat.article.like_count'
+                  )
+                ORDER BY observed_at DESC,observation_id DESC
+                """
+            ):
+                content_id = str(row["subject_id"])
+                field = str(row["metric_key"]).rsplit(".", 1)[-1]
+                metric_fallbacks.setdefault(content_id, {}).setdefault(field, row["numeric_value"])
 
             article_keywords: dict[str, set[str]] = {}
             article_days: dict[str, set[str]] = {}
@@ -1543,6 +1785,13 @@ class WechatLegacyRepository:
                 account = creators.get(account_id, {})
                 monitor_account = monitor_accounts.get(account_id, {})
                 sorted_keywords = sorted(hit_keywords)
+                metric_fallback = metric_fallbacks.get(content_id, {})
+                read_count = raw.get("read_count")
+                if read_count is None:
+                    read_count = metric_fallback.get("read_count")
+                like_count = raw.get("like_count")
+                if like_count is None:
+                    like_count = metric_fallback.get("like_count")
                 rows.append({
                     "article_id": external_ids.get(content_id, content_id),
                     "title": content["title"] or raw.get("title") or raw.get("title_raw") or "",
@@ -1557,8 +1806,10 @@ class WechatLegacyRepository:
                         account.get("headimg_url")
                         or monitor_account.get("headimg_url", "")
                     ),
-                    "read_count": raw.get("read_count"),
-                    "like_count": raw.get("like_count"),
+                    # Contents payload is the primary legacy value; canonical
+                    # observations are a fallback for imported/older articles.
+                    "read_count": read_count,
+                    "like_count": like_count,
                     "hit_count": len(sorted_keywords),
                     "hit_keywords": sorted_keywords,
                     "on_rank_days": len(article_days.get(content_id, set())),

@@ -13,7 +13,10 @@ from content_hub.app import create_app
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import writer_lock
 from content_hub.features.wechat.service import WechatService
-from content_hub.repositories.wechat_legacy import WechatLegacyRepository
+from content_hub.repositories.wechat_legacy import (
+    WechatLegacyRepository,
+    _compact_bootstrap_payload,
+)
 from content_hub.services.wechat_refresh import FakeWechatRefreshProvider, WechatRefreshService
 
 
@@ -35,6 +38,57 @@ def _fixture(settings, tmp_path: Path):
         (normalized / name).write_text(json.dumps(value), encoding="utf-8")
     (root / "article.md").write_text("# 正文\n", encoding="utf-8")
     return replace(settings, wechat_source_root=root, wechat_source_url="http://127.0.0.1:1")
+
+
+def test_compact_bootstrap_keeps_list_metrics_and_drops_heavy_detail_fields():
+    payload = {
+        "generated_at": "2026-07-18T16:00:00",
+        "keywords": [{
+            "keyword_id": "kw_1",
+            "keyword": "港险",
+            "today_best": 1,
+            "payload_json": "{\"raw\": true}",
+            "runs": [{"id": "run_1", "articles": [{"title": "正文"}]}],
+            "latest_run": {
+                "id": "run_1",
+                "date": "2026-07-18",
+                "time": "16:00",
+                "run_at": "2026-07-18 16:00",
+                "articles": [{"title": "正文"}],
+            },
+        }],
+        "accounts": [{
+            "account_id": "acct_1",
+            "name": "账号",
+            "score": 88,
+            "day_scores": [1, 2, 3],
+            "history": [
+                {"_day_idx": 0, "rank": 4},
+                {"_day_idx": 0, "rank": 2},
+                {"_day_idx": 2, "rank": 1},
+            ],
+            "topics": {"盛利2": {"label": "盛利2"}},
+            "keywords": {"港险": {}},
+        }],
+    }
+
+    compact = _compact_bootstrap_payload(payload)
+
+    assert compact["generated_at"] == payload["generated_at"]
+    assert compact["keywords"][0]["today_best"] == 1
+    assert compact["keywords"][0]["latest_run"] == {
+        "id": "run_1",
+        "date": "2026-07-18",
+        "time": "16:00",
+        "run_at": "2026-07-18 16:00",
+    }
+    assert "payload_json" not in compact["keywords"][0]
+    assert "runs" not in compact["keywords"][0]
+    assert compact["accounts"][0]["history"] == [2, 0, 1]
+    assert compact["accounts"][0]["topic_names"] == ["盛利2"]
+    assert compact["accounts"][0]["keyword_names"] == ["港险"]
+    assert "topics" not in compact["accounts"][0]
+    assert "keywords" not in compact["accounts"][0]
 
 
 def test_hub_legacy_read_shapes_etag_and_safe_content(settings, tmp_path):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -86,11 +87,25 @@ def ensure_default_enabled(status: dict[str, Any]) -> dict[str, Any]:
     if os.getenv("WECHAT_SCHEDULER_AUTO_ENABLE_DEFAULT", "1").strip().lower() in {"0", "false", "no"}:
         log("新系统微信调度为默认未初始化状态；按环境配置保持关闭")
         return status
-    key = f"launchd-wechat-scheduler-default-enable-{datetime.now(UTC).date().isoformat()}"
+    # The config endpoint treats an idempotency key as a binding to the full
+    # input payload.  A date-only key used to collide with a previous manual
+    # enable/configure call on the same day and made launchd report a 409
+    # forever.  Keep the default payload stable, but derive the key from the
+    # exact values so a later explicit configuration can safely coexist.
+    default_payload = {
+        "enabled": True,
+        "interval_hours": 3.0,
+        "daily_keyword_budget": 1550,
+        "max_keywords_per_batch": 250,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(default_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    key = f"launchd-wechat-scheduler-default-enable-{fingerprint}"
     code, result = request_json(
         "/api/scheduler/config",
         method="POST",
-        payload={"enabled": True, "idempotency_key": key},
+        payload={**default_payload, "idempotency_key": key},
     )
     if code not in {200, 202}:
         raise RuntimeError(f"恢复默认微信调度失败：HTTP {code} {result}")

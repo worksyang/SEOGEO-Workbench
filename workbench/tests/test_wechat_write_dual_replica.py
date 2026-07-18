@@ -448,8 +448,12 @@ def test_w02_w16_write_dual_replica_happy_path_projection_restart_and_audit(
                     payload = (await hub.get(path)).json()
                     node = _find_keyword_node(payload, keyword_id)
                     assert projected_state(node) == final_state
-                    if path != "/api/keyword-manage":
+                    if path in {"/api/monitor-data", f"/api/monitor-data/keyword/{keyword_id}"}:
                         assert node["runs"] == [{"marker": "frozen-dynamic"}]
+                    elif path == "/api/monitor-data/bootstrap":
+                        # Bootstrap deliberately omits full run history; the
+                        # keyword detail route above remains the source for it.
+                        assert "runs" not in node
 
         # 重建应用模拟进程重启，状态、投影、命令与审计必须仍在。
         restarted = create_app(settings)

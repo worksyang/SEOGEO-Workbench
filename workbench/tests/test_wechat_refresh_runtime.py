@@ -1037,7 +1037,7 @@ def test_post_refresh_linkage_failure_is_observable(settings, monkeypatch):
     def fail(**_kwargs):
         raise RuntimeError("metrics backfill exploded")
     import content_hub.services.wechat_article_metrics as module
-    monkeypatch.setattr(module, "backfill_wechat_article_metrics", fail)
+    monkeypatch.setattr(module, "backfill", fail)
     result = WechatRefreshService(settings, provider=FakeWechatRefreshProvider()).refresh_batch(keyword_ids=["kw_linkage_failure"], key="linkage-failure")
     assert result["hub_status"] == "partial_failed"
     assert result["post_refresh_linkage"]["status"] == "failed"

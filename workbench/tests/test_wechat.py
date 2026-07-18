@@ -58,6 +58,42 @@ def test_wechat_degraded_bootstrap_and_idempotent_import(settings, tmp_path):
     asyncio.run(run())
 
 
+def test_wechat_hub_bootstrap_uses_live_projection_contract(settings, monkeypatch):
+    from content_hub.features.wechat.service import WechatService
+
+    projection = {
+        "generated_at": "2026-07-18T16:02:07.251850",
+        "window_days": 15,
+        "keywords": [
+            {
+                "keyword_id": "kw_visible",
+                "keyword": "可见关键词",
+                "status": "active",
+                "topic": "主题",
+                "keyword_bucket": "分组",
+                "today_count": 3,
+                "latest_run": {"id": "snap_latest", "date": "2026-07-18"},
+            }
+        ],
+        "accounts": [{"account_id": "acct_hit", "name": "命中账号"}],
+    }
+    monkeypatch.setattr(
+        "content_hub.features.wechat.service.WechatLegacyRepository.bootstrap",
+        lambda self: projection,
+    )
+    payload = WechatService(settings)._bootstrap_hub()
+    assert payload["source_status"] == {"status": "healthy", "source": "hub_db"}
+    assert payload["summary"] == {
+        "keyword_count": 1,
+        "account_count": 1,
+        "generated_at": "2026-07-18T16:02:07.251850",
+        "window_days": 15,
+    }
+    assert payload["updated_at"] == "2026-07-18T16:02:07.251850"
+    assert payload["keywords"][0]["today_count"] == 3
+    assert payload["keywords"][0]["latest_run"]["id"] == "snap_latest"
+
+
 def test_wechat_full_import_route_requires_confirmation_and_idempotency_key(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
 

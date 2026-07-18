@@ -1259,13 +1259,23 @@ class WechatRefreshService:
         # has committed and before final job publication.
         linkage = None
         with connect(self.settings, readonly=True) as linkage_state:
+            batch_flags = linkage_state.execute(
+                """SELECT cancel_requested
+                   FROM search_refresh_jobs
+                   WHERE refresh_job_id=?""",
+                (job_id,),
+            ).fetchone()
             has_success = bool(
                 linkage_state.execute(
                     "SELECT 1 FROM search_refresh_items WHERE refresh_job_id=? AND status='succeeded' LIMIT 1",
                     (job_id,),
                 ).fetchone()
             )
-        if has_success:
+        # 取消批次只需要把已经落库的关键词收口为 cancelled；不要在用户
+        # 已经明确停止后，再触发一次全库指标回填和全量信号重算。否则一个
+        # 只跑了少量关键词的取消动作，也会被拖成数分钟并放大 SQLite WAL。
+        cancel_requested = bool(batch_flags and batch_flags["cancel_requested"])
+        if has_success and not cancel_requested:
             with connect(self.settings) as linkage_con:
                 linkage = run_post_refresh_linkage(
                     linkage_con,

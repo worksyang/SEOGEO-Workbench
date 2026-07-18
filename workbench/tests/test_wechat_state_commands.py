@@ -173,7 +173,9 @@ def test_wechat_state_commands_cover_w02_w06_w08_w16(settings) -> None:
                 assert keyword["coverage_days"] == 11
                 bootstrap = (await client.get("/api/monitor-data/bootstrap")).json()
                 assert bootstrap["keywords"][0]["topic"] == "主题"
-                assert bootstrap["keywords"][0]["runs"] == [{"id": "r1"}]
+                # Bootstrap is intentionally compact; full run details are
+                # loaded by the keyword detail endpoint.
+                assert "runs" not in bootstrap["keywords"][0]
                 detail = (await client.get("/api/monitor-data/keyword/kw_state")).json()
                 assert detail["topic"] == "主题"
                 assert detail["runs"] == [{"id": "r1"}]
@@ -373,7 +375,8 @@ def test_wechat_keyword_rename_and_archive_detail_projection_lifecycle(
                     "/api/monitor-data/keyword/kw_state"
                 )
                 assert before.status_code == 200
-                assert before.json()["runs"] == [{"id": "r1"}]
+                before_run_ids = {item["id"] for item in before.json()["runs"]}
+                assert {"snapshot_before_rename", "r1"} <= before_run_ids
 
                 renamed = await client.patch(
                     "/api/keyword-manage/keywords/kw_state",
