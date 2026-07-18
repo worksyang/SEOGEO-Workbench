@@ -20,6 +20,7 @@ from content_hub.db.writer_lock import writer_lock
 from content_hub.domain.ids import generate_ulid_like
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
 from content_hub.adapters.wechat_search_api import canonicalize_url, content_id_for_url
+from content_hub.services.signals import run_post_refresh_linkage
 
 
 def _now() -> str:
@@ -225,8 +226,12 @@ class WechatRefreshService:
         index = max(0, min(attempt_count - 1, len(self.retry_delays_seconds) - 1))
         return float(self.retry_delays_seconds[index])
 
-    def _hub_base_url(self) -> str:
-        return f"http://{self.settings.host}:{self.settings.port}"
+    def _resolved_provider_url(self) -> str:
+        provider_url = getattr(self.provider, "base_url", None)
+        if provider_url:
+            return str(provider_url).rstrip("/")
+        configured = str(getattr(self.settings, "wechat_search_api_url", "") or "").strip()
+        return configured.rstrip("/") or f"http://{self.settings.host}:{self.settings.port}"
 
     def _manifest(self, con, *, source_ref: str, source_hash: str, now: str) -> str:
         manifest_id = f"manifest_wechat_refresh_{source_hash[:24]}"
@@ -451,6 +456,54 @@ class WechatRefreshService:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (observation_id, str(metric.get("subject_type") or "keyword"), str(metric.get("subject_id") or keyword["keyword_id"]), metric_key, now, float(value), snapshot_id, source_ref, metric.get("confidence"), _json(metric)),
             )
+        creator_ids = {
+            str(row["creator_id"])
+            for row in con.execute(
+                """SELECT DISTINCT c.creator_id
+                   FROM contents c
+                   JOIN search_hits h ON h.content_id=c.content_id
+                  WHERE h.snapshot_id=? AND c.creator_id IS NOT NULL""",
+                (snapshot_id,),
+            ).fetchall()
+        }
+        for creator_id in creator_ids:
+            creator = con.execute(
+                "SELECT payload_json FROM creators WHERE creator_id=?",
+                (creator_id,),
+            ).fetchone()
+            try:
+                creator_payload = json.loads(creator["payload_json"] or "{}") if creator else {}
+            except json.JSONDecodeError:
+                creator_payload = {}
+            creator_payload.update({
+                "last_seen_at": now,
+                "latest_snapshot_id": snapshot_id,
+                "latest_captured_at": now,
+            })
+            con.execute(
+                "UPDATE creators SET updated_at=?,payload_json=? WHERE creator_id=?",
+                (now, _json(creator_payload), creator_id),
+            )
+        keyword_row = con.execute(
+            "SELECT payload_json FROM keywords WHERE keyword_id=?",
+            (keyword["keyword_id"],),
+        ).fetchone()
+        try:
+            keyword_payload = json.loads(keyword_row["payload_json"] or "{}") if keyword_row else {}
+        except json.JSONDecodeError:
+            keyword_payload = {}
+        keyword_payload.update({
+            "latest_snapshot_id": snapshot_id,
+            "latest_captured_at": now,
+            "latest_result_count": int(result.get("result_count", len(hits)) or 0),
+            "latest_source_ref": source_ref,
+            "last_refresh_status": "success",
+        })
+        con.execute(
+            """UPDATE keywords SET updated_at=?,payload_json=?
+               WHERE keyword_id=? AND status != 'archived'""",
+            (now, _json(keyword_payload), keyword["keyword_id"]),
+        )
         return snapshot_id, {
             "source_ref": source_ref,
             "source_manifest_id": manifest_id,
@@ -1201,6 +1254,26 @@ class WechatRefreshService:
                     )
                 finished = True
 
+        # Optional linkage services may own their own repository/lock (the
+        # article metrics backfill does), so run them after item persistence
+        # has committed and before final job publication.
+        linkage = None
+        with connect(self.settings, readonly=True) as linkage_state:
+            has_success = bool(
+                linkage_state.execute(
+                    "SELECT 1 FROM search_refresh_items WHERE refresh_job_id=? AND status='succeeded' LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+            )
+        if has_success:
+            with connect(self.settings) as linkage_con:
+                linkage = run_post_refresh_linkage(
+                    linkage_con,
+                    settings=self.settings,
+                    job_id=job_id,
+                )
+                linkage_con.commit()
+
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
                 with transaction(con):
@@ -1221,8 +1294,23 @@ class WechatRefreshService:
                         final = "partial_failed"
                     else:
                         final = "failed"
+                    if linkage is not None:
+                        output["post_refresh_linkage"] = linkage
+                        if linkage["status"] != "succeeded" and final == "succeeded":
+                            final = "partial_failed"
+                        self._audit(
+                            con,
+                            action="wechat.refresh_all.linkage",
+                            subject_type="refresh_job",
+                            subject_id=job_id,
+                            outcome="succeeded" if linkage["status"] == "succeeded" else "failed",
+                            details=linkage,
+                            request_id=request_id,
+                        )
                     self._complete_job(con, job_id=job_id, command_id=command_id, key=key, status=final, output=output)
                     output = self._job_payload(con, job_id)
+                    if linkage is not None:
+                        output["post_refresh_linkage"] = linkage
                     output["hub_status"] = final
                     output["status"] = _frontend_status(final)
                     con.execute("UPDATE command_runs SET output_json=?,updated_at=? WHERE command_id=?", (_json(output), _now(), command_id))
@@ -1506,7 +1594,8 @@ class WechatRefreshService:
                         "next_run_at": next_run,
                         "last_error": current.get("last_error"),
                         "provider_kind": getattr(self.provider, "kind", "disabled"),
-                        "base_url": self._hub_base_url(),
+                        "base_url": self._resolved_provider_url(),
+                        "enabled_explicit": "enabled" in payload or bool(current.get("enabled_explicit")),
                         "last_triggered_at": current.get("last_triggered_at"),
                         "last_result": current.get("last_result"),
                         "last_plan": current.get("last_plan"),
@@ -1542,7 +1631,7 @@ class WechatRefreshService:
         if not row:
             return {
                 "enabled": False, "is_active": False, "interval_hours": 3.0,
-                "base_url": self._hub_base_url(),
+                "base_url": self._resolved_provider_url(),
                 "next_run_at": None, "last_triggered_at": None, "last_result": None,
                 "daily_keyword_budget": 1550, "max_keywords_per_batch": 250,
                 "budget": {}, "budget_breakdown": {}, "last_plan": None, "last_discovery": None,
@@ -1552,7 +1641,8 @@ class WechatRefreshService:
             "enabled": bool(row["enabled"]),
             "is_active": bool(row["active_refresh_job_id"]),
             "interval_hours": payload.get("interval_hours", 3.0),
-            "base_url": payload.get("base_url", self._hub_base_url()),
+            "base_url": self._resolved_provider_url(),
+            "enabled_explicit": "enabled" in payload,
             "provider_kind": payload.get("provider_kind", getattr(self.provider, "kind", "disabled")),
             "daily_keyword_budget": payload.get("daily_keyword_budget", 1550),
             "max_keywords_per_batch": payload.get("max_keywords_per_batch", 250),
@@ -1569,7 +1659,10 @@ class WechatRefreshService:
 
     def _scheduler_plan(self, con, *, config: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(UTC)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        business_now = datetime.now().astimezone()
+        business_start = business_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = business_start.astimezone(UTC)
+        day_end = (business_start + timedelta(days=1)).astimezone(UTC)
         daily_budget = max(1, int(config.get("daily_keyword_budget", 1550)))
         max_batch = max(1, int(config.get("max_keywords_per_batch", 250)))
         used = int(
@@ -1577,8 +1670,13 @@ class WechatRefreshService:
                 """SELECT COALESCE(SUM(requested_count),0)
                    FROM search_refresh_jobs
                    WHERE system_key=? AND platform=? AND trigger_type='scheduled'
-                     AND started_at>=?""",
-                (self.MODULE, self.PLATFORM, day_start.isoformat().replace("+00:00", "Z")),
+                     AND started_at>=? AND started_at<?""",
+                (
+                    self.MODULE,
+                    self.PLATFORM,
+                    day_start.isoformat().replace("+00:00", "Z"),
+                    day_end.isoformat().replace("+00:00", "Z"),
+                ),
             ).fetchone()[0]
             or 0
         )
@@ -1650,7 +1748,7 @@ class WechatRefreshService:
             "selected_count": len(selected),
             "deferred_due_count": max(0, len(due) - len(selected)),
             "budget": {
-                "date": day_start.date().isoformat(),
+                "date": business_start.date().isoformat(),
                 "daily_keyword_budget": daily_budget,
                 "used_count": used,
                 "remaining_count": remaining,

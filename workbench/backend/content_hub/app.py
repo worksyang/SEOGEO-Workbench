@@ -170,6 +170,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.wechat_refresh_watchdog_stop = threading.Event()
     app.state.wechat_refresh_watchdog_thread = None
     app.state.wechat_image_provider = WechatCdnImageProvider()
+    # Keep health/config responses aligned with the provider actually selected
+    # for this process; never fall back to the retired 127.0.0.1:8765 service.
+    app.state.wechat_search_provider_url = resolved_settings.wechat_search_api_url.rstrip("/")
     if resolved_settings.wechat_search_api_enabled:
         app.state.wechat_refresh_provider = RemoteWechatSearchProvider(
             resolved_settings.wechat_search_api_url,
@@ -178,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_wait_seconds=resolved_settings.wechat_search_api_max_wait_seconds,
             top_k=resolved_settings.wechat_search_api_top_k,
         )
+        app.state.wechat_search_provider_url = app.state.wechat_refresh_provider.base_url.rstrip("/")
     # 小红书影子刷新默认 dry-run；只有显式 kind + token + GET endpoint 才启用 live。
     shadow_kind = resolved_settings.xhs_shadow_provider_kind
     if shadow_kind in {"tikhub", "tikhub-search_notes", "live"}:

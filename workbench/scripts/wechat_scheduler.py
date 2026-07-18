@@ -79,6 +79,25 @@ def is_due(status: dict[str, Any]) -> bool:
     return now >= last_triggered + timedelta(hours=interval)
 
 
+def ensure_default_enabled(status: dict[str, Any]) -> dict[str, Any]:
+    """Recover the uninitialised scheduler without overriding explicit disable."""
+    if bool(status.get("enabled")) or bool(status.get("enabled_explicit")):
+        return status
+    if os.getenv("WECHAT_SCHEDULER_AUTO_ENABLE_DEFAULT", "1").strip().lower() in {"0", "false", "no"}:
+        log("新系统微信调度为默认未初始化状态；按环境配置保持关闭")
+        return status
+    key = f"launchd-wechat-scheduler-default-enable-{datetime.now(UTC).date().isoformat()}"
+    code, result = request_json(
+        "/api/scheduler/config",
+        method="POST",
+        payload={"enabled": True, "idempotency_key": key},
+    )
+    if code not in {200, 202}:
+        raise RuntimeError(f"恢复默认微信调度失败：HTTP {code} {result}")
+    log("检测到调度状态未初始化，已恢复默认启用路径")
+    return result
+
+
 def main() -> int:
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_PATH.open("a+") as lock:
@@ -95,8 +114,13 @@ def main() -> int:
         if status_code != 200:
             log(f"读取新系统调度状态失败：HTTP {status_code}")
             return 1
+        try:
+            status = ensure_default_enabled(status)
+        except Exception as exc:
+            log(f"恢复新系统微信调度默认状态失败：{exc}")
+            return 1
         if not bool(status.get("enabled")):
-            log("新系统微信调度未启用，本轮跳过")
+            log("新系统微信调度被显式禁用，本轮跳过（enabled=0）")
             return 0
         if bool(status.get("is_active")):
             log("新系统已有微信刷新批次运行，本轮跳过")

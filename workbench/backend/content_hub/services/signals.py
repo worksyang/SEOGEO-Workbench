@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import inspect
 import json
 import sqlite3
 from collections import Counter, defaultdict
@@ -22,6 +24,109 @@ _SYSTEM_PLATFORM_ALIASES = {
     "公众号": "wechat-mp",
     "小红书": "xiaohongshu",
 }
+
+
+def _invoke_optional_service(module_names: tuple[str, ...], *, connection, settings, job_id: str) -> dict[str, Any]:
+    """Run an optional post-refresh service without making it a hard dependency.
+
+    Newer deployments may provide metric backfill/live projection modules while
+    older databases do not.  Missing modules are a deliberate no-op; failures
+    from an installed service are propagated so the refresh runtime can record
+    them as real failures.
+    """
+    module = None
+    for name in module_names:
+        try:
+            module = importlib.import_module(name)
+            break
+        except ModuleNotFoundError as exc:
+            if exc.name != name:
+                raise
+    if module is None:
+        return {"status": "skipped", "reason": "module_missing"}
+
+    candidates = (
+        "backfill",
+        "backfill_metrics",
+        "backfill_contents",
+        "run",
+        "project_live",
+        "refresh",
+        "write",
+        "rebuild",
+    )
+    callable_obj = next(
+        (getattr(module, name) for name in candidates if callable(getattr(module, name, None))),
+        None,
+    )
+    if callable_obj is None:
+        for name in ("WechatArticleMetricsService", "MetricsBackfillService", "LiveProjectionService", "ProjectionService"):
+            cls = getattr(module, name, None)
+            if cls is not None:
+                cls_params = inspect.signature(cls).parameters
+                if "settings" in cls_params:
+                    instance = cls(settings)
+                else:
+                    instance = cls(connection)
+                callable_obj = next(
+                    (getattr(instance, method) for method in candidates if callable(getattr(instance, method, None))),
+                    None,
+                )
+                if callable_obj is not None:
+                    break
+    if callable_obj is None:
+        return {"status": "skipped", "reason": "entrypoint_missing", "module": module.__name__}
+
+    parameters = inspect.signature(callable_obj).parameters
+    kwargs = {
+        key: value
+        for key, value in {
+            "connection": connection,
+            "conn": connection,
+            "settings": settings,
+            "job_id": job_id,
+            "refresh_job_id": job_id,
+        }.items()
+        if key in parameters
+    }
+    result = callable_obj(**kwargs)
+    return {"status": "succeeded", "module": module.__name__, "result": result}
+
+
+def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, Any]:
+    """Run optional backfills/projections, then recompute all signals.
+
+    The caller owns the write transaction.  The returned structure is suitable
+    for persisting into job runtime and audit details.
+    """
+    steps: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    for name, modules in (
+        ("metrics_backfill", (
+            "content_hub.services.metrics_backfill",
+            "content_hub.services.metric_backfill",
+            "content_hub.services.wechat_article_metrics",
+        )),
+        ("live_projection", (
+            "content_hub.services.live_projection",
+            "content_hub.services.projection",
+            "content_hub.services.wechat_live_projection",
+        )),
+    ):
+        try:
+            steps[name] = _invoke_optional_service(modules, connection=connection, settings=settings, job_id=job_id)
+        except Exception as exc:
+            failures[name] = f"{type(exc).__name__}: {exc}"
+            steps[name] = {"status": "failed", "error": failures[name]}
+    try:
+        steps["signals"] = {
+            "status": "succeeded",
+            "result": SignalsService(connection).recompute_all(signal_date=None),
+        }
+    except Exception as exc:
+        failures["signals"] = f"{type(exc).__name__}: {exc}"
+        steps["signals"] = {"status": "failed", "error": failures["signals"]}
+    return {"status": "succeeded" if not failures else "failed", "steps": steps, "failures": failures}
 def load_platform_rules(path: Path | None) -> dict[str, str]:
     """读取 GEO 已有的平台别名规则；文件不存在时不推断新别名。"""
     if path is None or not path.is_file():

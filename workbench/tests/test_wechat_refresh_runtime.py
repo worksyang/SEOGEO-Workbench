@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import types
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Event
@@ -735,7 +737,7 @@ def test_scheduler_config_preserves_legacy_shape_and_next_run(settings):
                 )
                 assert response.status_code == 200
                 body = response.json()
-                assert body["base_url"] == f"http://{settings.host}:{settings.port}"
+                assert body["base_url"] == settings.wechat_search_api_url
                 assert body["last_result"] == "done:completed"
                 assert body["budget"]["reserved_count"] == 3
                 assert datetime.fromisoformat(body["next_run_at"].replace("Z", "+00:00")) > datetime.now(UTC)
@@ -984,3 +986,52 @@ def test_stale_running_projection_cannot_resurrect_cancelled_batch(settings):
     repository = WechatLegacyRepository(settings)
     assert repository.active_batch_runtime() is None
     assert repository.runtime(batch_id, subtype="batch")["status"] == "cancelled"
+
+
+def test_successful_snapshot_touches_keyword_creator_and_runs_linkage(settings):
+    _keyword(settings, "kw_linkage")
+    provider = FakeWechatRefreshProvider({
+        "kw_linkage": {
+            "captured_at": "2026-07-18T01:00:00Z",
+            "result_count": 1,
+            "hits": [{"rank": 1, "title_raw": "联动文章", "url_raw": "https://example.invalid/linkage", "account": "联动账号"}],
+            "source_ref": "provider:test-linkage",
+        }
+    })
+    result = WechatRefreshService(settings, provider=provider).refresh_batch(keyword_ids=["kw_linkage"], key="linkage-success")
+    assert result["hub_status"] == "succeeded"
+    assert result["post_refresh_linkage"]["status"] == "succeeded"
+    with connect(settings, readonly=True) as con:
+        keyword = con.execute("SELECT updated_at,payload_json FROM keywords WHERE keyword_id='kw_linkage'").fetchone()
+        creator = con.execute("SELECT updated_at,payload_json FROM creators WHERE canonical_name='联动账号'").fetchone()
+        assert keyword["updated_at"] == "2026-07-18T01:00:00Z"
+        assert json.loads(keyword["payload_json"])["latest_snapshot_id"]
+        assert creator["updated_at"] == "2026-07-18T01:00:00Z"
+        assert json.loads(creator["payload_json"])["latest_snapshot_id"]
+        assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.refresh_all.linkage' AND outcome='succeeded'").fetchone()[0] == 1
+
+
+def test_scheduler_budget_recomputes_business_date_instead_of_payload_date(settings):
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    with connect(settings) as con:
+        con.execute("INSERT INTO search_scheduler_state(system_key,platform,enabled,updated_at,payload_json) VALUES(?,?,?,?,?)", ("wechat-search", "wechat-search", 1, "2026-07-17T00:00:00Z", json.dumps({"daily_keyword_budget": 10, "budget": {"date": "1999-01-01", "used_count": 99}})))
+        config = json.loads(con.execute("SELECT payload_json FROM search_scheduler_state WHERE system_key='wechat-search' AND platform='wechat-search'").fetchone()["payload_json"])
+        plan = service._scheduler_plan(con, config=config)
+    assert plan["budget"]["date"] == datetime.now().astimezone().date().isoformat()
+    assert plan["budget"]["used_count"] == 0
+
+
+def test_post_refresh_linkage_failure_is_observable(settings, monkeypatch):
+    _keyword(settings, "kw_linkage_failure")
+    module = types.ModuleType("content_hub.services.metrics_backfill")
+    def fail(**_kwargs):
+        raise RuntimeError("metrics backfill exploded")
+    module.backfill = fail
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    result = WechatRefreshService(settings, provider=FakeWechatRefreshProvider()).refresh_batch(keyword_ids=["kw_linkage_failure"], key="linkage-failure")
+    assert result["hub_status"] == "partial_failed"
+    assert result["post_refresh_linkage"]["status"] == "failed"
+    with connect(settings, readonly=True) as con:
+        assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.refresh_all.linkage' AND outcome='failed'").fetchone()[0] == 1
+        runtime = con.execute("SELECT payload_json FROM wechat_legacy_projections WHERE projection_kind='runtime' AND subject_id=? ORDER BY updated_at DESC LIMIT 1", (result["batch_id"],)).fetchone()
+        assert "metrics backfill exploded" in runtime["payload_json"]
