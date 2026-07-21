@@ -847,7 +847,12 @@ class WechatRefreshService:
             "UPDATE command_runs SET status=?,output_json=?,error_json=?,updated_at=? WHERE command_id=?",
             ("succeeded" if status == "succeeded" else "failed" if status in {"failed", "partial_failed"} else status, _json(output), _json(error or {}), now, command_id),
         )
-        con.execute("UPDATE search_scheduler_state SET active_refresh_job_id=NULL, last_run_at=?, updated_at=? WHERE system_key=? AND platform=?", (now, now, self.MODULE, self.PLATFORM))
+        con.execute(
+            """UPDATE search_scheduler_state
+               SET active_refresh_job_id=NULL,last_run_at=?,updated_at=?
+               WHERE system_key=? AND platform=? AND active_refresh_job_id=?""",
+            (now, now, self.MODULE, self.PLATFORM, job_id),
+        )
         return output
 
     def refresh_one(
@@ -1623,13 +1628,53 @@ class WechatRefreshService:
             )
         return job_ids
 
+    def reconcile_scheduler_active_job(self) -> dict[str, Any]:
+        """Make the scheduler slot match the newest genuinely active job."""
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    state = con.execute(
+                        """SELECT active_refresh_job_id
+                           FROM search_scheduler_state
+                           WHERE system_key=? AND platform=?""",
+                        (self.MODULE, self.PLATFORM),
+                    ).fetchone()
+                    stored = str(state["active_refresh_job_id"] or "") if state else ""
+                    actual = self._active_batch(con)
+                    expected = str(actual["refresh_job_id"] or "") if actual else ""
+                    changed = stored != expected
+                    if changed:
+                        con.execute(
+                            """UPDATE search_scheduler_state
+                               SET active_refresh_job_id=?,updated_at=?
+                               WHERE system_key=? AND platform=?""",
+                            (expected or None, _now(), self.MODULE, self.PLATFORM),
+                        )
+                        self._audit(
+                            con,
+                            action="wechat.scheduler.reconcile_active_job",
+                            subject_type="scheduler",
+                            subject_id="scheduler",
+                            outcome="succeeded",
+                            details={
+                                "previous_active_refresh_job_id": stored or None,
+                                "active_refresh_job_id": expected or None,
+                            },
+                        )
+        return {
+            "changed": changed,
+            "previous_active_refresh_job_id": stored or None,
+            "active_refresh_job_id": expected or None,
+        }
+
     def recover_zombie_batches(self, *, zombie_after_hours: float | None = None) -> list[str]:
-        """Force-complete batches that have been running for too long.
+        """Force-complete batches that have made no progress for too long.
 
         Unlike recover_stale_batches (which requeues individual stuck items),
-        this method terminates entire jobs that exceed the zombie threshold.
-        This prevents a single catastrophic failure from blocking all future
-        refreshes indefinitely.
+        this method terminates entire jobs whose checkpoint has not advanced
+        within the zombie threshold. This prevents one catastrophic failure
+        from blocking all future refreshes indefinitely without killing a long
+        batch that is still making progress.
 
         业务 Why: 7/18–7/21 期间，一个卡住的批次导致调度器连续跳过三天，
         数据更新彻底停滞。这是 recover_stale_batches 的补充：stale 处理
@@ -1651,38 +1696,48 @@ class WechatRefreshService:
             with connect(self.settings) as con:
                 with transaction(con):
                     jobs = con.execute(
-                        """SELECT j.refresh_job_id, j.command_id, c.idempotency_key,
-                                  j.started_at, j.trigger_source
+                        """SELECT j.refresh_job_id, j.command_id, j.cancel_requested,
+                                  c.idempotency_key, j.started_at, j.trigger_source
                            FROM search_refresh_jobs j
                            LEFT JOIN command_runs c ON c.command_id = j.command_id
                            WHERE j.system_key=? AND j.platform=?
                              AND j.status IN ('queued','running')
-                             AND j.started_at IS NOT NULL
-                             AND j.started_at <= ?
+                             AND j.updated_at IS NOT NULL
+                             AND j.updated_at <= ?
                            ORDER BY j.created_at""",
                         (self.MODULE, self.PLATFORM, cutoff),
                     ).fetchall()
                     for job in jobs:
                         job_id = str(job["refresh_job_id"])
-                        # Force all non-terminal items to failed
+                        cancelled = bool(job["cancel_requested"])
+                        item_status = "cancelled" if cancelled else "failed"
+                        phase = "cancelled" if cancelled else "zombie_terminated"
+                        error = (
+                            {"error": "用户取消的批次长期未结束，已由看门狗强制收口", "reason_code": "cancel_timeout"}
+                            if cancelled
+                            else {"error": f"批次超过 {hours} 小时没有进展，已由看门狗强制终止", "reason_code": "zombie_force_complete"}
+                        )
                         con.execute(
                             """UPDATE search_refresh_items
-                               SET status='failed', current_phase='zombie_terminated',
-                                   error_json=?, finished_at=COALESCE(finished_at,?)
+                               SET status=?, current_phase=?, error_json=?,
+                                   finished_at=COALESCE(finished_at,?)
                                WHERE refresh_job_id=? AND status IN ('queued','running')""",
-                            (_json({"error": f"批次超过 {hours} 小时未完成，已由看门狗强制终止",
-                                    "reason_code": "zombie_force_complete"}),
-                             _now(), job_id),
+                            (item_status, phase, _json(error), _now(), job_id),
                         )
+                        event_type = "cancel_timeout" if cancelled else "zombie_force_complete"
                         self._event(
                             con, job_id=job_id, item_id=None,
-                            event_type="zombie_force_complete",
-                            status="failed",
-                            message=f"批次超过 {hours} 小时未完成，看门狗强制终止",
+                            event_type=event_type,
+                            status=item_status,
+                            message=error["error"],
                             details={"zombie_after_hours": hours, "started_at": str(job["started_at"])},
                         )
                         output = self._job_payload(con, job_id)
-                        final = "partial_failed" if output["success_count"] > 0 else "failed"
+                        final = (
+                            "cancelled"
+                            if cancelled
+                            else "partial_failed" if output["success_count"] > 0 else "failed"
+                        )
                         # Handle both with-command and legacy-orphaned jobs
                         if job["command_id"]:
                             self._complete_job(
@@ -1691,7 +1746,12 @@ class WechatRefreshService:
                                 key=str(job["idempotency_key"]),
                                 status=final,
                                 output=output,
-                                error={"error": "zombie_force_complete", "reason_code": "zombie_force_complete"},
+                                error=error,
+                            )
+                            final_output = self._job_payload(con, job_id)
+                            con.execute(
+                                "UPDATE command_runs SET output_json=?,updated_at=? WHERE command_id=?",
+                                (_json(final_output), _now(), str(job["command_id"])),
                             )
                         else:
                             # Legacy job with no command_id: just mark as failed
@@ -1708,14 +1768,26 @@ class WechatRefreshService:
                                      AND active_refresh_job_id=?""",
                                 (_now(), self.MODULE, self.PLATFORM, job_id),
                             )
-                        self._batch_runtime_projection(con, job_id=job_id, payload=self._job_payload(con, job_id))
+                        final_output = self._job_payload(con, job_id)
+                        self._batch_runtime_projection(con, job_id=job_id, payload=final_output)
                         completed.append(job_id)
         for job_id in completed:
+            with connect(self.settings, readonly=True) as con:
+                row = con.execute(
+                    "SELECT status FROM search_refresh_jobs WHERE refresh_job_id=?",
+                    (job_id,),
+                ).fetchone()
+            cancelled = bool(row and row["status"] == "cancelled")
             self._append_failure_log(
                 job_id=job_id, item_id="zombie", keyword="", keyword_id="",
-                reason_code="zombie_force_complete",
-                error=f"批次超过 {hours} 小时未完成，看门狗强制终止",
+                reason_code="cancel_timeout" if cancelled else "zombie_force_complete",
+                error=(
+                    "用户取消的批次长期未结束，看门狗已强制收口"
+                    if cancelled
+                    else f"批次超过 {hours} 小时没有进展，看门狗强制终止"
+                ),
                 attempt_count=0, source="watchdog",
+                status="cancelled" if cancelled else "failed",
             )
         return completed
 
@@ -1840,9 +1912,10 @@ class WechatRefreshService:
                 "budget": {}, "budget_breakdown": {}, "last_plan": None, "last_discovery": None,
             }
         payload = json.loads(row["payload_json"] or "{}")
+        active_job = self._active_batch(con)
         return {
             "enabled": bool(row["enabled"]),
-            "is_active": bool(row["active_refresh_job_id"]),
+            "is_active": active_job is not None,
             "interval_hours": payload.get("interval_hours", 3.0),
             "base_url": self._resolved_provider_url(),
             "enabled_explicit": "enabled" in payload,
@@ -2012,6 +2085,7 @@ class WechatRefreshService:
             plan = self._scheduler_plan(con, config=config)
             ids = list(plan["keyword_ids"])
         if not ids:
+            provider_disabled = getattr(self.provider, "kind", "") == "disabled"
             with writer_lock(self.settings.lock_path):
                 with connect(self.settings) as con:
                     with transaction(con):
@@ -2025,8 +2099,8 @@ class WechatRefreshService:
                         state_payload.update(
                             {
                                 "last_triggered_at": _now(),
-                                "last_result": "skipped:no_keywords",
-                                "last_error": None,
+                                "last_result": "blocked:provider_disabled" if provider_disabled else "skipped:no_keywords",
+                                "last_error": "wechat refresh provider is disabled" if provider_disabled else None,
                                 "last_plan": plan,
                                 "budget": plan["budget"],
                             }
@@ -2047,13 +2121,25 @@ class WechatRefreshService:
                             ),
                         )
                         status = self.scheduler_status_from_connection(con)
+                        self._audit(
+                            con,
+                            action="wechat.scheduler.trigger",
+                            subject_type="scheduler",
+                            subject_id="scheduler",
+                            outcome="blocked" if provider_disabled else "succeeded",
+                            details={
+                                "status": "blocked" if provider_disabled else "skipped",
+                                "reason_code": "provider_disabled" if provider_disabled else "no_keywords",
+                            },
+                            request_id=request_id,
+                        )
             return {
                 **status,
                 "source": "scheduler",
-                "trigger_status": "skipped",
-                "blocked": False,
+                "trigger_status": "blocked" if provider_disabled else "skipped",
+                "blocked": provider_disabled,
                 "batch_id": None,
-                "batch_status": "skipped",
+                "batch_status": "blocked" if provider_disabled else "skipped",
                 "batch": None,
             }
         batch = self.refresh_batch(

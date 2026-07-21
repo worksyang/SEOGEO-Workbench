@@ -273,7 +273,7 @@ def test_failed_refresh_is_readable_after_restart(settings):
 def test_w19_running_conflict_includes_batch_state(settings):
     _keyword(settings)
     with connect(settings) as con:
-        now = "2026-07-16T00:00:00Z"
+        now = _now_iso()
         con.execute(
             """INSERT INTO command_runs(
                 command_id,module_key,command_type,idempotency_key,actor_id,status,input_json,output_json,error_json,created_at,updated_at
@@ -287,9 +287,32 @@ def test_w19_running_conflict_includes_batch_state(settings):
             ("srj_preseed", "wechat-search", "wechat-search", "cmd_preseed", "manual", now, now, "web_refresh_all"),
         )
 
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,
+                attempt_count,current_phase
+            ) VALUES(?,?,?,0,'queued',0,'queued')""",
+            ("sri_preseed", "srj_preseed", "kw_w2"),
+        )
+
+    class PausedProvider(FakeWechatRefreshProvider):
+        def __init__(self):
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def fetch(self, **kwargs):
+            self.started.set()
+            assert self.release.wait(5), "preseed recovery provider was not released"
+            return super().fetch(**kwargs)
+
+    provider = PausedProvider()
+
     async def run():
         app = create_app(settings)
+        app.state.wechat_refresh_provider = provider
         async with app.router.lifespan_context(app):
+            assert await asyncio.to_thread(provider.started.wait, 5)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.post(
                     "/api/refresh-all",
@@ -298,6 +321,7 @@ def test_w19_running_conflict_includes_batch_state(settings):
                 assert response.status_code == 409
                 assert response.json()["error"] == "batch already running"
                 assert response.json()["batch"]["batch_id"] == "srj_preseed"
+            provider.release.set()
 
     asyncio.run(run())
 
@@ -743,6 +767,61 @@ def test_zombie_batch_is_force_completed_and_clears_active_slot(settings):
             "SELECT active_refresh_job_id FROM search_scheduler_state WHERE system_key='wechat-search'"
         ).fetchone()["active_refresh_job_id"]
         assert active is None
+        command = con.execute(
+            "SELECT status,output_json FROM command_runs WHERE command_id='cmd_zombie'"
+        ).fetchone()
+        assert command["status"] == "failed"
+        command_output = json.loads(command["output_json"])
+        assert command_output["hub_status"] == "failed"
+        assert command_output["status"] == "failed"
+        assert command_output["is_finished"] is True
+
+
+def test_cancelled_zombie_batch_keeps_cancelled_semantics(settings):
+    _keyword(settings, "kw_cancel_zombie")
+    stale = (datetime.now(UTC) - timedelta(hours=8)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running','{}','{}','{}',?,?)""",
+            ("cmd_cancel_zombie", "wechat-search", "wechat.refresh_all", "cancel-zombie-key", "scheduler", stale, stale),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source,
+                cancel_requested,cancel_requested_at,cancel_reason
+            ) VALUES(?,?,?,?,?,'running',1,?,?,?, ?,1,?,'user_requested')""",
+            ("srj_cancel_zombie", "wechat-search", "wechat-search", "cmd_cancel_zombie", "scheduled",
+             stale, stale, stale, "scheduler", stale),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,
+                attempt_count,current_phase,started_at
+            ) VALUES(?,?,?,0,'running',1,'provider',?)""",
+            ("sri_cancel_zombie", "srj_cancel_zombie", "kw_cancel_zombie", stale),
+        )
+
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    assert service.recover_zombie_batches() == ["srj_cancel_zombie"]
+    with connect(settings, readonly=True) as con:
+        job = con.execute(
+            "SELECT status,cancel_reason FROM search_refresh_jobs WHERE refresh_job_id='srj_cancel_zombie'"
+        ).fetchone()
+        assert job["status"] == "cancelled"
+        assert job["cancel_reason"] == "user_requested"
+        item = con.execute(
+            "SELECT status,current_phase FROM search_refresh_items WHERE refresh_item_id='sri_cancel_zombie'"
+        ).fetchone()
+        assert (item["status"], item["current_phase"]) == ("cancelled", "cancelled")
+        command = con.execute(
+            "SELECT status,output_json FROM command_runs WHERE command_id='cmd_cancel_zombie'"
+        ).fetchone()
+        assert command["status"] == "cancelled"
+        assert json.loads(command["output_json"])["hub_status"] == "cancelled"
 
 
 def test_recent_batch_is_not_treated_as_zombie(settings):
@@ -779,8 +858,181 @@ def test_recent_batch_is_not_treated_as_zombie(settings):
         ).fetchone()["status"] == "running"
 
 
+def test_long_running_batch_with_recent_progress_is_not_zombie(settings):
+    """批次虽启动很久，但最近仍有进展时不能按总时长误杀。"""
+    _keyword(settings, "kw_progressing")
+    started = (datetime.now(UTC) - timedelta(hours=8)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    recent = _now_iso()
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running','{}','{}','{}',?,?)""",
+            ("cmd_progressing", "wechat-search", "wechat.refresh_all", "progressing-key", "scheduler", started, recent),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,?,?,'running',1,?,?,?,?)""",
+            ("srj_progressing", "wechat-search", "wechat-search", "cmd_progressing", "scheduled", started, started, recent, "scheduler"),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,attempt_count,current_phase,started_at
+            ) VALUES(?,?,?,0,'running',1,'provider',?)""",
+            ("sri_progressing", "srj_progressing", "kw_progressing", recent),
+        )
+
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    assert service.recover_zombie_batches() == []
+    with connect(settings, readonly=True) as con:
+        assert con.execute(
+            "SELECT status FROM search_refresh_jobs WHERE refresh_job_id='srj_progressing'"
+        ).fetchone()["status"] == "running"
+
+
+def test_completing_old_job_does_not_clear_new_active_slot(settings):
+    """旧批次晚到的收口不能误清除一个更新批次的调度占位。"""
+    now = _now_iso()
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running','{}','{}','{}',?,?)""",
+            ("cmd_old", "wechat-search", "wechat.refresh_all", "old-key", "scheduler", now, now),
+        )
+        for job_id, command_id in (("srj_old", "cmd_old"), ("srj_new", None)):
+            con.execute(
+                """INSERT INTO search_refresh_jobs(
+                    refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                    requested_count,started_at,created_at,updated_at,trigger_source
+                ) VALUES(?,?,?,?,?,'running',0,?,?,?,?)""",
+                (job_id, "wechat-search", "wechat-search", command_id, "scheduled", now, now, now, "scheduler"),
+            )
+        con.execute(
+            """INSERT INTO search_scheduler_state(
+                system_key,platform,enabled,active_refresh_job_id,updated_at,payload_json
+            ) VALUES(?,?,1,?,?,?)""",
+            ("wechat-search", "wechat-search", "srj_new", now, "{}"),
+        )
+        service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+        service._complete_job(
+            con,
+            job_id="srj_old",
+            command_id="cmd_old",
+            key="old-key",
+            status="failed",
+            output={"success_count": 0, "failed_count": 0},
+        )
+        con.commit()
+
+    with connect(settings, readonly=True) as con:
+        assert con.execute(
+            "SELECT active_refresh_job_id FROM search_scheduler_state WHERE system_key='wechat-search'"
+        ).fetchone()["active_refresh_job_id"] == "srj_new"
+
+
+def test_scheduler_active_slot_reconciles_dangling_and_real_jobs(settings):
+    now = _now_iso()
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,trigger_type,status,
+                requested_count,started_at,finished_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,'scheduled','failed',0,?,?,?,?,?)""",
+            ("srj_finished", "wechat-search", "wechat-search", now, now, now, now, "scheduler"),
+        )
+        con.execute(
+            """INSERT INTO search_scheduler_state(
+                system_key,platform,enabled,active_refresh_job_id,updated_at,payload_json
+            ) VALUES(?,?,1,?,?,?)""",
+            ("wechat-search", "wechat-search", "srj_finished", now, "{}"),
+        )
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    cleared = service.reconcile_scheduler_active_job()
+    assert cleared == {
+        "changed": True,
+        "previous_active_refresh_job_id": "srj_finished",
+        "active_refresh_job_id": None,
+    }
+
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running','{}','{}','{}',?,?)""",
+            ("cmd_real", "wechat-search", "wechat.refresh_all", "real-key", "scheduler", now, now),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,?,?,'running',1,?,?,?,?)""",
+            ("srj_real", "wechat-search", "wechat-search", "cmd_real", "scheduled", now, now, now, "scheduler"),
+        )
+    repaired = service.reconcile_scheduler_active_job()
+    assert repaired["changed"] is True
+    assert repaired["active_refresh_job_id"] == "srj_real"
+    with connect(settings, readonly=True) as con:
+        assert con.execute(
+            "SELECT active_refresh_job_id FROM search_scheduler_state WHERE system_key='wechat-search'"
+        ).fetchone()["active_refresh_job_id"] == "srj_real"
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def test_disabled_provider_startup_still_recovers_persisted_batches(settings):
+    _keyword(settings, "kw_disabled_recovery")
+    now = _now_iso()
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running',?,?,?, ?,?)""",
+            (
+                "cmd_disabled_recovery", "wechat-search", "wechat.refresh_all",
+                "disabled-recovery-key", "scheduler",
+                json.dumps({"keyword_ids": ["kw_disabled_recovery"], "source": "scheduler"}),
+                "{}", "{}", now, now,
+            ),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,?,?,'running',1,?,?,?,?)""",
+            ("srj_disabled_recovery", "wechat-search", "wechat-search", "cmd_disabled_recovery",
+             "scheduled", now, now, now, "scheduler"),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,
+                attempt_count,current_phase,started_at
+            ) VALUES(?,?,?,0,'running',1,'provider',?)""",
+            ("sri_disabled_recovery", "srj_disabled_recovery", "kw_disabled_recovery", now),
+        )
+
+    async def run():
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            for _ in range(100):
+                with connect(settings, readonly=True) as con:
+                    status = con.execute(
+                        "SELECT status FROM search_refresh_jobs WHERE refresh_job_id='srj_disabled_recovery'"
+                    ).fetchone()["status"]
+                if status == "blocked":
+                    return
+                await asyncio.sleep(0.01)
+            pytest.fail(f"disabled-provider recovery did not finish, status={status}")
+
+    asyncio.run(run())
 
 
 def test_disabled_batch_and_trigger_are_blocked_without_snapshots(settings):

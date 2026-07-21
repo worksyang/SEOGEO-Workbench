@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -50,7 +51,7 @@ from content_hub.legacy_pages import (
 )
 
 from content_hub.logging import configure_logging
-from content_hub.services.wechat_refresh import WechatRefreshService
+from content_hub.services.wechat_refresh import DisabledRefreshProvider, WechatRefreshService
 from content_hub.services.wechat_aux import WechatCdnImageProvider
 from content_hub.adapters.wechat_search_api import RemoteWechatSearchProvider
 from content_hub.adapters.xhs_search_provider import DryRunXhsSearchProvider, TikHubSearchProvider
@@ -126,13 +127,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         migrate(resolved_settings)
-        provider = getattr(app.state, "wechat_refresh_provider", None)
+        provider = getattr(app.state, "wechat_refresh_provider", None) or DisabledRefreshProvider()
         if provider is not None:
             recovery_service = WechatRefreshService(
                 resolved_settings,
                 provider=provider,
                 actor_id="system/recovery",
             )
+
+            def with_lock_retry(label: str, operation):
+                for attempt in range(3):
+                    try:
+                        return operation()
+                    except WriterLockTimeout:
+                        pass
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc).lower():
+                            raise
+                    if attempt < 2:
+                        time.sleep(5)
+                logger.warning(f"微信刷新恢复：{label} 3次重试均因写锁超时失败，留待下轮重试")
+                return None
+
             def schedule_recovery(job_id: str, *, force: bool = False) -> None:
                 existing = app.state.wechat_refresh_recovery_threads.get(job_id)
                 if not force and existing is not None and existing.is_alive():
@@ -155,7 +171,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.wechat_refresh_recovery_threads[job_id] = thread
                 thread.start()
 
-            recovered_jobs = recovery_service.recover_active_batches()
+            startup_zombies = with_lock_retry(
+                "recover_zombie_batches",
+                recovery_service.recover_zombie_batches,
+            ) or []
+            if startup_zombies:
+                logger.warning(
+                    "微信刷新启动恢复已终止无进展僵尸批次",
+                    extra={"refresh_job_ids": startup_zombies},
+                )
+            recovered_jobs = with_lock_retry(
+                "recover_active_batches",
+                recovery_service.recover_active_batches,
+            ) or []
             for job_id in recovered_jobs:
                 schedule_recovery(job_id)
             if recovered_jobs:
@@ -163,6 +191,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "微信刷新批次已从持久检查点恢复",
                     extra={"refresh_job_ids": recovered_jobs},
                 )
+            with_lock_retry(
+                "reconcile_scheduler_active_job",
+                recovery_service.reconcile_scheduler_active_job,
+            )
             watchdog_interval = max(
                 10.0,
                 float(os.getenv("HUB_WECHAT_REFRESH_WATCHDOG_INTERVAL_SECONDS", "60")),
@@ -171,21 +203,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             def watchdog() -> None:
                 while not app.state.wechat_refresh_watchdog_stop.wait(watchdog_interval):
                     try:
-                        # 恢复超时关键词。写锁被大快照写入占用时，10秒超时会失败；
-                        # 这里重试最多3次（间隔5秒），避免一次锁冲突就静默放弃，
-                        # 让僵尸批次一直挂着。业务 Why 见 7/18–7/21 卡死事故复盘。
-                        stale_jobs: list[str] = []
-                        for _attempt in range(3):
-                            try:
-                                stale_jobs = recovery_service.recover_stale_batches()
-                                break
-                            except WriterLockTimeout:
-                                if _attempt < 2:
-                                    time.sleep(5)
-                                else:
-                                    logger.warning(
-                                        "微信刷新看门狗：recover_stale_batches 3次重试均因写锁超时失败，跳过本轮"
-                                    )
+                        # 文件锁与 SQLite 写锁都可能短暂冲突；统一重试，避免一次
+                        # 锁冲突就放弃恢复，让僵尸批次无限期阻塞调度。
+                        stale_jobs = with_lock_retry(
+                            "recover_stale_batches",
+                            recovery_service.recover_stale_batches,
+                        ) or []
                         for job_id in stale_jobs:
                             schedule_recovery(job_id, force=True)
                         if stale_jobs:
@@ -193,29 +216,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 "微信刷新看门狗已恢复超时关键词",
                                 extra={"refresh_job_ids": stale_jobs},
                             )
-                        # 强制终止跑了太久的僵尸批次（默认4小时）。这是最后一道
-                        # 防线：即使 recover_stale_batches 因故无法恢复，整个批次
-                        # 也不会永远卡在 running、永远阻塞调度器。
-                        try:
-                            zombie_jobs: list[str] = []
-                            for _attempt in range(3):
-                                try:
-                                    zombie_jobs = recovery_service.recover_zombie_batches()
-                                    break
-                                except WriterLockTimeout:
-                                    if _attempt < 2:
-                                        time.sleep(5)
-                                    else:
-                                        logger.warning(
-                                            "微信刷新看门狗：recover_zombie_batches 3次重试均因写锁超时失败，跳过本轮"
-                                        )
-                            if zombie_jobs:
-                                logger.warning(
-                                    "微信刷新看门狗已强制终止僵尸批次",
-                                    extra={"refresh_job_ids": zombie_jobs},
-                                )
-                        except Exception:
-                            logger.exception("微信刷新看门狗：僵尸批次清理失败")
+                        # 4小时无任何检查点进展才强制终止；仍在推进的长批次不会误杀。
+                        zombie_jobs = with_lock_retry(
+                            "recover_zombie_batches",
+                            recovery_service.recover_zombie_batches,
+                        ) or []
+                        if zombie_jobs:
+                            logger.warning(
+                                "微信刷新看门狗已强制终止僵尸批次",
+                                extra={"refresh_job_ids": zombie_jobs},
+                            )
+                        reconciled = with_lock_retry(
+                            "reconcile_scheduler_active_job",
+                            recovery_service.reconcile_scheduler_active_job,
+                        )
+                        if reconciled and reconciled["changed"]:
+                            logger.warning(
+                                "微信刷新看门狗已纠正调度器活动批次占位",
+                                extra=reconciled,
+                            )
                         # 智能刷新与恢复共用一个轻量巡检线程。只有用户在
                         # scheduler/config 中显式开启 enabled，且到达
                         # next_run_at、当前没有活动批次时，才会启动新一轮。

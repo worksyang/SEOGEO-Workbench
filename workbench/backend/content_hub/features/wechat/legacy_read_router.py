@@ -517,7 +517,7 @@ def refresh_all_write(request: Request, body: dict[str, Any] | None = None) -> R
             incremental=bool(payload.get("incremental")),
             refresh_round=refresh_round,
             request_id=request.headers.get("X-Request-ID"),
-            background=True,
+            background=False,
         )
         status = 409 if result.get("status") in {"failed", "completed_with_failures"} or result.get("hub_status") in {"failed", "partial_failed", "blocked"} else 202
         return Response(json.dumps(result, ensure_ascii=False, default=str).encode(), status_code=status, media_type="application/json")
@@ -549,7 +549,7 @@ def scheduler_trigger_write(request: Request, body: dict[str, Any] | None = None
         result = _refresh_service(request).scheduler_trigger(
             key=_idempotency(request, body or {}, operation="scheduler-trigger"),
             request_id=request.headers.get("X-Request-ID"),
-            background=True,
+            background=False,
         )
         status = 409 if result.get("blocked") else 200
         return Response(json.dumps(result, ensure_ascii=False, default=str).encode(), status_code=status, media_type="application/json")
