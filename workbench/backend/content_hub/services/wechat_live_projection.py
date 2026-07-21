@@ -705,12 +705,13 @@ def _read_delta(connection: Any, keyword_id: str, start: str, end: str) -> dict[
             float(point["read_delta"]) for point in numeric_points
             if str(point.get("date")) in baseline_dates
         ])
-        if values.get("recent_vs_baseline_ratio") is None and (
-            recent_value is not None or baseline_value is not None
-        ):
+        if values.get("recent_vs_baseline_ratio") is None and recent_value is not None:
+            # 近期值缺失时不能等同于 0，否则会把"没数据"误算成"-100% 暴跌"。
+            # 只有近期有真实观测时才计算对比率；基线缺失时用 1.0 兜底避免除零。
             values["recent_vs_baseline_ratio"] = (
-                (recent_value - (baseline_value or 0))
-                / max(baseline_value or 0, 1.0)
+                (recent_value - baseline_value) / baseline_value
+                if baseline_value is not None and baseline_value != 0
+                else recent_value / 1.0
             )
         if (
             status != "ok"

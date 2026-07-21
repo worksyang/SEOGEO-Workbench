@@ -305,6 +305,75 @@ def test_keyword_detail_repairs_nested_read_delta_window(settings):
     assert result["keyword_read_delta"]["window_end"] == "2026-07-18"
 
 
+def test_rebuild_does_not_crash_when_recent_read_delta_is_missing(settings):
+    """近期窗口无阅读增量、基线有值时，不能触发 None - float 崩溃。"""
+    from datetime import UTC, datetime, timedelta
+
+    from content_hub.services.wechat_live_projection import WINDOW_DAYS, rebuild
+
+    end = datetime.now(UTC).date()
+    start = end - timedelta(days=WINDOW_DAYS - 1)
+    baseline_date = (end - timedelta(days=5)).isoformat()
+    with writer_lock(settings.lock_path):
+        with connect(settings) as con:
+            with transaction(con):
+                con.execute(
+                    """INSERT INTO keywords(
+                        keyword_id,platform,keyword,status,
+                        first_seen_at,updated_at,payload_json
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    ("kw-delta", "wechat-search", "港险", "active", "2026-07-18T00:00:00Z", "2026-07-18T00:00:00Z", "{}"),
+                )
+                con.execute(
+                    """INSERT INTO search_snapshots(
+                        snapshot_id,platform,keyword,keyword_id,captured_at,
+                        result_count,payload_json
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    ("snap-delta", "wechat-search", "港险", "kw-delta", f"{end}T08:00:00Z", 0, "{}"),
+                )
+                con.execute(
+                    """INSERT OR IGNORE INTO metric_definitions(
+                        metric_key,platform,subject_type,display_name,value_type,unit,
+                        accumulation_mode,description,active
+                    ) VALUES(?,?,?,?,?,?,?,?,1)""",
+                    (
+                        "wechat.keyword.daily_read_delta",
+                        "wechat-search",
+                        "keyword",
+                        "阅读增量",
+                        "number",
+                        None,
+                        "gauge",
+                        "test",
+                    ),
+                )
+                con.execute(
+                    """INSERT INTO metric_observations(
+                        observation_id,subject_type,subject_id,metric_key,observed_at,
+                        numeric_value,snapshot_id,source_ref,confidence,payload_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        "obs-baseline",
+                        "keyword",
+                        "kw-delta",
+                        "wechat.keyword.daily_read_delta",
+                        f"{baseline_date}T08:00:00Z",
+                        1200.0,
+                        "snap-delta",
+                        "test",
+                        None,
+                        json.dumps({"daily_point": {"date": baseline_date, "read_delta": 1200.0, "snapshot_count": 1}}),
+                    ),
+                )
+
+    with connect(settings, readonly=True) as con:
+        result = rebuild(con)
+
+    assert "keyword:kw-delta" in result
+    ratio = result["keyword:kw-delta"].get("recent_vs_baseline_ratio")
+    assert ratio is None or isinstance(ratio, (int, float))
+
+
 def test_rebuild_reads_only_latest_projection_payload_per_identity(settings, monkeypatch):
     """Historical projection blobs must not be decoded during a rebuild."""
     old_payload = json.dumps({"generated_at": "2026-07-17T00:00:00Z", "blob": "x" * 200_000})
