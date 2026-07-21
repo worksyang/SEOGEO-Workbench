@@ -161,6 +161,7 @@ class HubFacts:
     snapshot_terms: list[dict[str, Any]]
     configured_keywords: set[str]
     keyword_registry_rows: list[dict[str, Any]]
+    refresh_failures_by_keyword: dict[str, dict[str, Any]]
     monitor_generated_at: str
     account_score_method: str
     metric_meta_generated_at: str
@@ -305,6 +306,8 @@ def _data_status(
     configured_keyword_count: int,
     stable_keyword_ids: set[str],
     snapshots: list[dict[str, Any]],
+    keyword_registry_rows: list[dict[str, Any]],
+    refresh_failures_by_keyword: dict[str, dict[str, Any]],
     now: datetime,
 ) -> dict[str, Any]:
     recent_cutoff = as_of - timedelta(hours=24)
@@ -351,6 +354,46 @@ def _data_status(
         warnings.append("最新快照超过24小时，禁止写成今日实时动向。")
 
     strong_conclusion_allowed = mode == "normal"
+    registry_by_id = {
+        str(row.get("keyword_id") or ""): row
+        for row in keyword_registry_rows
+        if row.get("keyword_id")
+    }
+    missing_ids = [
+        keyword_id
+        for keyword_id in registry_by_id
+        if latest_by_keyword.get(keyword_id) is None
+        or latest_by_keyword[keyword_id] < recent_cutoff
+    ]
+    missing_ids.sort(
+        key=lambda keyword_id: (
+            keyword_id not in stable_keyword_ids,
+            str(registry_by_id[keyword_id].get("keyword") or ""),
+        )
+    )
+    coverage_gaps = []
+    for keyword_id in missing_ids[:100]:
+        row = registry_by_id[keyword_id]
+        failure = refresh_failures_by_keyword.get(keyword_id) or {}
+        latest = latest_by_keyword.get(keyword_id)
+        coverage_gaps.append(
+            {
+                "keyword_id": keyword_id,
+                "keyword": row.get("keyword") or "",
+                "topic": row.get("topic") or "",
+                "keyword_bucket": row.get("keyword_bucket") or "",
+                "stable_for_trend": keyword_id in stable_keyword_ids,
+                "latest_observed_at": _iso(latest) if latest else None,
+                "reason_code": failure.get("reason_code") or "not_observed_in_24h",
+                "refresh_status": failure.get("status") or "missing",
+                "error": failure.get("error") or "",
+                "failure_occurred_at": failure.get("occurred_at") or "",
+            }
+        )
+    missing_by_reason: dict[str, int] = {}
+    for item in coverage_gaps:
+        reason = str(item["reason_code"])
+        missing_by_reason[reason] = missing_by_reason.get(reason, 0) + 1
     return {
         "mode": mode,
         "as_of": _iso(as_of),
@@ -362,6 +405,13 @@ def _data_status(
         "stable_keyword_count": len(stable_keyword_ids),
         "recently_observed_stable_keyword_count": observed_stable_keyword_count,
         "stable_keyword_coverage_ratio": round(stable_coverage_ratio, 4),
+        "coverage_gaps": coverage_gaps,
+        "coverage_gap_summary": {
+            "total_missing_keyword_count": len(missing_ids),
+            "returned_gap_count": len(coverage_gaps),
+            "truncated": len(missing_ids) > len(coverage_gaps),
+            "missing_by_reason": missing_by_reason,
+        },
         "warnings": warnings,
         "strong_conclusion_allowed": strong_conclusion_allowed,
         "strong_conclusion_scope": (
@@ -482,6 +532,7 @@ def _article_fact(
         "account_name": account.get("canonical_name") or account.get("name") or "",
         "published_at": article.get("published_at") or "",
         "summary": _clip(article.get("summary"), 180),
+        "content_hash": str(article.get("content_hash") or ""),
         "metrics": {
             "read_count": article.get("read_count"),
             "like_count": article.get("like_count"),
@@ -1063,6 +1114,78 @@ def _build_keyword_outputs(
         "term_movers": [row for row, _keyword, _delta in term_movers],
     }, candidates, set(selected)
 
+def _same_draft_pre_detection(articles: list[dict[str, Any]]) -> dict[str, Any]:
+    groups: dict[str, dict[str, Any]] = {}
+    hashed_ids: set[str] = set()
+    all_ids: set[str] = set()
+    for article in articles:
+        article_id = str(article.get("article_id") or "").strip()
+        if article_id:
+            all_ids.add(article_id)
+        content_hash = str(article.get("content_hash") or "").strip()
+        if not content_hash or not article_id:
+            continue
+        hashed_ids.add(article_id)
+        group = groups.setdefault(
+            content_hash,
+            {"article_ids": set(), "account_ids": set(), "articles": []},
+        )
+        group["article_ids"].add(article_id)
+        account_id = str(article.get("account_id") or "").strip()
+        if account_id:
+            group["account_ids"].add(account_id)
+        group["articles"].append(
+            {
+                "article_id": article_id,
+                "title": article.get("title") or "",
+                "account_id": account_id,
+                "account_name": article.get("account_name") or "",
+                "published_at": article.get("published_at") or "",
+            }
+        )
+    matched = []
+    for content_hash, group in groups.items():
+        article_ids = sorted(group["article_ids"])
+        account_ids = sorted(group["account_ids"])
+        if len(article_ids) < 2 or len(account_ids) < 2:
+            continue
+        members = sorted(
+            group["articles"],
+            key=lambda item: (item["published_at"], item["article_id"]),
+        )
+        matched.append(
+            {
+                "content_hash": content_hash,
+                "method": "exact_content_hash",
+                "confidence": 1.0,
+                "article_count": len(article_ids),
+                "account_count": len(account_ids),
+                "article_ids": article_ids[:12],
+                "account_ids": account_ids[:12],
+                "articles": members[:12],
+            }
+        )
+    matched.sort(key=lambda item: (item["article_count"], item["account_count"]), reverse=True)
+    if matched:
+        status = "detected"
+    elif hashed_ids:
+        status = "not_detected"
+    else:
+        status = "insufficient_hash_coverage"
+    return {
+        "status": status,
+        "method": "exact_content_hash_cross_account",
+        "hashed_article_count": len(hashed_ids),
+        "unhashed_article_count": max(0, len(all_ids) - len(hashed_ids)),
+        "matched_hash_group_count": len(matched),
+        "groups": matched[:3],
+        "caveat": (
+            "仅表示规范化正文内容哈希一致的跨账号重复；不证明账号归属、"
+            "转载授权、协同行为或因果关系。"
+        ),
+    }
+
+
 def _build_content_clusters(
     recent_articles: list[dict[str, Any]],
     keyword_context_by_id: dict[str, dict[str, Any]],
@@ -1085,6 +1208,7 @@ def _build_content_clusters(
                     "snapshot_hit_count": 0,
                     "best_rank": None,
                     "top_articles": [],
+                    "all_articles": [],
                 },
             )
             cluster["article_ids"].add(article.get("article_id") or "")
@@ -1103,6 +1227,7 @@ def _build_content_clusters(
                         "keyword": keyword.get("keyword") or "",
                         **keyword_context_by_id[keyword_id],
                     }
+            cluster["all_articles"].append(article)
             cluster["top_articles"].append(
                 {
                     "article_id": article.get("article_id") or "",
@@ -1170,6 +1295,9 @@ def _build_content_clusters(
                 },
                 "_article_ids": cluster["article_ids"],
                 "top_articles": articles[:3],
+                "same_draft_matrix_pre_detection": _same_draft_pre_detection(
+                    cluster["all_articles"]
+                ),
             }
         )
     rows.sort(
@@ -1205,6 +1333,15 @@ def _build_content_clusters(
             "keyword_count": row["keyword_count"],
             "snapshot_hit_count": row["snapshot_hit_count"],
             "best_rank": row["best_rank"],
+            "same_draft_matrix": {
+                "status": row["same_draft_matrix_pre_detection"]["status"],
+                "matched_hash_group_count": row["same_draft_matrix_pre_detection"][
+                    "matched_hash_group_count"
+                ],
+                "hashed_article_count": row["same_draft_matrix_pre_detection"][
+                    "hashed_article_count"
+                ],
+            },
             "keyword_observation_mix": {
                 key: row["keyword_observation_mix"][key]
                 for key in (
@@ -1594,7 +1731,7 @@ def load_hub_facts(
                 con.execute(
                     f"""SELECT c.content_id AS article_id,c.title,c.creator_id AS account_id,
                                c.author_name,c.published_at,c.md_path AS content_file_path,
-                               c.payload_json,cr.canonical_name
+                               c.content_hash,c.payload_json,cr.canonical_name
                         FROM contents c
                         LEFT JOIN creators cr ON cr.creator_id=c.creator_id
                         WHERE c.content_id IN ({placeholders})""",
@@ -1619,6 +1756,7 @@ def load_hub_facts(
                     "published_at": row["published_at"] or "",
                     "summary": payload.get("summary_raw") or payload.get("summary") or "",
                     "content_file_path": row["content_file_path"] or "",
+                    "content_hash": row["content_hash"] or payload.get("content_hash") or "",
                     **metrics.get(str(row["article_id"]), {}),
                 }
             )
@@ -1637,6 +1775,38 @@ def load_hub_facts(
                    ORDER BY k.keyword,k.keyword_id"""
             ).fetchall()
         ]
+        failure_cutoff = _iso(as_of - timedelta(hours=24))
+        failure_rows = con.execute(
+            """WITH ranked AS (
+                   SELECT i.keyword_id,k.keyword,i.status,i.error_json,
+                          COALESCE(i.finished_at,i.started_at,j.updated_at) AS occurred_at,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY i.keyword_id
+                            ORDER BY COALESCE(i.finished_at,i.started_at,j.updated_at) DESC,
+                                     i.refresh_item_id DESC
+                          ) AS rn
+                   FROM search_refresh_items i
+                   JOIN search_refresh_jobs j ON j.refresh_job_id=i.refresh_job_id
+                   JOIN keywords k ON k.keyword_id=i.keyword_id
+                   WHERE j.system_key='wechat-search'
+                     AND i.status IN ('failed','blocked')
+                     AND COALESCE(i.finished_at,i.started_at,j.updated_at)>=?
+               )
+               SELECT keyword_id,keyword,status,error_json,occurred_at
+               FROM ranked WHERE rn=1""",
+            (failure_cutoff,),
+        ).fetchall()
+        refresh_failures_by_keyword = {}
+        for row in failure_rows:
+            error = _json_object(row["error_json"])
+            refresh_failures_by_keyword[str(row["keyword_id"])] = {
+                "keyword_id": str(row["keyword_id"]),
+                "keyword": str(row["keyword"] or ""),
+                "status": str(row["status"]),
+                "reason_code": str(error.get("reason_code") or row["status"]),
+                "error": _clip(error.get("error"), 240),
+                "occurred_at": str(row["occurred_at"] or ""),
+            }
 
     snapshot_terms: list[dict[str, Any]] = []
     for snapshot in snapshots:
@@ -1697,6 +1867,7 @@ def load_hub_facts(
         snapshot_terms=snapshot_terms,
         configured_keywords={str(row.get("keyword") or "").strip() for row in registry_rows if row.get("keyword")},
         keyword_registry_rows=registry_rows,
+        refresh_failures_by_keyword=refresh_failures_by_keyword,
         monitor_generated_at=str(monitor.get("generated_at") or ""),
         account_score_method=str(monitor.get("account_score_method") or ""),
         metric_meta_generated_at=str(monitor.get("generated_at") or ""),
@@ -1742,6 +1913,172 @@ def _active_claims(ledger: dict[str, Any], as_of: datetime) -> list[dict[str, An
     return active[:MAX_ACTIVE_CLAIMS]
 
 
+def _load_previous_published_context(
+    settings: Any,
+    *,
+    current_as_of: datetime,
+) -> dict[str, Any] | None:
+    with connect(settings, readonly=True) as con:
+        run = con.execute(
+            """SELECT run_id,brief_id,source_as_of,projection_version
+               FROM wechat_agent_projection_runs
+               WHERE status='published' AND source_as_of<?
+               ORDER BY source_as_of DESC,published_at DESC LIMIT 1""",
+            (_iso(current_as_of),),
+        ).fetchone()
+        if not run:
+            return None
+        brief_row = con.execute(
+            """SELECT payload_json FROM wechat_aux_artifacts
+               WHERE artifact_kind='daily_brief' AND subject_id=''
+                 AND source_ref LIKE ?
+               ORDER BY updated_at DESC LIMIT 1""",
+            (f"%/{run['run_id']}/daily_brief/root",),
+        ).fetchone()
+        if not brief_row:
+            return None
+        decision = con.execute(
+            """SELECT reported_claim_ids_json FROM wechat_agent_decisions
+               WHERE run_id=? ORDER BY applied_at DESC LIMIT 1""",
+            (run["run_id"],),
+        ).fetchone()
+    try:
+        brief = json.loads(brief_row["payload_json"])
+        reported = json.loads(decision["reported_claim_ids_json"]) if decision else []
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return {
+        "run_id": str(run["run_id"]),
+        "brief_id": str(run["brief_id"] or ""),
+        "as_of": str(run["source_as_of"]),
+        "projection_version": str(run["projection_version"]),
+        "brief": brief if isinstance(brief, dict) else {},
+        "reported_claim_ids": [str(item) for item in reported if str(item).strip()],
+    }
+
+
+def _recent_account_inventory(recent_articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for article in recent_articles:
+        account_id = str(article.get("account_id") or "").strip()
+        if not account_id:
+            continue
+        item = by_id.setdefault(
+            account_id,
+            {
+                "account_id": account_id,
+                "account_name": article.get("account_name") or "",
+                "article_count": 0,
+            },
+        )
+        item["article_count"] += 1
+    return sorted(by_id.values(), key=lambda item: (-item["article_count"], item["account_id"]))
+
+
+def _build_compared_to_last(
+    previous: dict[str, Any] | None,
+    *,
+    current_status: dict[str, Any],
+    current_articles: list[dict[str, Any]],
+    current_accounts: list[dict[str, Any]],
+    current_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not previous:
+        return {"available": False, "reason_code": "no_previous_published_brief"}
+    prior_brief = previous["brief"]
+    prior_status = prior_brief.get("data_status") or {}
+    eligible = bool(
+        current_status.get("strong_conclusion_allowed")
+        and prior_status.get("strong_conclusion_allowed")
+    )
+    caveats = []
+    if not current_status.get("strong_conclusion_allowed"):
+        caveats.append("current_coverage_not_comparable")
+    if not prior_status.get("strong_conclusion_allowed"):
+        caveats.append("previous_coverage_not_comparable")
+    previous_accounts = {
+        str(item.get("account_id") or ""): item
+        for item in prior_brief.get("recent_accounts", [])
+        if item.get("account_id")
+    }
+    current_by_account = {item["account_id"]: item for item in current_accounts}
+    new_accounts = [current_by_account[key] for key in sorted(set(current_by_account) - set(previous_accounts))]
+    disappeared = [
+        {
+            "account_id": key,
+            "account_name": previous_accounts[key].get("account_name") or "",
+            "previous_article_count": previous_accounts[key].get("article_count", 0),
+        }
+        for key in sorted(set(previous_accounts) - set(current_by_account))
+    ]
+    current_map = {str(item.get("candidate_id") or ""): item for item in current_candidates}
+    prior_events = {
+        str(item.get("candidate_id") or ""): item
+        for item in prior_brief.get("event_candidates", [])
+        if item.get("candidate_id")
+    }
+    assessments = {"verified": [], "refuted": [], "not_evaluable": []}
+    for claim_id in previous.get("reported_claim_ids", [])[:20]:
+        prior = prior_events.get(claim_id) or {}
+        current = current_map.get(claim_id)
+        base = {
+            "claim_id": claim_id,
+            "kind": prior.get("kind") or "",
+            "subject": prior.get("subject") or "",
+            "prior_direction": prior.get("direction") or "",
+        }
+        if not eligible:
+            assessments["not_evaluable"].append({**base, "reason_code": "coverage_not_comparable"})
+        elif current and current.get("direction") == prior.get("direction"):
+            assessments["verified"].append(
+                {
+                    **base,
+                    "current_direction": current.get("direction"),
+                    "assessment": "consistent_observation",
+                    "evidence_ids": current.get("evidence_ids", []),
+                }
+            )
+        elif current:
+            assessments["refuted"].append(
+                {
+                    **base,
+                    "current_direction": current.get("direction"),
+                    "assessment": "opposite_current_signal",
+                    "evidence_ids": current.get("evidence_ids", []),
+                }
+            )
+        else:
+            assessments["not_evaluable"].append({**base, "reason_code": "claim_not_observed"})
+    previous_count = int((prior_brief.get("summary") or {}).get("recent_article_count") or 0)
+    current_count = len(current_articles)
+    return {
+        "available": True,
+        "comparison_eligible": eligible,
+        "baseline": {
+            "run_id": previous["run_id"],
+            "brief_id": previous["brief_id"],
+            "as_of": previous["as_of"],
+            "data_status_mode": prior_status.get("mode") or "",
+        },
+        "article_count": {
+            "previous": previous_count,
+            "current": current_count,
+            "change": current_count - previous_count,
+        },
+        "accounts": {
+            "previous_count": len(previous_accounts),
+            "current_count": len(current_by_account),
+            "new": new_accounts[:20],
+            "disappeared": disappeared[:20] if eligible else [],
+        },
+        "prior_claims": {
+            "evaluated_count": sum(len(items) for items in assessments.values()),
+            **assessments,
+        },
+        "caveats": caveats,
+    }
+
+
 def build_projection(
     settings: Any,
     *,
@@ -1776,6 +2113,8 @@ def build_projection(
             if context.get("stable_for_trend")
         },
         snapshots=facts.snapshots,
+        keyword_registry_rows=facts.keyword_registry_rows,
+        refresh_failures_by_keyword=facts.refresh_failures_by_keyword,
         now=generated_at,
     )
     recent_hit_index = _build_recent_hit_index(
@@ -1825,6 +2164,14 @@ def build_projection(
         )
     )
     candidate_events = candidate_events[:MAX_EVENT_CANDIDATES]
+    recent_accounts = _recent_account_inventory(recent_articles)
+    compared_to_last = _build_compared_to_last(
+        _load_previous_published_context(settings, current_as_of=as_of),
+        current_status=status,
+        current_articles=recent_articles,
+        current_accounts=recent_accounts,
+        current_candidates=candidate_events,
+    )
 
     selected_account_ids = {
         candidate["subject"]
@@ -1898,13 +2245,14 @@ def build_projection(
         f"brief_{as_of.strftime('%Y%m%d_%H%M%S')}_"
         f"{_stable_hash({'source': facts.fingerprint, 'version': PROJECTION_VERSION}, 8)}"
     )
+    brief_status = {key: value for key, value in status.items() if key != "coverage_gaps"}
     brief = {
         "schema_version": BRIEF_SCHEMA_VERSION,
         "projection_version": PROJECTION_VERSION,
         "run_id": run_id,
         "brief_id": brief_id,
         "generated_at": _iso(generated_at),
-        "data_status": status,
+        "data_status": brief_status,
         "observation_scope": {
             "search": "当前监控关键词下的微信搜索结果快照。",
             "articles": "被监控关键词命中的、且发布时间落在数据截至前24小时的文章。",
@@ -1952,6 +2300,8 @@ def build_projection(
             _article_brief_fact(article)
             for article in recent_articles[:MAX_RECENT_ARTICLES_IN_BRIEF]
         ],
+        "recent_accounts": recent_accounts,
+        "compared_to_last": compared_to_last,
         "content_clusters": content_clusters,
         "keyword_signals": keyword_outputs,
         "account_boards": account_outputs["top_boards"],
@@ -1960,11 +2310,13 @@ def build_projection(
             "downward": account_outputs["downward"],
         },
         "untracked_term_candidates": untracked_terms,
+        "coverage_gap_summary": status.get("coverage_gap_summary", {}),
         "knowledge_gaps": knowledge_gaps[:10],
         "active_claims": _active_claims(ledger, as_of),
         "event_candidates": candidate_events,
         "evidence_catalog": {
             "api_template": "/api/agent/evidence/<evidence_id>",
+            "batch_api_template": "/api/agent/evidence?ids=<comma-separated-evidence_ids>",
             "article_evidence_count": sum(item.get("kind") == "recent_article" for item in evidence.values()),
             "account_evidence_count": sum(item.get("kind") == "account" for item in evidence.values()),
             "keyword_evidence_count": sum(item.get("kind") == "keyword" for item in evidence.values()),
@@ -1989,6 +2341,7 @@ def build_projection(
             "sha256_12": hashlib.sha256(compact).hexdigest()[:12],
         },
         "data_status": status,
+        "coverage_gaps": status.get("coverage_gaps", []),
         "required_endpoints": [
             "/api/agent/manifest",
             "/api/agent/metric-dictionary",
@@ -2004,6 +2357,7 @@ def build_projection(
             "brief": "/api/agent/daily-brief",
             "metric_dictionary": "/api/agent/metric-dictionary",
             "evidence": "/api/agent/evidence/<evidence_id>",
+            "evidence_batch": "/api/agent/evidence?ids=<comma-separated-evidence_ids>",
         },
     }
     staging = {

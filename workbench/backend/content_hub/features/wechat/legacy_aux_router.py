@@ -226,6 +226,18 @@ def agent_metric_dictionary(request: Request) -> Any:
     return _aux_read(request, "agent-metric-dictionary", "/api/agent/metric-dictionary", lambda: _service(request).artifact("metric_dictionary"))
 
 
+@router.get("/api/agent/evidence")
+def agent_evidence_batch(request: Request, ids: str = "") -> Response:
+    raw = ids.split(",") if ids else []
+    if not raw or any(not item.strip() for item in raw):
+        return _json_error({"error": "ids is required"}, 400)
+    try:
+        payload = _service(request).artifacts("evidence", raw)
+        return _render_read(PayloadWithHTTPMetadata(payload, _NO_STORE_METADATA))
+    except Exception as exc:
+        return _error(exc)
+
+
 @router.get("/api/agent/evidence/{evidence_id:path}")
 def agent_evidence(evidence_id: str, request: Request) -> Any:
     return _aux_read(request, "agent-evidence", f"/api/agent/evidence/{evidence_id}", lambda: _hub_evidence(request, evidence_id))

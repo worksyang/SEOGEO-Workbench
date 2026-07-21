@@ -13,7 +13,7 @@ import tempfile
 import time
 import zlib
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Iterator
@@ -69,6 +69,16 @@ def _source_time(value: Any) -> str | None:
     if parsed is None: return None
     if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=SOURCE_TZ)
     return parsed.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_datetime_value(value: Any) -> datetime | None:
+    normalized = _source_time(value)
+    if not normalized:
+        return None
+    try:
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _number(value: Any) -> int | float | None:
@@ -1282,6 +1292,89 @@ class WechatService:
             })
         return views
 
+    def account_activity(self, account_id: str) -> dict[str, Any]:
+        with connect(self.settings, readonly=True) as con:
+            account = con.execute(
+                "SELECT * FROM creators WHERE platform='wechat-search' AND creator_id=?",
+                (account_id,),
+            ).fetchone()
+            if account is None:
+                raise NotFoundError("微信账号", account_id)
+            rows = con.execute(
+                """SELECT s.captured_at,h.content_id
+                   FROM search_hits h
+                   JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id
+                   JOIN contents c ON c.content_id=h.content_id
+                   WHERE s.platform='wechat-search' AND c.creator_id=?
+                   ORDER BY s.captured_at""",
+                (account_id,),
+            ).fetchall()
+            latest_global = con.execute(
+                "SELECT MAX(captured_at) FROM search_snapshots WHERE platform='wechat-search'"
+            ).fetchone()[0]
+        window_end_dt = _parse_datetime_value(latest_global)
+        activity_dates = sorted(
+            {
+                parsed.astimezone(SOURCE_TZ).date()
+                for row in rows
+                if (parsed := _parse_datetime_value(row["captured_at"])) is not None
+            }
+        )
+        window_end = window_end_dt.astimezone(SOURCE_TZ).date() if window_end_dt else None
+        recent_dates = (
+            {day for day in activity_dates if window_end - timedelta(days=6) <= day <= window_end}
+            if window_end
+            else set()
+        )
+        streak = 0
+        if window_end:
+            cursor = window_end
+            while cursor in recent_dates:
+                streak += 1
+                cursor -= timedelta(days=1)
+        longest = 0
+        running = 0
+        previous = None
+        for day in sorted(recent_dates):
+            running = running + 1 if previous and day == previous + timedelta(days=1) else 1
+            longest = max(longest, running)
+            previous = day
+        first_ranked = min(
+            (_parse_datetime_value(row["captured_at"]) for row in rows),
+            default=None,
+            key=lambda value: value or datetime.max.replace(tzinfo=UTC),
+        )
+        first_ranked = first_ranked if isinstance(first_ranked, datetime) else None
+        new_window_days = 30
+        is_new = bool(
+            first_ranked
+            and window_end
+            and first_ranked.astimezone(SOURCE_TZ).date()
+            >= window_end - timedelta(days=new_window_days - 1)
+        )
+        return {
+            "account": {
+                "account_id": account_id,
+                "name": account["canonical_name"],
+                "first_seen_at": account["first_seen_at"],
+                "updated_at": account["updated_at"],
+            },
+            "activity": {
+                "window_end": window_end.isoformat() if window_end else None,
+                "window_days": 7,
+                "active_days_7d": len(recent_dates),
+                "streak": streak,
+                "longest_streak_7d": longest,
+                "activity_basis": "distinct_snapshot_dates_with_rank_hit",
+            },
+            "new_account": {
+                "is_new_account": is_new,
+                "first_ranked_at": _source_time(first_ranked) if first_ranked else None,
+                "new_account_window_days": new_window_days,
+                "definition": "first observed ranked appearance within 30 calendar days ending window_end",
+            },
+        }
+
     def article(self, article_id: str) -> dict[str, Any]:
         result, migration = self._read_contract(
             "article-hit-detail",
@@ -1325,14 +1418,42 @@ class WechatService:
             ).fetchone()
             if article:
                 content_id = str(article["content_id"])
-                hits = [dict(x) for x in con.execute("SELECT h.*,s.keyword,s.captured_at,s.features_json FROM search_hits h JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id WHERE h.content_id=? ORDER BY s.captured_at DESC,h.rank", (content_id,)).fetchall()]
+                hits = [dict(x) for x in con.execute("SELECT h.*,s.keyword_id,s.keyword,s.captured_at,s.features_json FROM search_hits h JOIN search_snapshots s ON s.snapshot_id=h.snapshot_id WHERE h.content_id=? ORDER BY s.captured_at DESC,h.rank", (content_id,)).fetchall()]
                 obs = [dict(x) for x in con.execute("SELECT * FROM metric_observations WHERE subject_type='content' AND subject_id=? ORDER BY observed_at DESC", (content_id,)).fetchall()]
+                rank_points: dict[tuple[str, str], dict[str, Any]] = {}
+                for hit in hits:
+                    captured = _parse_datetime_value(hit.get("captured_at"))
+                    day = captured.astimezone(SOURCE_TZ).date().isoformat() if captured else str(hit.get("captured_at") or "")[:10]
+                    keyword_id = str(hit.get("keyword_id") or "")
+                    key = (day, keyword_id)
+                    point = rank_points.setdefault(
+                        key,
+                        {
+                            "date": day,
+                            "keyword_id": keyword_id,
+                            "keyword": hit.get("keyword") or "",
+                            "best_rank": int(hit.get("rank") or 0),
+                            "snapshot_count": 0,
+                            "latest_captured_at": hit.get("captured_at") or "",
+                        },
+                    )
+                    rank = int(hit.get("rank") or 0)
+                    if rank > 0 and (not point["best_rank"] or rank < point["best_rank"]):
+                        point["best_rank"] = rank
+                    point["snapshot_count"] += 1
+                    if str(hit.get("captured_at") or "") > str(point["latest_captured_at"]):
+                        point["latest_captured_at"] = hit.get("captured_at") or ""
+                rank_history = {
+                    "aggregation": "best_rank_per_keyword_per_calendar_day",
+                    "timezone": "Asia/Shanghai",
+                    "points": sorted(rank_points.values(), key=lambda item: (item["date"], item["keyword_id"])),
+                }
                 payload = json.loads(article["payload_json"] or "{}")
                 snapshot_rows: dict[str, dict[str, Any]] = {}
                 for hit in hits:
                     sid = str(hit["snapshot_id"])
                     snapshot_rows.setdefault(sid, {"snapshot_id": sid, "captured_at": hit["captured_at"], "keyword": hit["keyword"], "features": json.loads(hit.get("features_json") or "{}"), "hits": []})["hits"].append(hit)
-                return {"source_status": {"status": "healthy", "source": "hub_db"}, "article": {**dict(article), "source": payload}, "snapshots": list(snapshot_rows.values()), "hits": hits, "articles": [{**dict(article), "source": payload}], "features": {"canonical_url": article["canonical_url"], "published_at": article["published_at"]}, "observations": obs}
+                return {"source_status": {"status": "healthy", "source": "hub_db"}, "article": {**dict(article), "source": payload}, "rank_history": rank_history, "snapshots": list(snapshot_rows.values()), "hits": hits, "articles": [{**dict(article), "source": payload}], "features": {"canonical_url": article["canonical_url"], "published_at": article["published_at"]}, "observations": obs}
         raise NotFoundError("微信文章", article_id)
 
     def _article_legacy(self, article_id: str) -> dict[str, Any]:

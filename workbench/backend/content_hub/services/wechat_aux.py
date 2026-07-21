@@ -603,6 +603,55 @@ class WechatAuxService:
                     )
         return len(loaded)
 
+    def artifacts(self, kind: str, subject_ids: list[str]) -> dict[str, Any]:
+        ids = list(dict.fromkeys(str(item).strip() for item in subject_ids))
+        if not ids:
+            raise AuxValidation("ids is required")
+        if len(ids) > 20:
+            raise AuxValidation("evidence ids exceed limit 20")
+        if kind != "evidence" or any(not EVIDENCE_RE.fullmatch(item) for item in ids):
+            raise AuxValidation("invalid evidence id")
+        found: dict[str, dict[str, Any]] = {}
+        with connect(self.settings, readonly=True) as con:
+            placeholders = ",".join("?" for _ in ids)
+            rows = con.execute(
+                f"""SELECT subject_id,payload_json FROM wechat_aux_artifacts a
+                    WHERE artifact_kind='evidence' AND subject_id IN ({placeholders})
+                      AND updated_at=(
+                        SELECT MAX(b.updated_at) FROM wechat_aux_artifacts b
+                        WHERE b.artifact_kind=a.artifact_kind
+                          AND b.subject_id=a.subject_id
+                      )""",
+                ids,
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                found[str(row["subject_id"])] = payload
+        for evidence_id in ids:
+            if evidence_id in found:
+                continue
+            try:
+                found[evidence_id] = self.artifact("evidence", evidence_id)
+            except AuxEvidenceNotFound:
+                pass
+        items = [found[item] for item in ids if item in found]
+        missing = [item for item in ids if item not in found]
+        result = {
+            "schema_version": "agent_evidence_batch_v1",
+            "requested_count": len(ids),
+            "found_count": len(items),
+            "missing_count": len(missing),
+            "items": items,
+            "missing_ids": missing,
+        }
+        if len(_json(result).encode("utf-8")) > 512 * 1024:
+            raise AuxValidation("evidence batch exceeds 512KB response limit")
+        return result
+
     def artifact(self, kind: str, subject_id: str = "") -> dict[str, Any]:
         if kind == "evidence" and not EVIDENCE_RE.fullmatch(subject_id):
             raise AuxValidation("invalid evidence id")

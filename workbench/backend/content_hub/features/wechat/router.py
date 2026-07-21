@@ -42,6 +42,11 @@ def keyword(keyword_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "data": _service(request).keyword(keyword_id)}
 
 
+@router.get("/accounts/{account_id}")
+def account(account_id: str, request: Request) -> dict[str, Any]:
+    return {"ok": True, "data": _service(request).account_activity(account_id)}
+
+
 @router.get("/articles/{article_id}")
 def article(article_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "data": _service(request).article(article_id)}
