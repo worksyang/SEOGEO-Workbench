@@ -368,48 +368,6 @@ def merge_candidate(request: Request, candidate_id: str, payload: dict) -> dict:
     return {"ok": True, "data": {"candidate_id": candidate_id, "status": "queued"}}
 
 
-@router.get("/states")
-def batch_states(request: Request, limit: int = Query(60, ge=1, le=200)) -> dict:
-    """成稿状态机视图：按 production_jobs.status 分组列出最近批次。"""
-    with connect(request.app.state.settings, readonly=True) as connection:
-        rows = connection.execute(
-            "SELECT job_id, job_type, status, input_signal_ids_json, created_at, updated_at "
-            "FROM production_jobs ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        columns: dict[str, list] = {}
-        for row in rows:
-            item = dict(row)
-            try:
-                item["input_signal_ids"] = json.loads(item.pop("input_signal_ids_json") or "[]")
-            except Exception:
-                item["input_signal_ids"] = []
-            columns.setdefault(item["status"], []).append(item)
-    return {"ok": True, "data": {"columns": columns, "total": len(rows)}}
-
-
-@router.get("/lineage")
-def lineage(request: Request) -> dict:
-    with connect(request.app.state.settings, readonly=True) as connection:
-        signals = connection.execute(
-            "SELECT signal_id, signal_type, subject_id, detected_at FROM signals ORDER BY detected_at DESC LIMIT 30"
-        ).fetchall()
-        production = connection.execute(
-            "SELECT job_id, job_type, status, output_content_id, created_at FROM production_jobs ORDER BY created_at DESC LIMIT 30"
-        ).fetchall()
-        attempts = connection.execute(
-            "SELECT attempt_id, account_key, mode, status, attempted_at FROM publish_attempts ORDER BY attempted_at DESC LIMIT 30"
-        ).fetchall()
-    nodes = []
-    for row in signals:
-        nodes.append({"kind": "signal", "id": row["signal_id"], "label": row["signal_type"], "subject_id": row["subject_id"], "ts": row["detected_at"]})
-    for row in production:
-        nodes.append({"kind": "production", "id": row["job_id"], "label": row["job_type"], "status": row["status"], "subject_id": row["output_content_id"], "ts": row["created_at"]})
-    for row in attempts:
-        nodes.append({"kind": "publish", "id": row["attempt_id"], "label": row["mode"], "subject_id": row["account_key"], "status": row["status"], "ts": row["attempted_at"]})
-    return {"ok": True, "data": {"nodes": nodes, "total": len(nodes)}}
-
-
 @router.get("/locks")
 def locks(request: Request) -> dict:
     settings = request.app.state.settings

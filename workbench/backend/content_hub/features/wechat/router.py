@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from content_hub.errors import AppError, ValidationAppError
 from content_hub.features.wechat.service import WechatService
@@ -28,9 +28,13 @@ def _service(request: Request) -> WechatService:
     return WechatService(request.app.state.settings)
 
 
-@router.get("/bootstrap")
-def bootstrap(request: Request) -> dict[str, Any]:
-    return {"ok": True, "data": _service(request).bootstrap()}
+@router.get("/bootstrap", response_model=None)
+def bootstrap(request: Request) -> Any:
+    service = _service(request)
+    cached = service.bootstrap_http_response()
+    if cached is not None:
+        return Response(cached, media_type="application/json")
+    return {"ok": True, "data": service.bootstrap()}
 
 
 @router.get("/keywords/{keyword_id}")

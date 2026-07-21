@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import uuid
+import base64
+import zlib
 from typing import Any, Callable
 
 from content_hub.db.connection import connect, transaction
@@ -17,6 +19,35 @@ from content_hub.services.audit import AuditService
 
 
 MODULE = "wechat-search"
+
+
+def _projection_payload(raw: str) -> tuple[dict[str, Any], bool]:
+    """Decode live projection storage while preserving its compression mode."""
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}, False
+    if not isinstance(value, dict):
+        return {}, False
+    if value.get("__compressed_json__") != "zlib+base64":
+        return value, False
+    try:
+        decoded = json.loads(
+            zlib.decompress(base64.b64decode(value["data"])).decode("utf-8")
+        )
+    except (KeyError, TypeError, ValueError, zlib.error, UnicodeDecodeError, json.JSONDecodeError):
+        return {}, True
+    return (decoded if isinstance(decoded, dict) else {}), True
+
+
+def _projection_json(payload: dict[str, Any], compressed: bool) -> str:
+    encoded = canonical_payload(payload)
+    if not compressed:
+        return encoded
+    return canonical_payload({
+        "__compressed_json__": "zlib+base64",
+        "data": base64.b64encode(zlib.compress(encoded.encode("utf-8"), 6)).decode("ascii"),
+    })
 
 
 class StateCommandService:
@@ -112,6 +143,13 @@ class StateCommandService:
                     self._receipt(con, command_id, key, "projected", "succeeded", "matched", {"projection": "wechat_legacy_projections"}, now_iso())
         if failure is not None:
             raise failure
+        # State writes update the compact bootstrap projection in the same
+        # transaction. Invalidate the short-TTL read cache immediately so a
+        # rapid sequence of management writes cannot serve an older snapshot.
+        from content_hub.repositories.wechat_legacy import WechatLegacyRepository
+
+        with WechatLegacyRepository._bootstrap_cache_lock:
+            WechatLegacyRepository._bootstrap_cache.clear()
         return output
 
     @staticmethod
@@ -179,9 +217,8 @@ class StateCommandService:
             )
         detail_payloads: dict[str, tuple[Any, dict[str, Any]]] = {}
         for row in latest_rows.values():
-            try:
-                payload = json.loads(row["payload_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
+            payload, was_compressed = _projection_payload(row["payload_json"])
+            if not payload:
                 continue
             if row["projection_kind"] == "keyword_manage":
                 payload = StateCommandService._merge_manage_projection(payload, states)
@@ -196,7 +233,7 @@ class StateCommandService:
                         {subject_id: subject_state},
                     )
                 detail_payloads[subject_id] = (row, payload)
-            encoded = canonical_payload(payload)
+            encoded = _projection_json(payload, was_compressed)
             con.execute(
                 """UPDATE wechat_legacy_projections
                    SET payload_json=?,source_hash=?,source_ref=?,updated_at=?

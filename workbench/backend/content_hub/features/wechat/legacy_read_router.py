@@ -189,6 +189,51 @@ def _json_response(request: Request, payload: PayloadWithHTTPMetadata | Any) -> 
     return Response(raw, status_code=metadata.status_code or 200, headers=headers)
 
 
+def _cached_core_response(request: Request, raw: bytes, metadata: HTTPMetadata) -> Response:
+    """Serve a cached core JSON body without re-encoding the projection."""
+    etag = metadata.etag
+    if etag == "__AUTO__":
+        etag = 'W/"' + hashlib.md5(raw).hexdigest() + '"'
+    candidates = {
+        x.strip()
+        for x in request.headers.get("if-none-match", "").split(",")
+        if x.strip()
+    }
+    headers: dict[str, str] = {}
+    if etag:
+        headers["ETag"] = etag
+    if metadata.vary:
+        headers["Vary"] = metadata.vary
+    if metadata.cache_control:
+        headers["Cache-Control"] = metadata.cache_control
+    if etag and ("*" in candidates or etag in candidates):
+        return Response(status_code=304, headers=headers)
+    if metadata.content_type:
+        headers["Content-Type"] = metadata.content_type
+
+    accepted = {}
+    for token in request.headers.get("accept-encoding", "").split(","):
+        parts = [part.strip() for part in token.split(";") if part.strip()]
+        if not parts:
+            continue
+        quality = 1.0
+        for part in parts[1:]:
+            if part.lower().startswith("q="):
+                try:
+                    quality = float(part[2:])
+                except ValueError:
+                    quality = 0.0
+        accepted[parts[0].lower()] = quality
+    varies_encoding = any(
+        item.strip().lower() == "accept-encoding"
+        for item in (metadata.vary or "").split(",")
+    )
+    if varies_encoding and accepted.get("gzip", accepted.get("*", 0.0)) > 0:
+        headers["Content-Encoding"] = "gzip"
+        return Response(gzip.compress(raw, compresslevel=6), headers=headers)
+    return Response(raw, headers=headers)
+
+
 def _mode_read(request: Request, contract: str, fingerprint: str, legacy, hub):
     core = contract in {"monitor-data", "bootstrap", "keyword", "account"}
     result, _ = MigrationResolver(
@@ -253,6 +298,24 @@ async def monitor_bootstrap(request: Request) -> Response:
     if "/legacy/xhs/" in request.headers.get("referer", ""):
         from content_hub.legacy_proxy import proxy_legacy_wechat_api
         return await proxy_legacy_wechat_api("monitor-data/bootstrap", request)
+    resolver = MigrationResolver(
+        request.app.state.settings,
+        module_key="wechat-search",
+        contract_key="bootstrap",
+    )
+    if resolver.mode() == "hub":
+        entry = _repo(request).bootstrap_cache_entry()
+        return _cached_core_response(
+            request,
+            entry.payload_json,
+            HTTPMetadata(
+                status_code=200,
+                content_type="application/json; charset=utf-8",
+                etag="__AUTO__",
+                cache_control="no-cache, must-revalidate",
+                vary="Accept-Encoding",
+            ),
+        )
     return _json_response(request, _mode_read(request, "bootstrap", "wechat:bootstrap", lambda: _remote_query(request, "/api/monitor-data/bootstrap"), lambda: _repo(request).bootstrap()))
 
 
@@ -454,6 +517,7 @@ def refresh_all_write(request: Request, body: dict[str, Any] | None = None) -> R
             incremental=bool(payload.get("incremental")),
             refresh_round=refresh_round,
             request_id=request.headers.get("X-Request-ID"),
+            background=True,
         )
         status = 409 if result.get("status") in {"failed", "completed_with_failures"} or result.get("hub_status") in {"failed", "partial_failed", "blocked"} else 202
         return Response(json.dumps(result, ensure_ascii=False, default=str).encode(), status_code=status, media_type="application/json")
@@ -485,6 +549,7 @@ def scheduler_trigger_write(request: Request, body: dict[str, Any] | None = None
         result = _refresh_service(request).scheduler_trigger(
             key=_idempotency(request, body or {}, operation="scheduler-trigger"),
             request_id=request.headers.get("X-Request-ID"),
+            background=True,
         )
         status = 409 if result.get("blocked") else 200
         return Response(json.dumps(result, ensure_ascii=False, default=str).encode(), status_code=status, media_type="application/json")

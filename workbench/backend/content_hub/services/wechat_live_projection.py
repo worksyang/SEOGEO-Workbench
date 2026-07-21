@@ -99,13 +99,30 @@ def _local_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(LOCAL_TIMEZONE)
 
 
+def _source_datetime(value: Any) -> datetime | None:
+    """Return the source-date representation used by public legacy labels.
+
+    Canonical Hub snapshots with a ``Z`` suffix are UTC facts.  They must keep
+    their UTC calendar date when rendered: ``2026-07-18T18:15Z`` is a July 18
+    source snapshot, not July 19 merely because the workstation is in China.
+    Naive legacy values are already date-labelled and are left naive.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _timestamp_key(value: Any) -> float:
     parsed = _local_datetime(value)
     return parsed.timestamp() if parsed is not None else float("-inf")
 
 
 def _legacy_local_iso(value: Any) -> str:
-    parsed = _local_datetime(value)
+    parsed = _source_datetime(value)
     if parsed is None:
         return str(value or "")
     return (
@@ -117,12 +134,12 @@ def _legacy_local_iso(value: Any) -> str:
 
 
 def _iso_date(value: Any) -> str:
-    parsed = _local_datetime(value)
+    parsed = _source_datetime(value)
     return parsed.date().isoformat() if parsed is not None else str(value or "")[:10]
 
 
 def _parse_date(value: str) -> date | None:
-    parsed = _local_datetime(value)
+    parsed = _source_datetime(value)
     return parsed.date() if parsed is not None else None
 
 
@@ -134,6 +151,23 @@ def _old_payload(raw: Any) -> dict[str, Any]:
         return _json(zlib.decompress(base64.b64decode(value["data"])), {})
     except (KeyError, TypeError, ValueError, zlib.error):
         return {}
+
+
+def _stored_projection_json(payload: dict[str, Any]) -> str:
+    """Keep durable live projections bounded without changing their contract.
+
+    Readers already understand this envelope (the same format is used by the
+    legacy repository for article details), so large full/bootstrap rows do not
+    require materialising a second uncompressed copy on disk.
+    """
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) <= (1 << 20):
+        return encoded
+    compressed = zlib.compress(encoded.encode("utf-8"), 6)
+    return json.dumps({
+        "__compressed_json__": "zlib+base64",
+        "data": base64.b64encode(compressed).decode("ascii"),
+    }, ensure_ascii=False, separators=(",", ":"))
 
 
 def _keyword_text(source: dict[str, Any], seed: dict[str, Any]) -> str:
@@ -760,11 +794,32 @@ def rebuild(connection: Any, *, window_days: int = WINDOW_DAYS) -> dict[str, dic
     )
 
     seeds: dict[tuple[str, str], dict[str, Any]] = {}
+    # The covering lookup index lets SQLite identify the newest row per
+    # projection identity before fetching payload_json.  In particular, do not
+    # iterate historical 100+ MB payloads just to discard all but one row.
     for row in connection.execute(
-        """SELECT projection_kind,subject_id,payload_json
-           FROM wechat_legacy_projections
-           WHERE projection_kind IN ('bootstrap','full','keyword','account')
-           ORDER BY updated_at DESC"""
+        """WITH latest AS (
+               SELECT projection_kind,subject_id,
+                      MAX(updated_at) AS updated_at
+               FROM wechat_legacy_projections
+               WHERE projection_kind IN ('bootstrap','full','keyword','account')
+               GROUP BY projection_kind,subject_id
+           )
+           SELECT p.projection_kind,p.subject_id,p.payload_json
+           FROM wechat_legacy_projections p
+           JOIN latest l
+             ON l.projection_kind=p.projection_kind
+            AND l.subject_id=p.subject_id
+            AND l.updated_at=p.updated_at
+           WHERE p.projection_id=(
+               SELECT p2.projection_id
+               FROM wechat_legacy_projections p2
+               WHERE p2.projection_kind=p.projection_kind
+                 AND p2.subject_id=p.subject_id
+                 AND p2.updated_at=p.updated_at
+               ORDER BY p2.projection_id DESC
+               LIMIT 1
+           )"""
     ):
         key = (str(row["projection_kind"]), str(row["subject_id"]))
         seeds.setdefault(key, _old_payload(row["payload_json"]))
@@ -840,17 +895,17 @@ def rebuild(connection: Any, *, window_days: int = WINDOW_DAYS) -> dict[str, dic
     for snap in snapshots:
         run_articles = [article(x) for x in hits_by_snapshot.get(str(snap["snapshot_id"]), [])]
         features = _json(snap.get("features_json"), {})
-        captured_local = _local_datetime(snap["captured_at"])
+        captured_source = _source_datetime(snap["captured_at"])
         run = {
             "id": str(snap["snapshot_id"]), "date": _iso_date(snap["captured_at"]),
             "time": (
-                captured_local.strftime("%H:%M")
-                if captured_local is not None
+                captured_source.strftime("%H:%M")
+                if captured_source is not None
                 else str(snap["captured_at"])[11:16]
             ),
             "run_at": (
-                captured_local.strftime("%Y-%m-%d %H:%M")
-                if captured_local is not None
+                captured_source.strftime("%Y-%m-%d %H:%M")
+                if captured_source is not None
                 else str(snap["captured_at"]).replace("T", " ")[:16]
             ),
             "trigger_type": snap.get("trigger_type") or "manual", "is_primary": True,
@@ -1105,7 +1160,7 @@ def write(connection: Any, *, window_days: int = WINDOW_DAYS) -> dict[str, dict[
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     for key, payload in payloads.items():
         kind, subject = (key.split(":", 1) + [""])[:2] if ":" in key else (key, "")
-        packed = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        packed = _stored_projection_json(payload)
         digest = hashlib.sha256(packed.encode()).hexdigest()
         connection.execute(
             """INSERT INTO wechat_legacy_projections(
@@ -1115,7 +1170,8 @@ def write(connection: Any, *, window_days: int = WINDOW_DAYS) -> dict[str, dict[
                ON CONFLICT(projection_kind,subject_id,source_hash) DO UPDATE SET
                  payload_json=excluded.payload_json,source_manifest_id=excluded.source_manifest_id,
                  source_ref=excluded.source_ref,updated_at=excluded.updated_at""",
-            (f"live_{digest[:28]}", kind, subject, packed, digest, manifest_id,
+            (f"live_{hashlib.sha256(f'{kind}:{subject}:{digest}'.encode()).hexdigest()[:28]}",
+             kind, subject, packed, digest, manifest_id,
              "canonical://wechat-search/live-projection", now),
         )
     return payloads

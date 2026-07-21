@@ -781,7 +781,17 @@ def test_streaming_import_persists_exact_runtime_projections_idempotently(
         key=lambda row: row["started_at"],
         reverse=True,
     )
-    assert repository.runtime_history() == expected_by_started_at
+    actual_history = repository.runtime_history()
+    # Runtime is now an intentionally bounded compatibility summary. Preserve
+    # every bounded legacy field, while not requiring omitted optional
+    # ``refresh_round=None`` keys on rows that never carried that fact.
+    assert len(actual_history) == len(expected_by_started_at)
+    for actual, expected in zip(actual_history, expected_by_started_at):
+        for field, value in expected.items():
+            if field == "refresh_round" and value is None:
+                continue
+            assert actual.get(field) == value
+    assert next(row for row in actual_history if row["batch_id"] == "batch_mtime_first").get("refresh_round") == 7
     assert [row["batch_id"] for row in repository.runtime_history()] == [
         "batch_started_first", "discovery_today", "batch_mtime_first",
     ]

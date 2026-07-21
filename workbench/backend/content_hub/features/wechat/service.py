@@ -10,10 +10,12 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import zlib
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Iterator
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,7 @@ from content_hub.adapters.wechat import WechatAdapter, WechatSourceError
 from content_hub.db.connection import connect, transaction
 from content_hub.db.writer_lock import WriterLockTimeout, writer_lock
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
+from content_hub.repositories.wechat_legacy import WechatLegacyRepository
 from content_hub.services.migration import MigrationResolver
 from content_hub.services.wechat_refresh import WechatRefreshService
 from content_hub.ingestion.source_manifests import manifest_id_for, manifest_ref, write_manifest
@@ -119,15 +122,15 @@ _BOOTSTRAP_KEYWORD_FIELDS = (
     "kw_score",
 )
 _BOOTSTRAP_ACCOUNT_FIELDS = (
-    "today_explain", "current_streak", "recent_hit_days", "score_delta",
-    "original_article_count", "kw_count", "friends_follow_count",
-    "score_yesterday", "timeliness_score_delta", "today_score_raw",
-    "today_score_delta", "score_raw", "timeliness_explain", "account_id",
-    "bucket_count", "timeliness_score_yesterday", "article_count", "topic_count",
-    "history", "timeliness_score_level", "move_summary", "today_score",
-    "headimg_url", "score", "today_hit_count", "timeliness_score",
-    "score_explain", "timeliness_score_raw", "today_score_level", "score_level",
-    "today_score_yesterday", "longest_streak", "name",
+    "account_id", "name", "headimg_url",
+    "score", "score_raw", "score_yesterday", "score_delta", "score_level",
+    "timeliness_score", "timeliness_score_raw", "timeliness_score_yesterday",
+    "timeliness_score_delta", "timeliness_score_level",
+    "today_score", "today_score_raw", "today_score_yesterday",
+    "today_score_delta", "today_score_level",
+    "article_count", "kw_count", "topic_count", "bucket_count",
+    "today_hit_count", "recent_hit_days", "current_streak", "longest_streak",
+    "friends_follow_count", "original_article_count", "move_summary",
 )
 _BOOTSTRAP_DELTA_FIELDS = (
     "slot_coverage_ratio", "read_delta_estimated",
@@ -564,7 +567,15 @@ def _projection_keyword_prune(keyword: dict[str, Any]) -> dict[str, Any]:
     result["latest_run"] = _projection_latest_run(keyword.get("latest_run"))
     delta = keyword.get("keyword_read_delta")
     if isinstance(delta, dict):
-        result["keyword_read_delta"] = {key: delta.get(key) for key in _BOOTSTRAP_DELTA_FIELDS if key in delta}
+        # 保留旧列表渲染需要的少量指标，删除每日点阵及重复窗口元数据。
+        delta_fields = (
+            "read_delta_estimated", "read_delta_raw", "steady_read_median",
+            "provisional_read_delta_estimated", "confidence_score",
+            "confidence_level", "trend_signal", "trend_label", "status",
+        )
+        result["keyword_read_delta"] = {
+            key: delta.get(key) for key in delta_fields if key in delta
+        }
     result["turnover_runs"] = _projection_turnover_runs(keyword)
     return result
 
@@ -579,6 +590,32 @@ def _projection_account_prune(account: dict[str, Any]) -> dict[str, Any]:
     ][:12]
     result["keyword_names"] = list((account.get("keywords") or {}).keys())
     return result
+
+
+def _projection_bootstrap_payload(
+    legacy_full: dict[str, Any],
+    legacy_keywords: dict[str, dict[str, Any]],
+    legacy_accounts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "generated_at": legacy_full.get("generated_at"),
+        "window_days": legacy_full.get("window_days"),
+        "window_start": legacy_full.get("window_start"),
+        "window_end": legacy_full.get("window_end"),
+        "account_score_method": legacy_full.get("account_score_method"),
+        "wso_fit_meta": legacy_full.get("wso_fit_meta"),
+        "keyword_read_delta_meta": legacy_full.get("keyword_read_delta_meta"),
+        "keyword_bucket_options": legacy_full.get("keyword_bucket_options"),
+        "keyword_scope": legacy_full.get("keyword_scope"),
+        "keyword_source_total": legacy_full.get("keyword_source_total"),
+        "pinned_keyword_count": legacy_full.get("pinned_keyword_count"),
+        "keywords": [
+            _projection_keyword_prune(x) for x in legacy_keywords.values()
+        ],
+        "accounts": [
+            _projection_account_prune(x) for x in legacy_accounts.values()
+        ],
+    }
 
 
 def _empty_projection_keyword(
@@ -849,6 +886,9 @@ def _legacy_article_detail(article: dict[str, Any], records: dict[str, Any], key
 
 
 class WechatService:
+    _bootstrap_http_cache_lock = Lock()
+    _bootstrap_http_cache: dict[tuple[Any, ...], tuple[float, bytes]] = {}
+
     def __init__(self, settings: Any) -> None:
         self.settings = settings
         self.adapter = WechatAdapter(settings)
@@ -953,26 +993,67 @@ class WechatService:
         keywords = payload.get("keywords") or []
         return {"source_status": {"status": result.status, "source": result.source, "error": result.error}, "summary": {"keyword_count": len(keywords), "account_count": len(payload.get("accounts") or []), "generated_at": payload.get("generated_at"), "window_days": payload.get("window_days")}, "keywords": [self._keyword_summary(x) for x in keywords if isinstance(x, dict)], "updated_at": payload.get("generated_at")}
 
-    def _bootstrap_hub(self) -> dict[str, Any]:
-        with connect(self.settings, readonly=True) as con:
-            keywords = [
-                self._keyword_summary(dict(row))
-                for row in con.execute(
-                    "SELECT * FROM keywords WHERE platform='wechat-search' ORDER BY keyword_id"
-                ).fetchall()
-            ]
-            accounts = [
-                dict(row)
-                for row in con.execute(
-                    "SELECT * FROM creators WHERE platform='wechat-search' ORDER BY creator_id"
-                ).fetchall()
-            ]
+    def _bootstrap_hub(self, projection: dict[str, Any] | None = None) -> dict[str, Any]:
+        projection = projection if projection is not None else WechatLegacyRepository(self.settings).bootstrap()
+        keywords = [
+            self._keyword_summary(item)
+            for item in (projection.get("keywords") or [])
+            if isinstance(item, dict)
+        ]
+        accounts = [
+            item for item in (projection.get("accounts") or [])
+            if isinstance(item, dict)
+        ]
+        generated_at = projection.get("generated_at")
         return {
             "source_status": {"status": "healthy", "source": "hub_db"},
-            "summary": {"keyword_count": len(keywords), "account_count": len(accounts), "generated_at": None, "window_days": None},
+            "summary": {
+                "keyword_count": len(keywords),
+                "account_count": len(accounts),
+                "generated_at": generated_at,
+                "window_days": projection.get("window_days"),
+            },
             "keywords": keywords,
-            "updated_at": None,
+            "updated_at": generated_at,
         }
+
+    def bootstrap_http_response(self) -> bytes | None:
+        """Return the Hub v1 bootstrap envelope already serialized.
+
+        ``None`` keeps legacy/compare mode on the existing resolver path.  The
+        Hub path uses the repository's versioned short-TTL cache and therefore
+        avoids both projection decoding and JSON serialization per request.
+        """
+        mode = MigrationResolver(
+            self.settings,
+            module_key="wechat-search",
+            contract_key="bootstrap",
+        ).mode()
+        if mode != "hub":
+            return None
+        now = time.monotonic()
+        with self._bootstrap_http_cache_lock:
+            entry = WechatLegacyRepository(self.settings).bootstrap_cache_entry()
+            key = entry.version
+            cached = self._bootstrap_http_cache.get(key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+            # Single-flight: the lock intentionally covers envelope
+            # construction and serialization so concurrent misses for one
+            # projection version cannot duplicate CPU work.
+            result = self._bootstrap_hub(entry.payload)
+            result["migration"] = {"mode": "hub"}
+            raw = json.dumps(
+                {"ok": True, "data": result},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode()
+            for cached_key, cached_value in list(self._bootstrap_http_cache.items()):
+                if cached_value[0] <= now:
+                    self._bootstrap_http_cache.pop(cached_key, None)
+            self._bootstrap_http_cache[key] = (entry.expires_at, raw)
+            return raw
 
     def _safe_status(self, status: str, error: str | None = None) -> None:
         try: self._connection_status(status, error=error, success_at=None)
@@ -2453,21 +2534,12 @@ class WechatService:
             )
             projection_rows = [
                 ("full", "", legacy_full),
-                ("bootstrap", "", {
-                    "generated_at": legacy_full.get("generated_at"),
-                    "window_days": legacy_full.get("window_days"),
-                    "window_start": legacy_full.get("window_start"),
-                    "window_end": legacy_full.get("window_end"),
-                    "account_score_method": legacy_full.get("account_score_method"),
-                    "wso_fit_meta": legacy_full.get("wso_fit_meta"),
-                    "keyword_read_delta_meta": legacy_full.get("keyword_read_delta_meta"),
-                    "keyword_bucket_options": legacy_full.get("keyword_bucket_options"),
-                    "keyword_scope": legacy_full.get("keyword_scope"),
-                    "keyword_source_total": legacy_full.get("keyword_source_total"),
-                    "pinned_keyword_count": legacy_full.get("pinned_keyword_count"),
-                    "keywords": [_projection_keyword_prune(x) for x in legacy_keywords.values()],
-                    "accounts": [_projection_account_prune(x) for x in legacy_accounts.values()],
-                }),
+                (
+                    "bootstrap", "",
+                    _projection_bootstrap_payload(
+                        legacy_full, legacy_keywords, legacy_accounts
+                    ),
+                ),
                 ("keyword_manage", "", self._stream_keyword_manage_payload(runtime, legacy_keywords)),
             ]
             projection_rows.extend(("keyword", key, value) for key, value in legacy_keywords.items())
@@ -2818,6 +2890,55 @@ class WechatService:
                 manifest_ref("wechat-search", manifest_id, "normalized/monitor-data.json"), now,
             ),
         )
+
+    def cleanup_derived_projections(
+        self,
+        *,
+        projection_kinds: tuple[str, ...] = (
+            "top_level", "full", "keyword", "account", "bootstrap",
+            "keyword_manage", "article_detail",
+        ),
+    ) -> int:
+        """Explicitly remove superseded derived rows without decoding payloads.
+
+        The cleanup is deliberately opt-in and never runs ``VACUUM``.  Runtime
+        projections, core snapshots/articles, and audit facts are excluded.
+        """
+        if not projection_kinds:
+            return 0
+        placeholders = ",".join("?" for _ in projection_kinds)
+        rank_order = """
+            CASE WHEN projection_kind='article_detail' THEN 1
+                 WHEN json_extract(payload_json,'$.generated_at') IS NULL THEN 1
+                 ELSE 0 END,
+            CASE WHEN projection_kind='article_detail' THEN NULL
+                 ELSE julianday(json_extract(payload_json,'$.generated_at')) END DESC,
+            updated_at DESC,
+            projection_id DESC
+        """
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    result = con.execute(
+                        f"""
+                        DELETE FROM wechat_legacy_projections
+                        WHERE projection_id IN (
+                            SELECT projection_id
+                            FROM (
+                                SELECT projection_id,
+                                       ROW_NUMBER() OVER (
+                                           PARTITION BY projection_kind,subject_id
+                                           ORDER BY {rank_order}
+                                       ) AS row_number
+                                FROM wechat_legacy_projections
+                                WHERE projection_kind IN ({placeholders})
+                            )
+                            WHERE row_number > 1
+                        )
+                        """,
+                        projection_kinds,
+                    )
+                    return int(result.rowcount or 0)
 
     def _upsert_runtime_projection(
         self, con: sqlite3.Connection, subject_id: str, subtype: str,
@@ -3285,21 +3406,12 @@ class WechatService:
         )
         projection_rows = [
             ("full", "", legacy_full),
-            ("bootstrap", "", {
-                "generated_at": legacy_full.get("generated_at"),
-                "window_days": legacy_full.get("window_days"),
-                "window_start": legacy_full.get("window_start"),
-                "window_end": legacy_full.get("window_end"),
-                "account_score_method": legacy_full.get("account_score_method"),
-                "wso_fit_meta": legacy_full.get("wso_fit_meta"),
-                "keyword_read_delta_meta": legacy_full.get("keyword_read_delta_meta"),
-                "keyword_bucket_options": legacy_full.get("keyword_bucket_options"),
-                "keyword_scope": legacy_full.get("keyword_scope"),
-                "keyword_source_total": legacy_full.get("keyword_source_total"),
-                "pinned_keyword_count": legacy_full.get("pinned_keyword_count"),
-                "keywords": [_projection_keyword_prune(x) for x in legacy_keywords.values()],
-                "accounts": [_projection_account_prune(x) for x in legacy_accounts.values()],
-            }),
+            (
+                "bootstrap", "",
+                _projection_bootstrap_payload(
+                    legacy_full, legacy_keywords, legacy_accounts
+                ),
+            ),
         ]
         manage_groups = []
         manage_total = manage_ranked = 0

@@ -11,6 +11,7 @@ import os
 import tempfile
 import time
 import fcntl
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -21,6 +22,14 @@ from content_hub.domain.ids import generate_ulid_like
 from content_hub.errors import ConflictError, NotFoundError, ValidationAppError
 from content_hub.adapters.wechat_search_api import canonicalize_url, content_id_for_url
 from content_hub.services.signals import run_post_refresh_linkage
+
+# 业务规则事实源：docs/微信关键词刷新间隔策略_v1.md
+# 这里的常量不是“方便调参”的技术参数；修改前必须先同步需求文档，
+# 否则 Agent 很容易只看到 3 小时/2 小时这些数字，却忘记它们保护的业务原因。
+REFRESH_POLICY_DOC = "docs/微信关键词刷新间隔策略_v1.md"
+OBSERVATION_INTERVAL_HOURS = 3.0
+OBSERVATION_WINDOW_HOURS = 24.0
+FAILURE_COOLDOWN_HOURS = 2.0
 
 
 def _now() -> str:
@@ -44,6 +53,14 @@ def _parse_time(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _is_today_local(value: Any, *, today: datetime.date | None = None) -> bool:
+    parsed = _parse_time(value)
+    if parsed is None:
+        return False
+    local_today = today or datetime.now().astimezone().date()
+    return parsed.astimezone().date() == local_today
 
 
 def _frontend_status(value: str) -> str:
@@ -926,7 +943,17 @@ class WechatRefreshService:
                         con.execute("UPDATE command_runs SET output_json=?,updated_at=? WHERE command_id=?", (_json(output), _now(), command_id))
                         return output
 
-    def refresh_batch(self, *, keyword_ids: list[str] | None, key: str, source: str = "web_refresh_all", incremental: bool = False, refresh_round: Any = None, request_id: str | None = None) -> dict[str, Any]:
+    def refresh_batch(
+        self,
+        *,
+        keyword_ids: list[str] | None,
+        key: str,
+        source: str = "web_refresh_all",
+        incremental: bool = False,
+        refresh_round: Any = None,
+        request_id: str | None = None,
+        background: bool = False,
+    ) -> dict[str, Any]:
         if not key.strip():
             raise ValidationAppError("必须提供 Idempotency-Key。")
         unique_ids = list(dict.fromkeys(str(item).strip() for item in (keyword_ids or []) if str(item).strip()))
@@ -962,7 +989,34 @@ class WechatRefreshService:
                     invalid_ids = [keyword_id for keyword_id in unique_ids if keyword_id not in candidate_map]
                     if invalid_ids:
                         raise InvalidKeywordIDsError(invalid_ids)
+                    # 同一批次里先处理“今天还没刷新过”的词。这样无论是
+                    # 用户点全量刷新，还是调度器恢复/重新启动，都不会每次
+                    # 从固定的第一个关键词开始，让后面的词长期饿死。
+                    # Why：见 [刷新策略](docs/微信关键词刷新间隔策略_v1.md#4-每轮队列顺序)。
+                    latest_rows = con.execute(
+                        """SELECT keyword_id,MAX(captured_at) AS latest_snapshot_at
+                           FROM search_snapshots
+                          WHERE platform=? AND keyword_id IN ({})
+                          GROUP BY keyword_id""".format(
+                            ",".join("?" for _ in unique_ids)
+                        ),
+                        (self.PLATFORM, *unique_ids),
+                    ).fetchall()
+                    latest_by_keyword = {
+                        str(row["keyword_id"]): row["latest_snapshot_at"]
+                        for row in latest_rows
+                    }
+                    today = datetime.now().astimezone().date()
                     keywords = [candidate_map[keyword_id] for keyword_id in unique_ids]
+                    keywords.sort(
+                        key=lambda item: (
+                            _is_today_local(
+                                latest_by_keyword.get(str(item["keyword_id"])),
+                                today=today,
+                            ),
+                            unique_ids.index(str(item["keyword_id"])),
+                        )
+                    )
                     active = self._active_batch(con)
                     if active:
                         raise BatchAlreadyRunningError(self._job_payload(con, active["refresh_job_id"]))
@@ -976,7 +1030,31 @@ class WechatRefreshService:
                     self._event(con, job_id=job_id, item_id=None, event_type="started", status="running", details={"count": len(keywords), "incremental": incremental})
                     self._batch_runtime_projection(con, job_id=job_id, payload=self._job_payload(con, job_id))
 
-        return self.run_batch(job_id, request_id=request_id)
+        if not background:
+            return self.run_batch(job_id, request_id=request_id)
+
+        # 网络/RPA 调用必须脱离 HTTP 请求生命周期。接口只返回持久化的
+        # checkpoint，前端立即通过 status 接管进度；进程重启时则由 lifespan
+        # 的 recovery 线程继续执行。
+        def execute() -> None:
+            try:
+                self.run_batch(job_id, request_id=request_id)
+            except Exception:
+                # 运行异常必须留在数据库 checkpoint 中，不能让后台线程静默
+                # 消失。看门狗/恢复逻辑会继续接管；这里只保留日志给服务进程。
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "微信刷新批次后台执行失败", extra={"refresh_job_id": job_id}
+                )
+
+        threading.Thread(
+            target=execute,
+            name=f"wechat-refresh-batch-{job_id[-8:]}",
+            daemon=True,
+        ).start()
+        with connect(self.settings, readonly=True) as con:
+            return self._job_payload(con, job_id)
 
     def run_batch(self, job_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
@@ -1364,13 +1442,14 @@ class WechatRefreshService:
             with connect(self.settings) as con:
                 with transaction(con):
                     jobs = con.execute(
-                        """SELECT refresh_job_id,trigger_source
-                           FROM search_refresh_jobs
-                           WHERE system_key=? AND platform=?
-                             AND command_id IS NOT NULL
-                             AND status IN ('queued','running')
-                             AND cancel_requested=0
-                           ORDER BY created_at""",
+                        """SELECT j.refresh_job_id,j.trigger_source,j.cancel_requested,
+                                  j.command_id,c.idempotency_key
+                           FROM search_refresh_jobs j
+                           JOIN command_runs c ON c.command_id=j.command_id
+                           WHERE j.system_key=? AND j.platform=?
+                             AND j.command_id IS NOT NULL
+                             AND j.status IN ('queued','running')
+                           ORDER BY j.created_at""",
                         (self.MODULE, self.PLATFORM),
                     ).fetchall()
                     for job in jobs:
@@ -1412,10 +1491,28 @@ class WechatRefreshService:
                                 "attempt_count": int(item["attempt_count"] or 0),
                                 "source": str(job["trigger_source"] or "recovery"),
                             })
-                        con.execute(
-                            "UPDATE search_refresh_jobs SET status='running',updated_at=? WHERE refresh_job_id=?",
-                            (_now(), job["refresh_job_id"]),
-                        )
+                        if job["cancel_requested"]:
+                            con.execute(
+                                """UPDATE search_refresh_items
+                                   SET status='cancelled',current_phase='cancelled',
+                                       finished_at=COALESCE(finished_at,?)
+                                   WHERE refresh_job_id=? AND status IN ('queued','running')""",
+                                (_now(), job["refresh_job_id"]),
+                            )
+                            output = self._job_payload(con, job["refresh_job_id"])
+                            self._complete_job(
+                                con,
+                                job_id=str(job["refresh_job_id"]),
+                                command_id=str(job["command_id"]),
+                                key=str(job["idempotency_key"]),
+                                status="cancelled",
+                                output=output,
+                            )
+                        else:
+                            con.execute(
+                                "UPDATE search_refresh_jobs SET status='running',updated_at=? WHERE refresh_job_id=?",
+                                (_now(), job["refresh_job_id"]),
+                            )
                         self._batch_runtime_projection(
                             con,
                             job_id=job["refresh_job_id"],
@@ -1525,6 +1622,102 @@ class WechatRefreshService:
                 status="requeued",
             )
         return job_ids
+
+    def recover_zombie_batches(self, *, zombie_after_hours: float | None = None) -> list[str]:
+        """Force-complete batches that have been running for too long.
+
+        Unlike recover_stale_batches (which requeues individual stuck items),
+        this method terminates entire jobs that exceed the zombie threshold.
+        This prevents a single catastrophic failure from blocking all future
+        refreshes indefinitely.
+
+        业务 Why: 7/18–7/21 期间，一个卡住的批次导致调度器连续跳过三天，
+        数据更新彻底停滞。这是 recover_stale_batches 的补充：stale 处理
+        单个卡住的关键词（30分钟超时），zombie 处理整个卡住的批次（4小时超时）。
+        """
+        hours = max(
+            1.0,
+            float(
+                zombie_after_hours
+                if zombie_after_hours is not None
+                else os.getenv("HUB_WECHAT_REFRESH_ZOMBIE_HOURS", "4")
+            ),
+        )
+        cutoff = (
+            datetime.now(UTC) - timedelta(hours=hours)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        completed: list[str] = []
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    jobs = con.execute(
+                        """SELECT j.refresh_job_id, j.command_id, c.idempotency_key,
+                                  j.started_at, j.trigger_source
+                           FROM search_refresh_jobs j
+                           LEFT JOIN command_runs c ON c.command_id = j.command_id
+                           WHERE j.system_key=? AND j.platform=?
+                             AND j.status IN ('queued','running')
+                             AND j.started_at IS NOT NULL
+                             AND j.started_at <= ?
+                           ORDER BY j.created_at""",
+                        (self.MODULE, self.PLATFORM, cutoff),
+                    ).fetchall()
+                    for job in jobs:
+                        job_id = str(job["refresh_job_id"])
+                        # Force all non-terminal items to failed
+                        con.execute(
+                            """UPDATE search_refresh_items
+                               SET status='failed', current_phase='zombie_terminated',
+                                   error_json=?, finished_at=COALESCE(finished_at,?)
+                               WHERE refresh_job_id=? AND status IN ('queued','running')""",
+                            (_json({"error": f"批次超过 {hours} 小时未完成，已由看门狗强制终止",
+                                    "reason_code": "zombie_force_complete"}),
+                             _now(), job_id),
+                        )
+                        self._event(
+                            con, job_id=job_id, item_id=None,
+                            event_type="zombie_force_complete",
+                            status="failed",
+                            message=f"批次超过 {hours} 小时未完成，看门狗强制终止",
+                            details={"zombie_after_hours": hours, "started_at": str(job["started_at"])},
+                        )
+                        output = self._job_payload(con, job_id)
+                        final = "partial_failed" if output["success_count"] > 0 else "failed"
+                        # Handle both with-command and legacy-orphaned jobs
+                        if job["command_id"]:
+                            self._complete_job(
+                                con, job_id=job_id,
+                                command_id=str(job["command_id"]),
+                                key=str(job["idempotency_key"]),
+                                status=final,
+                                output=output,
+                                error={"error": "zombie_force_complete", "reason_code": "zombie_force_complete"},
+                            )
+                        else:
+                            # Legacy job with no command_id: just mark as failed
+                            con.execute(
+                                """UPDATE search_refresh_jobs
+                                   SET status=?, finished_at=?, updated_at=?
+                                   WHERE refresh_job_id=?""",
+                                (final, _now(), _now(), job_id),
+                            )
+                            con.execute(
+                                """UPDATE search_scheduler_state
+                                   SET active_refresh_job_id=NULL, updated_at=?
+                                   WHERE system_key=? AND platform=?
+                                     AND active_refresh_job_id=?""",
+                                (_now(), self.MODULE, self.PLATFORM, job_id),
+                            )
+                        self._batch_runtime_projection(con, job_id=job_id, payload=self._job_payload(con, job_id))
+                        completed.append(job_id)
+        for job_id in completed:
+            self._append_failure_log(
+                job_id=job_id, item_id="zombie", keyword="", keyword_id="",
+                reason_code="zombie_force_complete",
+                error=f"批次超过 {hours} 小时未完成，看门狗强制终止",
+                attempt_count=0, source="watchdog",
+            )
+        return completed
 
     def cancel_batch(self, *, batch_id: str, key: str, request_id: str | None = None) -> dict[str, Any]:
         if not key.strip():
@@ -1695,6 +1888,7 @@ class WechatRefreshService:
         rows = con.execute(
             """SELECT k.keyword_id,k.keyword,
                       s.refresh_strategy,s.refresh_interval_minutes,
+                      s.pinned,s.commercial_value,
                       s.batch_default_selected,s.keyword_order,s.payload_json,
                       (SELECT MAX(ss.captured_at)
                          FROM search_snapshots ss
@@ -1708,7 +1902,7 @@ class WechatRefreshService:
                   AND COALESCE(s.batch_default_selected,1)=1""",
             (self.PLATFORM, self.MODULE, self.PLATFORM, self.PLATFORM),
         ).fetchall()
-        due: list[tuple[datetime, int, str, str]] = []
+        due: list[tuple[int, int, datetime, float, int, str, str]] = []
         for row in rows:
             try:
                 payload = json.loads(row["payload_json"] or "{}")
@@ -1722,12 +1916,6 @@ class WechatRefreshService:
                     or 1
                 ),
             )
-            effective_hours = (
-                3.0
-                if payload.get("lifecycle_stage") == "observing"
-                and payload.get("refresh_frequency_source", "auto") != "manual"
-                else float(frequency_days * 24)
-            )
             last_refreshes = [
                 value
                 for value in (
@@ -1736,22 +1924,64 @@ class WechatRefreshService:
                 )
                 if value is not None
             ]
+            latest_refresh = max(last_refreshes) if last_refreshes else None
+            snapshot_count = int(payload.get("snapshot_count") or 0)
+            is_pinned = bool(row["pinned"])
+            # Why：新词先建立画像，但只观察24小时，不能让所有新词永久
+            # 占用高频资源。规则见 [新词观察期](docs/微信关键词刷新间隔策略_v1.md#3-新词观察期)。
+            in_observation = (
+                snapshot_count < 2
+                and (
+                    latest_refresh is None
+                    or (now - latest_refresh).total_seconds()
+                    <= OBSERVATION_WINDOW_HOURS * 3600
+                )
+            )
+            effective_hours = (
+                OBSERVATION_INTERVAL_HOURS
+                if in_observation or is_pinned
+                else float(frequency_days * 24)
+            )
+            last_attempt = _parse_time(payload.get("last_refresh_attempt_at"))
+            last_status = str(payload.get("last_refresh_status") or "").lower()
+            # Why：失败词不能无限霸占队头；人工刷新不经过这里，因此仍可
+            # 立即重试。规则见 [失败冷却](docs/微信关键词刷新间隔策略_v1.md#6-失败冷却)。
+            if (
+                last_status in {"failed", "blocked"}
+                and last_attempt is not None
+                and (now - last_attempt).total_seconds()
+                < FAILURE_COOLDOWN_HOURS * 3600
+            ):
+                continue
             due_at = (
                 max(last_refreshes) + timedelta(hours=effective_hours)
                 if last_refreshes
                 else datetime.min.replace(tzinfo=UTC)
             )
             if due_at <= now:
+                refreshed_today = _is_today_local(
+                    row["latest_snapshot_at"], today=business_start.date()
+                )
+                commercial_value = float(
+                    row["commercial_value"]
+                    if row["commercial_value"] is not None
+                    else payload.get("commercial_value_score") or 5
+                )
                 due.append(
                     (
+                        0 if is_pinned else 1,
+                        1 if refreshed_today else 0,
                         due_at,
+                        -commercial_value,
                         int(row["keyword_order"] or 999999),
                         str(row["keyword"]),
                         str(row["keyword_id"]),
                     )
                 )
+        # 到期词中，人工锁定优先，其次是今天尚未刷新过的词，再按到期时间、
+        # 商业价值和原有顺序排序。Why：见 [每轮队列顺序](docs/微信关键词刷新间隔策略_v1.md#4-每轮队列顺序)。
         due.sort()
-        selected = [item[3] for item in due[:capacity]]
+        selected = [item[6] for item in due[:capacity]]
         return {
             "keyword_ids": selected,
             "due_count": len(due),
@@ -1769,7 +1999,13 @@ class WechatRefreshService:
             },
         }
 
-    def scheduler_trigger(self, *, key: str, request_id: str | None = None) -> dict[str, Any]:
+    def scheduler_trigger(
+        self,
+        *,
+        key: str,
+        request_id: str | None = None,
+        background: bool = False,
+    ) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
             state = con.execute("SELECT payload_json FROM search_scheduler_state WHERE system_key=? AND platform=?", (self.MODULE, self.PLATFORM)).fetchone()
             config = json.loads(state["payload_json"] or "{}") if state else {}
@@ -1820,7 +2056,13 @@ class WechatRefreshService:
                 "batch_status": "skipped",
                 "batch": None,
             }
-        batch = self.refresh_batch(keyword_ids=ids, key=key, source="scheduler", request_id=request_id)
+        batch = self.refresh_batch(
+            keyword_ids=ids,
+            key=key,
+            source="scheduler",
+            request_id=request_id,
+            background=background,
+        )
         with writer_lock(self.settings.lock_path):
             with connect(self.settings) as con:
                 with transaction(con):

@@ -74,11 +74,19 @@ let kwGroupMap = {};    // keyword_text → group_label（由 loadGroups 维护�
 let kwGroupOrder = [];
 let kwGroupMoreOpen = false;
 let detailChart = null;
+let detailChartTimer = null;
 let initialRouteApplied = false;
 const coverCache = new Map();
 const coverStateCache = new Map();
 const coverPending = new Set();
 let coverBatchInFlight = false;
+let coverBatchController = null;
+// Detail payloads contain full run histories and can be 1–2 MB per keyword.
+// Keep only the current/previous view; the list bootstrap remains the cheap
+// source of truth for every other row.
+const DETAIL_CACHE_LIMIT = 2;
+const DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
+const COVER_CACHE_LIMIT = 500;
 const KW_GROUP_QUICK_LIMIT = 5;
 const TURNOVER_FAST_THRESHOLD = 0.40;
 const TURNOVER_OBVIOUS_THRESHOLD = 0.25;
@@ -87,11 +95,103 @@ const ACCOUNT_PAGE_SIZE = 100;
 let accountPage = 1;
 let accountPageStateKey = '';
 
-window.__WX_PERF__ = window.__WX_PERF__ || {
+const WX_PERF = {
   bootstrapMs: null,
   keywordDetailMs: {},
   accountDetailMs: {},
+  cache: {
+    keyword: { hits: 0, misses: 0, evictions: 0, size: 0 },
+    account: { hits: 0, misses: 0, evictions: 0, size: 0 },
+    cover: { hits: 0, misses: 0, evictions: 0, size: 0 },
+  },
 };
+Object.defineProperty(window, '__WX_PERF__', {
+  configurable: true,
+  enumerable: true,
+  get: () => ({
+    ...WX_PERF,
+    keywordDetailMs: { ...WX_PERF.keywordDetailMs },
+    accountDetailMs: { ...WX_PERF.accountDetailMs },
+    cache: {
+      keyword: { ...WX_PERF.cache.keyword },
+      account: { ...WX_PERF.cache.account },
+      cover: { ...WX_PERF.cache.cover },
+    },
+  }),
+});
+
+const keywordDetailCache = new Map();
+const accountDetailCache = new Map();
+const activeDetailRequests = {
+  keyword: null,
+  account: null,
+};
+
+function touchBoundedCache(cache, key, value, limit, ttlMs, bucket) {
+  const now = Date.now();
+  cache.delete(key);
+  cache.set(key, { value, expiresAt: now + ttlMs });
+  while (cache.size > limit) {
+    cache.delete(cache.keys().next().value);
+    WX_PERF.cache[bucket].evictions += 1;
+  }
+  WX_PERF.cache[bucket].size = cache.size;
+}
+
+function readBoundedCache(cache, key, bucket) {
+  const entry = cache.get(key);
+  if (!entry) {
+    WX_PERF.cache[bucket].misses += 1;
+    return null;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    WX_PERF.cache[bucket].size = cache.size;
+    WX_PERF.cache[bucket].misses += 1;
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  WX_PERF.cache[bucket].hits += 1;
+  return entry.value;
+}
+
+function clearDetailCaches() {
+  keywordDetailCache.clear();
+  accountDetailCache.clear();
+  WX_PERF.cache.keyword.size = 0;
+  WX_PERF.cache.account.size = 0;
+}
+
+function clearCoverCaches() {
+  if (coverBatchController) coverBatchController.abort();
+  coverBatchController = null;
+  coverBatchInFlight = false;
+  coverCache.clear();
+  coverStateCache.clear();
+  coverPending.clear();
+  WX_PERF.cache.cover.size = 0;
+}
+
+function setCoverCacheValue(cache, key, value) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > COVER_CACHE_LIMIT) {
+    cache.delete(cache.keys().next().value);
+    WX_PERF.cache.cover.evictions += 1;
+  }
+  WX_PERF.cache.cover.size = Math.max(coverCache.size, coverStateCache.size);
+}
+
+function beginDetailRequest(kind, key) {
+  const current = activeDetailRequests[kind];
+  if (current && current.key !== key) {
+    current.controller.abort();
+  }
+  const controller = new AbortController();
+  activeDetailRequests[kind] = { key, controller };
+  return controller;
+}
 
 // ── 权重（与 Parser 完全一致，仅用于前端临时显示，主数据已带 score） ─
 function rankWeight(r) {
@@ -640,9 +740,9 @@ function showAccountScoreTooltip(anchor) {
   tip.classList.add('show');
   placeAccountScoreTooltip(anchor, tip);
   if (!hasAccountDetail(account)) {
-    fetchAccountDetail(account).then(() => {
+    fetchAccountDetail(account).then(detail => {
       if (activeScoreTooltipAnchor !== anchor || !anchor.isConnected) return;
-      tip.innerHTML = accountScoreTooltipHtml(account, scoreMode);
+      tip.innerHTML = accountScoreTooltipHtml(detail, scoreMode);
       placeAccountScoreTooltip(anchor, tip);
     }).catch(error => {
       if (activeScoreTooltipAnchor !== anchor || !anchor.isConnected) return;
@@ -719,8 +819,8 @@ function buildCoverProxyUrl(coverUrl) {
 function primeCoverCache(article) {
   if (!article?.article_id || coverCache.has(article.article_id)) return;
   if (typeof article.cover_url === 'string' && article.cover_url.trim()) {
-    coverCache.set(article.article_id, article.cover_url.trim());
-    coverStateCache.set(article.article_id, 'cached');
+    setCoverCacheValue(coverCache, article.article_id, article.cover_url.trim());
+    setCoverCacheValue(coverStateCache, article.article_id, 'cached');
   }
 }
 
@@ -823,37 +923,43 @@ async function loadQueuedArticleCovers() {
 
   batch.forEach(item => coverPending.add(item.article_id));
   coverBatchInFlight = true;
+  coverBatchController = new AbortController();
   try {
     const resp = await idempotentFetch(COVER_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ articles: batch })
+      body: JSON.stringify({ articles: batch }),
+      signal: coverBatchController.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const payload = await resp.json();
     for (const item of payload.items || []) {
-      if (item.cover_url) coverCache.set(item.article_id, item.cover_url);
-      coverStateCache.set(item.article_id, item.status || 'unknown');
+      if (item.cover_url) setCoverCacheValue(coverCache, item.article_id, item.cover_url);
+      setCoverCacheValue(coverStateCache, item.article_id, item.status || 'unknown');
       coverPending.delete(item.article_id);
       applyArticleCover(item);
     }
   } catch (e) {
+    if (e?.name === 'AbortError') return;
     batch.forEach(item => {
       coverPending.delete(item.article_id);
-      coverStateCache.set(item.article_id, 'request_error');
+      setCoverCacheValue(coverStateCache, item.article_id, 'request_error');
       applyArticleCover({ article_id: item.article_id, status: 'request_error', cover_url: null });
     });
     console.warn('article cover batch failed', e);
   } finally {
     coverBatchInFlight = false;
+    coverBatchController = null;
     if (document.querySelector('[data-cover-article-id]')) {
-      setTimeout(loadQueuedArticleCovers, 0);
+      if (!document.hidden) setTimeout(loadQueuedArticleCovers, 32);
     }
   }
 }
 
 function queueVisibleArticleCovers() {
-  setTimeout(loadQueuedArticleCovers, 0);
+  if (!coverBatchInFlight && !document.hidden) {
+    setTimeout(loadQueuedArticleCovers, 16);
+  }
 }
 
 function normalizeTitleForCompare(text) {
@@ -974,42 +1080,52 @@ function hasAccountDetail(item) {
     && Object.prototype.hasOwnProperty.call(item, 'keywords');
 }
 
-async function fetchMonitorDetail(url, metricBucket, metricKey) {
+async function fetchMonitorDetail(url, metricBucket, metricKey, signal) {
   const startedAt = performance.now();
-  const resp = await fetch(url, { cache: 'no-cache' });
+  const resp = await fetch(url, { cache: 'no-cache', signal });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const payload = await resp.json();
-  window.__WX_PERF__[metricBucket][metricKey] = Math.round((performance.now() - startedAt) * 10) / 10;
+  WX_PERF[metricBucket][metricKey] = Math.round((performance.now() - startedAt) * 10) / 10;
   return payload;
 }
 
 function fetchKeywordDetail(item) {
-  if (!item?.keyword_id || hasKeywordDetail(item)) return Promise.resolve(item);
+  if (!item?.keyword_id) return Promise.resolve(item);
   const key = String(item.keyword_id);
+  const cached = readBoundedCache(keywordDetailCache, key, 'keyword');
+  if (cached) return Promise.resolve(cached);
   if (keywordDetailPending.has(key)) return keywordDetailPending.get(key);
+  const controller = beginDetailRequest('keyword', key);
   const promise = fetchMonitorDetail(
     `${KEYWORD_DETAIL_API_BASE}/${encodeURIComponent(key)}`,
     'keywordDetailMs',
-    key
+    key,
+    controller.signal
   ).then(detail => {
-    Object.assign(item, detail);
-    return item;
+    const merged = { ...item, ...detail };
+    touchBoundedCache(keywordDetailCache, key, merged, DETAIL_CACHE_LIMIT, DETAIL_CACHE_TTL_MS, 'keyword');
+    return merged;
   }).finally(() => keywordDetailPending.delete(key));
   keywordDetailPending.set(key, promise);
   return promise;
 }
 
 function fetchAccountDetail(item) {
-  if (!item?.account_id || hasAccountDetail(item)) return Promise.resolve(item);
+  if (!item?.account_id) return Promise.resolve(item);
   const key = String(item.account_id);
+  const cached = readBoundedCache(accountDetailCache, key, 'account');
+  if (cached) return Promise.resolve(cached);
   if (accountDetailPending.has(key)) return accountDetailPending.get(key);
+  const controller = beginDetailRequest('account', key);
   const promise = fetchMonitorDetail(
     `${ACCOUNT_DETAIL_API_BASE}/${encodeURIComponent(key)}`,
     'accountDetailMs',
-    key
+    key,
+    controller.signal
   ).then(detail => {
-    Object.assign(item, detail);
-    return item;
+    const merged = { ...item, ...detail };
+    touchBoundedCache(accountDetailCache, key, merged, DETAIL_CACHE_LIMIT, DETAIL_CACHE_TTL_MS, 'account');
+    return merged;
   }).finally(() => accountDetailPending.delete(key));
   accountDetailPending.set(key, promise);
   return promise;
@@ -1017,7 +1133,10 @@ function fetchAccountDetail(item) {
 
 function getKeywordRuns(kw) {
   const item = KEYWORD_BY_NAME.get(kw);
-  return Array.isArray(item?.runs) ? item.runs : [];
+  const detail = item?.keyword_id
+    ? (readBoundedCache(keywordDetailCache, String(item.keyword_id), 'keyword') || item)
+    : item;
+  return Array.isArray(detail?.runs) ? detail.runs : [];
 }
 
 function getTurnoverRuns(item) {
@@ -1619,6 +1738,9 @@ async function loadData(options = {}) {
   const skipManageReload = !!options.skipManageReload;
   const prevKeyword = curKeyword;
   const prevAccount = curAccount;
+  Object.values(activeDetailRequests).forEach(request => request?.controller.abort());
+  clearDetailCaches();
+  clearCoverCaches();
   try {
     const bootstrapStartedAt = performance.now();
     const managePromise = skipManageReload ? Promise.resolve(null) : kmEnsureDataLoaded({ silent: true });
@@ -1626,7 +1748,7 @@ async function loadData(options = {}) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     MONITOR_DATA = await resp.json();
     await managePromise;
-    window.__WX_PERF__.bootstrapMs = Math.round((performance.now() - bootstrapStartedAt) * 10) / 10;
+    WX_PERF.bootstrapMs = Math.round((performance.now() - bootstrapStartedAt) * 10) / 10;
     MONITOR_DATA = applyKeywordManageStateToMonitorData(MONITOR_DATA);
   } catch (e) {
     document.getElementById('colRight').innerHTML = `
@@ -2283,12 +2405,21 @@ function loadMoreAccounts(event) {
   renderList();
 }
 
-function mountDetailChart(values, tooltipPrefix) {
+function unmountDetailChart() {
+  if (detailChartTimer) {
+    clearTimeout(detailChartTimer);
+    detailChartTimer = null;
+  }
   if (detailChart) {
     detailChart.destroy();
     detailChart = null;
   }
-  setTimeout(() => {
+}
+
+function mountDetailChart(values, tooltipPrefix) {
+  unmountDetailChart();
+  detailChartTimer = setTimeout(() => {
+    detailChartTimer = null;
     const ctx = document.getElementById('detailChart');
     if (!ctx) return;
     const existing = Chart.getChart && Chart.getChart(ctx);
@@ -2321,7 +2452,11 @@ function mountDetailChart(values, tooltipPrefix) {
 }
 
 function renderKeywordDetail(kw) {
-  const k = KEYWORD_BY_NAME.get(kw);
+  unmountDetailChart();
+  const summary = KEYWORD_BY_NAME.get(kw);
+  const k = summary?.keyword_id
+    ? (readBoundedCache(keywordDetailCache, String(summary.keyword_id), 'keyword') || summary)
+    : summary;
   if (!k) {
     document.getElementById('colRight').innerHTML = `<div class="empty-hint">← 点击左侧关键词查看详情</div>`;
     return;
@@ -2723,7 +2858,11 @@ function renderAccountArticleRow(article, accountName) {
 }
 
 function renderAccountDetail(name) {
-  const a = ACCOUNT_BY_NAME.get(name);
+  unmountDetailChart();
+  const summary = ACCOUNT_BY_NAME.get(name);
+  const a = summary?.account_id
+    ? (readBoundedCache(accountDetailCache, String(summary.account_id), 'account') || summary)
+    : summary;
   if (!a) {
     document.getElementById('colRight').innerHTML = `<div class="empty-hint">← 点击左侧账号查看详情</div>`;
     return;
@@ -3060,16 +3199,23 @@ async function openArtByUrl(url, title, contentPath, meta = {}) {
   document.getElementById('drawer').classList.add('open');
   const body = document.getElementById('drawerBody');
   body.innerHTML = '<div style="color:#bbb">正在加载正文…</div>';
+  const requestController = new AbortController();
+  if (openArtByUrl.activeController) openArtByUrl.activeController.abort();
+  openArtByUrl.activeController = requestController;
 
   let html = '';
   if (contentPath) {
     try {
-      const resp = await fetch(`${CONTENT_API_URL}?path=${encodeURIComponent(contentPath)}`, { cache: 'no-store' });
+      const resp = await fetch(`${CONTENT_API_URL}?path=${encodeURIComponent(contentPath)}`, {
+        cache: 'no-store',
+        signal: requestController.signal,
+      });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const payload = await resp.json();
       const md = preprocessArticleMarkdown(payload.markdown || '', title);
       html = marked.parse(md).replace(/<img\s/gi, '<img referrerpolicy="no-referrer" ');
     } catch (e) {
+      if (e?.name === 'AbortError') return;
       html = `<div style="color:#991b1b">无法加载正文：${escapeHtml(e.message)}</div>
               <div style="margin-top:8px;font-size:12px;color:#999">路径：${escapeHtml(contentPath)}</div>`;
     }
@@ -3080,6 +3226,7 @@ async function openArtByUrl(url, title, contentPath, meta = {}) {
       : `<div style="color:#bbb">当前只有榜单快照，尚未抓取正文和原文链接。</div>
          <div style="margin-top:8px;font-size:12px;color:#999">如果这个词后续升级为全文模式，抽屉会自动显示正文内容。</div>`;
   }
+  if (requestController.signal.aborted || openArtByUrl.activeController !== requestController) return;
   body.innerHTML = html;
 
   const footParts = [];
@@ -3093,8 +3240,41 @@ async function openArtByUrl(url, title, contentPath, meta = {}) {
 }
 
 function closeDrawer() {
-  document.getElementById('drawer').classList.remove('open');
+  if (openArtByUrl.activeController) {
+    openArtByUrl.activeController.abort();
+    openArtByUrl.activeController = null;
+  }
+  const drawer = document.getElementById('drawer');
+  drawer?.classList.remove('open');
+  // Hidden drawer content otherwise keeps a full Markdown DOM, decoded images,
+  // and their event targets alive across repeated article/keyword switches.
+  const body = document.getElementById('drawerBody');
+  const foot = document.getElementById('drawerFoot');
+  if (body) body.replaceChildren();
+  if (foot) foot.replaceChildren();
+  const title = document.getElementById('drawerTitle');
+  if (title) title.textContent = '';
 }
+
+function teardownWechatMonitor() {
+  Object.values(activeDetailRequests).forEach(request => request?.controller.abort());
+  if (openArtByUrl.activeController) {
+    openArtByUrl.activeController.abort();
+    openArtByUrl.activeController = null;
+  }
+  teardownRefreshJobs();
+  kmStopBatchPolling();
+  clearDetailCaches();
+  clearCoverCaches();
+  unmountDetailChart();
+  closeDrawer();
+  document.getElementById('accountScoreTooltip')?.remove();
+}
+
+window.addEventListener('message', event => {
+  if (event.data?.type === 'wechat-island:teardown') teardownWechatMonitor();
+});
+window.addEventListener('pagehide', teardownWechatMonitor, { once: true });
 
 async function toggleKeywordPin(event, keywordId, keyword, nextPinned) {
   if (event) event.stopPropagation();
@@ -3221,7 +3401,9 @@ let kmActiveKeywordId = null;
 let kmActiveSettingsGroupId = null;
 const kmCollapsedGroups = new Set();
 let kmRefreshInlineTimer = null;
+let kmPollTickCount = 0;
 let kmCancelBatchPending = false;
+let kmRefreshLaunchPending = false;
 let kmActiveBatchId = null;
 let kmActiveBatchSnapshot = null;
 let kmActiveBatchFinishedAt = 0;
@@ -3369,6 +3551,7 @@ function kmBuildRefreshSnapshot(now = Date.now()) {
 
 function kmStartBatchPolling() {
   if (kmRefreshInlineTimer) return;
+  kmPollTickCount = 0;
   kmRefreshInlineTimer = window.setInterval(kmPollBatchStatus, KM_REFRESH_POLL_MS);
 }
 
@@ -3377,10 +3560,17 @@ function kmStopBatchPolling() {
     window.clearInterval(kmRefreshInlineTimer);
     kmRefreshInlineTimer = null;
   }
+  kmPollTickCount = 0;
 }
 
 async function kmPollBatchStatus() {
   if (!kmActiveBatchId) {
+    kmStopBatchPolling();
+    return;
+  }
+  kmPollTickCount += 1;
+  if (kmPollTickCount > 600) {
+    console.warn('refresh batch polling watchdog: stop after 600 ticks');
     kmStopBatchPolling();
     return;
   }
@@ -3493,6 +3683,18 @@ function kmSyncInlineRefreshUi() {
   }
 
   const snapshot = kmBuildRefreshSnapshot();
+  if (kmRefreshLaunchPending) {
+    trigger.classList.add('hidden');
+    progress.classList.add('active');
+    progress.classList.remove('is-done', 'is-cancelled');
+    cancelBtn.classList.remove('visible');
+    cancelBtn.disabled = true;
+    label.textContent = '正在启动批量刷新…';
+    bar.style.width = '3%';
+    meta.textContent = '正在创建批次';
+    kmStopBatchPolling();
+    return;
+  }
   const isBusy = snapshot.phase === 'running' || snapshot.phase === 'done';
   const cancelRequested = !!snapshot.cancel_requested || kmCancelBatchPending;
   trigger.classList.toggle('hidden', isBusy);
@@ -3632,11 +3834,38 @@ function kmFormatHistoryTime(ts) {
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function kmSourceDateParts(ts) {
+  const raw = String(ts || '').trim();
+  if (!raw) return null;
+  // Zoned Hub timestamps are source facts: keep their UTC calendar date.
+  // Naive legacy timestamps are already date-labelled and stay unchanged.
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  if (!hasExplicitZone) {
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+    if (match) {
+      return {
+        month: Number(match[2]) - 1,
+        day: Number(match[3]),
+        hour: Number(match[4]),
+        minute: Number(match[5]),
+      };
+    }
+  }
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return {
+    month: d.getUTCMonth(),
+    day: d.getUTCDate(),
+    hour: d.getUTCHours(),
+    minute: d.getUTCMinutes(),
+  };
+}
+
 function kmFormatFinishedTime(ts) {
   if (!ts) return '';
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return ts;
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const parts = kmSourceDateParts(ts);
+  if (!parts) return ts;
+  return `${parts.month + 1}月${parts.day}日 ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
 }
 
 function kmFormatDuration(seconds) {
@@ -3913,6 +4142,9 @@ async function kmConfirmRefresh() {
     return;
   }
   kmCloseRefreshModal();
+  kmRefreshLaunchPending = true;
+  kmShowToast(`正在启动批量刷新 · 共 ${keywordIds.length} 个关键词`);
+  kmSyncInlineRefreshUi();
   try {
     const resp = await idempotentFetch(REFRESH_ALL_LAUNCH_URL, {
       method: 'POST',
@@ -3938,11 +4170,14 @@ async function kmConfirmRefresh() {
       throw new Error(data.error || `HTTP ${resp.status}`);
     }
     kmCancelBatchPending = false;
+    kmRefreshLaunchPending = false;
     kmAdoptBatchSnapshot(data, { persist: true, finishedAt: 0 });
     kmSyncInlineRefreshUi();
     kmShowToast(`已启动批量刷新 · 共 ${keywordIds.length} 个关键词`);
   } catch (e) {
     kmCancelBatchPending = false;
+    kmRefreshLaunchPending = false;
+    kmSyncInlineRefreshUi();
     kmShowToast('启动失败：' + e.message, false);
   }
 }
@@ -4723,6 +4958,7 @@ document.addEventListener('click', e => {
 
 // ── 单词刷新 ─────────────────────────────────────────
 const _refreshJobs = {};  // keywordId -> jobId
+const _refreshTimers = new Map();  // keywordId -> interval id
 
 async function startKeywordRefresh(event, keywordId, keyword) {
   if (event) event.stopPropagation();
@@ -4767,12 +5003,24 @@ async function startKeywordRefresh(event, keywordId, keyword) {
 }
 
 function _pollRefreshJob(keywordId, jobId, refreshButton = null) {
-  const btn = refreshButton || document.getElementById(`refresh-btn-${keywordId}`);
+  const oldTimer = _refreshTimers.get(String(keywordId));
+  if (oldTimer) clearInterval(oldTimer);
+  let btn = refreshButton || document.getElementById(`refresh-btn-${keywordId}`);
+  let failedPolls = 0;
   const iv = setInterval(async () => {
+    if (++failedPolls > 60) {
+      clearInterval(iv);
+      _refreshTimers.delete(String(keywordId));
+      if (btn && !document.body.contains(btn)) btn = null;
+      if (btn) { btn.textContent = '刷新数据'; btn.disabled = false; }
+      return;
+    }
+    if (btn && !document.body.contains(btn)) btn = null;
     try {
-      const resp = await fetch(`/api/refresh-status/${jobId}`);
+      const resp = await fetch(`/api/refresh-status/${jobId}`, { cache: 'no-store' });
       if (!resp.ok) return;
       const data = await resp.json();
+      failedPolls = 0;
       if (data.status === 'queued' || data.status === 'queued_to_running') {
         if (btn) { btn.textContent = '排队中…'; btn.disabled = true; }
         return;
@@ -4781,19 +5029,30 @@ function _pollRefreshJob(keywordId, jobId, refreshButton = null) {
         if (btn) { btn.textContent = '搜索中…'; btn.disabled = true; }
         return;
       }
-      if (data.status === 'done') {
+      if (data.status === 'done' || data.status === 'cancelled') {
         clearInterval(iv);
+        _refreshTimers.delete(String(keywordId));
         if (btn) { btn.textContent = '刷新数据'; btn.disabled = false; }
         await loadData({ preserveSelection: true });
         refresh();
         kmShowToast(`「${data.keyword || keywordId}」刷新完成`);
       } else if (data.status === 'failed') {
         clearInterval(iv);
+        _refreshTimers.delete(String(keywordId));
         if (btn) { btn.textContent = '刷新失败'; btn.disabled = false; }
         kmShowToast(`「${data.keyword || keywordId}」刷新失败`, false);
       }
-    } catch (_) {}
+    } catch (_) {
+      // Keep polling transient failures, but the watchdog above prevents a
+      // dead job from retaining a detached button forever.
+    }
   }, 4000);
+  _refreshTimers.set(String(keywordId), iv);
+}
+
+function teardownRefreshJobs() {
+  _refreshTimers.forEach(timer => clearInterval(timer));
+  _refreshTimers.clear();
 }
 
 // ── 搜索词信号 → 添加关键词弹窗 ──────────────────────

@@ -14,6 +14,7 @@ from content_hub.db.connection import connect
 from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import NotFoundError
 from content_hub.repositories.wechat_legacy import WechatLegacyRepository
+from content_hub.services import signals as signals_module
 from content_hub.services.wechat_refresh import FakeWechatRefreshProvider, WechatRefreshService
 
 
@@ -681,6 +682,107 @@ def test_process_restart_requeues_running_item_and_resumes_checkpoint(settings):
     assert "kw_recover_a" in text
 
 
+def test_zombie_batch_is_force_completed_and_clears_active_slot(settings):
+    """超过阈值仍在 running 的僵尸批次应被强制终止，并释放调度器占用槽。"""
+    for keyword_id in ("kw_zombie_a", "kw_zombie_b"):
+        _keyword(settings, keyword_id)
+    stale = (datetime.now(UTC) - timedelta(hours=8)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running',?,?,?, ?,?)""",
+            ("cmd_zombie", "wechat-search", "wechat.refresh_all", "zombie-key", "scheduler",
+             json.dumps({"keyword_ids": ["kw_zombie_a", "kw_zombie_b"], "source": "scheduler"}),
+             "{}", "{}", stale, stale),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,?,?,'running',2,?,?,?,?)""",
+            ("srj_zombie", "wechat-search", "wechat-search", "cmd_zombie", "scheduled",
+             stale, stale, stale, "scheduler"),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,
+                attempt_count,current_phase,started_at
+            ) VALUES(?,?,?,0,'running',1,'provider',?)""",
+            ("sri_zombie_a", "srj_zombie", "kw_zombie_a", stale),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,
+                attempt_count,current_phase
+            ) VALUES(?,?,?,1,'queued',0,'queued')""",
+            ("sri_zombie_b", "srj_zombie", "kw_zombie_b"),
+        )
+        con.execute(
+            """INSERT INTO search_scheduler_state(
+                system_key,platform,enabled,active_refresh_job_id,updated_at,payload_json
+            ) VALUES(?,?,1,?,?,?)""",
+            ("wechat-search", "wechat-search", "srj_zombie", stale, "{}"),
+        )
+
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    assert service.recover_zombie_batches() == ["srj_zombie"]
+
+    with connect(settings, readonly=True) as con:
+        job = con.execute(
+            "SELECT status,finished_at FROM search_refresh_jobs WHERE refresh_job_id='srj_zombie'"
+        ).fetchone()
+        assert job["status"] in {"failed", "partial_failed"}
+        assert job["finished_at"] is not None
+        items = con.execute(
+            "SELECT status FROM search_refresh_items WHERE refresh_job_id='srj_zombie'"
+        ).fetchall()
+        assert all(row["status"] in {"failed", "succeeded", "cancelled"} for row in items)
+        active = con.execute(
+            "SELECT active_refresh_job_id FROM search_scheduler_state WHERE system_key='wechat-search'"
+        ).fetchone()["active_refresh_job_id"]
+        assert active is None
+
+
+def test_recent_batch_is_not_treated_as_zombie(settings):
+    """刚启动不久的批次不应被僵尸清理误杀。"""
+    _keyword(settings, "kw_fresh")
+    now = _now_iso()
+    with connect(settings) as con:
+        con.execute(
+            """INSERT INTO command_runs(
+                command_id,module_key,command_type,idempotency_key,actor_id,status,
+                input_json,output_json,error_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'running','{}','{}','{}',?,?)""",
+            ("cmd_fresh", "wechat-search", "wechat.refresh_all", "fresh-key", "scheduler", now, now),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_jobs(
+                refresh_job_id,system_key,platform,command_id,trigger_type,status,
+                requested_count,started_at,created_at,updated_at,trigger_source
+            ) VALUES(?,?,?,?,?,'running',1,?,?,?,?)""",
+            ("srj_fresh", "wechat-search", "wechat-search", "cmd_fresh", "scheduled", now, now, now, "scheduler"),
+        )
+        con.execute(
+            """INSERT INTO search_refresh_items(
+                refresh_item_id,refresh_job_id,keyword_id,ordinal,status,attempt_count,current_phase,started_at
+            ) VALUES(?,?,?,0,'running',1,'provider',?)""",
+            ("sri_fresh", "srj_fresh", "kw_fresh", now),
+        )
+
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    assert service.recover_zombie_batches() == []
+    with connect(settings, readonly=True) as con:
+        assert con.execute(
+            "SELECT status FROM search_refresh_jobs WHERE refresh_job_id='srj_fresh'"
+        ).fetchone()["status"] == "running"
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def test_disabled_batch_and_trigger_are_blocked_without_snapshots(settings):
     _keyword(settings, "kw_disabled")
     _hub_read_switch(settings, "scheduler-status")
@@ -872,6 +974,59 @@ def test_scheduler_only_selects_due_keywords_and_updates_refresh_state(settings)
         assert payload["snapshot_count"] == 1
 
 
+def test_scheduler_prioritizes_pinned_and_cools_recent_failures(settings):
+    for keyword_id in ("kw_policy_pinned", "kw_policy_normal", "kw_policy_failed"):
+        _keyword(settings, keyword_id)
+        _batch_default(settings, keyword_id, 1)
+    now = datetime.now(UTC)
+    with connect(settings) as con:
+        for keyword_id in ("kw_policy_pinned", "kw_policy_normal", "kw_policy_failed"):
+            row = con.execute(
+                "SELECT payload_json FROM search_keyword_settings WHERE keyword_id=?",
+                (keyword_id,),
+            ).fetchone()
+            payload = json.loads(row["payload_json"] or "{}")
+            payload.update(
+                {
+                    "last_refresh_at": (now - timedelta(days=2)).isoformat().replace("+00:00", "Z"),
+                    "refresh_frequency_days": 1,
+                    "refresh_frequency_source": "auto",
+                    "snapshot_count": 3,
+                    "lifecycle_stage": "established",
+                }
+            )
+            if keyword_id == "kw_policy_failed":
+                payload.update(
+                    {
+                        "last_refresh_status": "failed",
+                        "last_refresh_attempt_at": now.isoformat().replace("+00:00", "Z"),
+                    }
+                )
+            con.execute(
+                """UPDATE search_keyword_settings
+                   SET refresh_strategy='scheduled',
+                       refresh_interval_minutes=1440,
+                       pinned=?,
+                       payload_json=?
+                   WHERE keyword_id=?""",
+                (
+                    1 if keyword_id == "kw_policy_pinned" else 0,
+                    json.dumps(payload),
+                    keyword_id,
+                ),
+            )
+
+    service = WechatRefreshService(settings, provider=FakeWechatRefreshProvider())
+    with connect(settings, readonly=True) as con:
+        plan = service._scheduler_plan(
+            con,
+            config={"daily_keyword_budget": 10, "max_keywords_per_batch": 10},
+        )
+
+    assert plan["keyword_ids"] == ["kw_policy_pinned", "kw_policy_normal"]
+    assert plan["due_count"] == 2
+
+
 def test_imported_legacy_running_jobs_do_not_block_new_hub_batch(settings):
     _keyword(settings, "kw_new_hub")
     with connect(settings) as con:
@@ -1006,6 +1161,9 @@ def test_successful_snapshot_touches_keyword_creator_and_runs_linkage(settings):
     assert result["hub_status"] == "succeeded"
     assert result["post_refresh_linkage"]["status"] == "succeeded"
     assert result["post_refresh_linkage"]["steps"]["metrics_backfill"]["status"] != "skipped"
+    linkage_json = json.dumps(result["post_refresh_linkage"], ensure_ascii=False, separators=(",", ":"))
+    assert len(linkage_json.encode("utf-8")) <= signals_module.POST_REFRESH_LINKAGE_MAX_BYTES
+    assert "full" not in result["post_refresh_linkage"]["steps"]["live_projection"].get("result", {})
     with connect(settings, readonly=True) as con:
         keyword = con.execute("SELECT updated_at,payload_json FROM keywords WHERE keyword_id='kw_linkage'").fetchone()
         creator = con.execute("SELECT updated_at,payload_json FROM creators WHERE canonical_name='联动账号'").fetchone()
@@ -1045,3 +1203,28 @@ def test_post_refresh_linkage_failure_is_observable(settings, monkeypatch):
         assert con.execute("SELECT COUNT(*) FROM audit_log WHERE action='wechat.refresh_all.linkage' AND outcome='failed'").fetchone()[0] == 1
         runtime = con.execute("SELECT payload_json FROM wechat_legacy_projections WHERE projection_kind='runtime' AND subject_id=? ORDER BY updated_at DESC LIMIT 1", (result["batch_id"],)).fetchone()
         assert "metrics backfill exploded" in runtime["payload_json"]
+
+
+def test_post_refresh_projection_summary_is_bounded_and_keeps_contract() -> None:
+    huge = {
+        "full": {"generated_at": "2026-07-18T19:43:00Z", "blob": "x" * (80 << 20)},
+        "bootstrap": {"generated_at": "2026-07-18T19:43:00Z", "blob": "x" * (80 << 20)},
+        **{
+            f"keyword:kw_{index}": {"generated_at": "2026-07-18T19:43:00Z", "blob": "x" * 1024}
+            for index in range(1000)
+        },
+    }
+    summary = signals_module._summarize_optional_result(
+        "content_hub.services.wechat_live_projection",
+        huge,
+    )
+    encoded = json.dumps(
+        {"status": "succeeded", "module": "content_hub.services.wechat_live_projection", "result": summary},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert len(encoded.encode("utf-8")) <= signals_module.POST_REFRESH_LINKAGE_MAX_BYTES
+    assert summary["projection_count"] == 1002
+    assert summary["projection_counts"]["keyword"] == 1000
+    assert summary["generated_at"] == "2026-07-18T19:43:00Z"
+    assert "blob" not in json.dumps(summary, ensure_ascii=False)

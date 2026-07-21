@@ -401,6 +401,10 @@ def test_r19_r20_exact_projection_and_switch_rollback_without_network(
         )
         history_expected = [dict(batch_projection)]
         history_expected[0].pop("runtime_subtype", None)
+        # refresh-all/history is a UI summary contract; the post-refresh
+        # linkage contains nested live projections and is intentionally
+        # not returned by the bounded Hub read.
+        history_expected[0].pop("post_refresh_linkage", None)
         scheduler_projection = json.loads(
             con.execute(
                 "SELECT payload_json FROM wechat_legacy_projections "

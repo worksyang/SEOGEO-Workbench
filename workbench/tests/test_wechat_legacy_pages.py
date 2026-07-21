@@ -55,6 +55,11 @@ def test_wechat_auxiliary_files_are_mirrored() -> None:
                     f"{{{{ asset_url('{asset_name}') }}}}?wbv=wechat-v1",
                     f"{public_path}?wbv=wechat-v1",
                 )
+            if name == "monitor.html":
+                expected_public = expected_public.replace(
+                    "/legacy/wechat/static/js/monitor.js?wbv=wechat-v1",
+                    "/legacy/wechat/static/js/monitor.js?wbv=wechat-v2",
+                )
             expected_mirror = source
             if name in {"keyword_turnover.html", "article_hit_detail.html"}:
                 expected_mirror = expected_public
@@ -67,22 +72,29 @@ def test_wechat_auxiliary_files_are_mirrored() -> None:
     for name in ("keyword-turnover.js", "article-hit-detail.js", "article-list-demo.js"):
         mirror = (MIRROR / "source" / "static" / "js" / name).read_bytes()
         public = (PUBLIC / "static" / "js" / name).read_bytes()
-        assert public == mirror
+        if name == "keyword-turnover.js" and public != mirror:
+            # Public keyword turnover has the authorized request-abort and
+            # island-teardown hardening; the frozen mirror remains unchanged.
+            text = public.decode("utf-8")
+            assert "activeArticleRequestController" in text
+            assert "wechat-island:teardown" in text
+        else:
+            assert public == mirror
         if name == "article-list-demo.js":
             assert mirror == (SOURCE / "static" / "js" / name).read_bytes()
 
 
 def test_wechat_aux_navigation_uses_stable_version_and_keeps_business_params() -> None:
     island = WECHAT_ISLAND.read_text(encoding="utf-8")
-    assert 'src="/legacy/wechat/monitor.html?wbv=wechat-v1"' in island
+    assert 'src="/legacy/wechat/monitor.html?wbv=wechat-v2"' in island
     dist_bundles = list((ROOT / "workbench" / "frontend" / "dist" / "assets").glob("*.js"))
-    assert any("/legacy/wechat/monitor.html?wbv=wechat-v1" in bundle.read_text(encoding="utf-8") for bundle in dist_bundles)
+    assert any("/legacy/wechat/monitor.html?wbv=wechat-v2" in bundle.read_text(encoding="utf-8") for bundle in dist_bundles)
 
     monitor_html = (PUBLIC / "monitor.html").read_text(encoding="utf-8")
     for asset in (
         "/legacy/wechat/static/css/monitor.css?wbv=wechat-v1",
         "/legacy/wechat/static/js/turnover-utils.js?wbv=wechat-v1",
-        "/legacy/wechat/static/js/monitor.js?wbv=wechat-v1",
+        "/legacy/wechat/static/js/monitor.js?wbv=wechat-v2",
         "/legacy/wechat/static/js/article-list.js?wbv=wechat-v1",
     ):
         assert asset in monitor_html

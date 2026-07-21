@@ -26,7 +26,7 @@ from content_hub.services.migration import (
     WECHAT_HTTP_OPERATIONS,
     wechat_http_operation,
 )
-from content_hub.repositories.wechat_legacy import WechatLegacyRepository
+from content_hub.repositories.wechat_legacy import BootstrapCacheEntry, WechatLegacyRepository
 from content_hub.features.wechat.service import (
     _legacy_projection_payload,
     _projection_hash,
@@ -357,6 +357,16 @@ def test_r01_r04_gzip_all_modes_and_exact_304_headers(settings, monkeypatch) -> 
     )
     monkeypatch.setattr(WechatLegacyRepository, "full", lambda self: payload)
     monkeypatch.setattr(WechatLegacyRepository, "bootstrap", lambda self: payload)
+    monkeypatch.setattr(
+        WechatLegacyRepository,
+        "bootstrap_cache_entry",
+        lambda self: BootstrapCacheEntry(
+            version=(),
+            expires_at=float("inf"),
+            payload=payload,
+            payload_json=json.dumps(payload, separators=(",", ":")).encode(),
+        ),
+    )
     monkeypatch.setattr(
         WechatLegacyRepository, "keyword", lambda self, keyword_id: payload
     )

@@ -94,6 +94,14 @@ def test_wechat_hub_bootstrap_uses_live_projection_contract(settings, monkeypatc
     assert payload["keywords"][0]["latest_run"]["id"] == "snap_latest"
 
 
+def test_live_projection_keeps_utc_source_date_for_late_snapshot():
+    from content_hub.services.wechat_live_projection import _iso_date, _legacy_local_iso
+
+    value = "2026-07-18T18:15:12.947Z"
+    assert _iso_date(value) == "2026-07-18"
+    assert _legacy_local_iso(value) == "2026-07-18T18:15:12.947"
+
+
 def test_wechat_full_import_route_requires_confirmation_and_idempotency_key(settings, tmp_path):
     configured = _fixture_settings(settings, tmp_path)
 

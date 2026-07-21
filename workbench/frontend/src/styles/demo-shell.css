@@ -213,14 +213,6 @@ body {
   box-shadow: 0 1px 2px rgb(9 9 11 / 4%), 0 18px 45px rgb(9 9 11 / 4%);
 }
 
-.demo-shell.writing-shell {
-  grid-template-rows: minmax(0, 1fr);
-}
-
-.demo-shell.wiki-shell {
-  grid-template-rows: minmax(0, 1fr);
-}
-
 .demo-top {
   min-width: 0;
   display: flex;
@@ -343,8 +335,7 @@ body {
 .demo-stage > .geo-page,
 .demo-stage > .wechat-page,
 .demo-stage > .mp-page,
-.demo-stage > .xhs-page,
-.demo-stage > .publishing-page {
+.demo-stage > .xhs-page {
   height: 100%;
   min-height: 0;
   overflow: auto;
@@ -359,20 +350,8 @@ body {
   background: var(--demo-canvas);
 }
 
-.demo-stage > .legacy-writing-island {
-  height: 100%;
-  min-height: 0;
-  display: block;
-  overflow: hidden;
-  background: #fff;
-}
-
 .demo-stage > .geo-island-page {
   grid-template-rows: auto auto minmax(0, 1fr);
-}
-
-.demo-stage > .legacy-wiki-island {
-  grid-template-rows: minmax(0, 1fr);
 }
 
 .wechat-island-caption {

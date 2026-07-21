@@ -1,34 +1,34 @@
-import {useEffect, useState} from 'react'
-import {apiGet, ApiError} from '../../api/client'
-import type {WechatBootstrapResponse} from '../../types'
+import {useCallback, useEffect, useRef, useState} from 'react'
 
 type IslandState = 'loading' | 'ready' | 'error'
 
 export default function WechatIslandPage({onSourceStatus}: {onSourceStatus: (status: string) => void}) {
   const [state, setState] = useState<IslandState>('loading')
   const [error, setError] = useState('')
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  const handleLoad = useCallback(() => {
+    setError('')
+    setState('ready')
+    onSourceStatus('online')
+  }, [onSourceStatus])
+
+  const handleError = useCallback(() => {
+    setState('error')
+    setError('微信搜一搜原系统载入失败')
+    onSourceStatus('offline')
+  }, [onSourceStatus])
 
   useEffect(() => {
-    const controller = new AbortController()
-    apiGet<WechatBootstrapResponse>('/api/v1/wechat/bootstrap', controller.signal)
-      .then((response) => {
-        const sourceStatus: unknown = response.data?.source_status
-        const status = typeof sourceStatus === 'string'
-          ? sourceStatus
-          : sourceStatus && typeof sourceStatus === 'object' && 'status' in sourceStatus
-            ? String(sourceStatus.status ?? 'unknown')
-            : 'unknown'
-        onSourceStatus(status)
-        setState('ready')
-      })
-      .catch((reason) => {
-        if (reason instanceof DOMException && reason.name === 'AbortError') return
-        setState('error')
-        setError(reason instanceof ApiError || reason instanceof Error ? reason.message : '微信搜一搜状态读取失败')
-        onSourceStatus('offline')
-      })
-    return () => controller.abort()
-  }, [onSourceStatus])
+    setState('loading')
+    setError('')
+    return () => {
+      iframeRef.current?.contentWindow?.postMessage(
+        {type: 'wechat-island:teardown', wbv: 'wechat-v2'},
+        window.location.origin,
+      )
+    }
+  }, [])
 
   return (
     <div className="wechat-island-page">
@@ -43,9 +43,12 @@ export default function WechatIslandPage({onSourceStatus}: {onSourceStatus: (sta
       </div>
       {error && <div className="wechat-island-error" role="alert">{error}</div>}
       <iframe
+        ref={iframeRef}
         className="wechat-legacy-frame"
         title="微信关键词原系统业务岛屿"
-        src="/legacy/wechat/monitor.html?wbv=wechat-v1"
+        src="/legacy/wechat/monitor.html?wbv=wechat-v2"
+        onLoad={handleLoad}
+        onError={handleError}
       />
     </div>
   )

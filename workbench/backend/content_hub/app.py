@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -17,7 +18,7 @@ from content_hub import __version__
 from content_hub.config import Settings
 from content_hub.db.migrations import migrate
 from content_hub.db.connection import connect
-from content_hub.db.writer_lock import writer_lock
+from content_hub.db.writer_lock import writer_lock, WriterLockTimeout
 from content_hub.errors import AppError
 from content_hub.services.migration import MigrationResolver, wechat_http_operation
 from content_hub.features.overview.router import router as overview_router
@@ -28,9 +29,6 @@ from content_hub.features.wechat.legacy_read_router import router as wechat_lega
 from content_hub.features.mp.router import router as mp_router
 from content_hub.features.xhs.router import router as xhs_router
 from content_hub.features.geo.router import router as geo_router
-from content_hub.features.wiki.router import router as wiki_router
-from content_hub.features.writing.router import router as writing_router
-from content_hub.features.publishing.router import router as publishing_router
 from content_hub.features.contents.router import router as contents_router
 from content_hub.features.jobs.router import router as jobs_router
 from content_hub.features.signals.router import router as signals_router
@@ -54,7 +52,6 @@ from content_hub.legacy_pages import (
 from content_hub.logging import configure_logging
 from content_hub.services.wechat_refresh import WechatRefreshService
 from content_hub.services.wechat_aux import WechatCdnImageProvider
-from content_hub.services.writing import backfill_writing_runtime
 from content_hub.adapters.wechat_search_api import RemoteWechatSearchProvider
 from content_hub.adapters.xhs_search_provider import DryRunXhsSearchProvider, TikHubSearchProvider
 
@@ -74,6 +71,52 @@ _WECHAT_BUSINESS_ISLAND_CSP = (
     "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
     "connect-src 'self'; frame-ancestors 'self'"
 )
+_BOOTSTRAP_GUARD_PATHS = frozenset({
+    "/api/monitor-data/bootstrap",
+    "/api/v1/wechat/bootstrap",
+})
+_BOOTSTRAP_GUARD_WINDOW_SECONDS = 1.0
+_BOOTSTRAP_GUARD_BURST_LIMIT = 4
+_bootstrap_guard_lock = threading.Lock()
+_bootstrap_guard_recent: dict[tuple[int, str, int, str], list[float]] = {}
+
+
+def _bootstrap_request_is_runaway(request: Request, now: float) -> bool:
+    """Protect the local Hub from runaway duplicate bootstrap clients.
+
+    A browser-side loop can otherwise force the same 1–2 MB payload through
+    JSON/gzip and SQLite hundreds of times per second.  Do not return 429 here:
+    Chromium-based embedded browsers may immediately retry a throttled
+    navigation/fetch and turn the guard itself into a request storm.  Instead,
+    allow a small legitimate burst and classify only the fifth request from
+    the same keep-alive connection and path within one second as runaway.
+    """
+    client = request.client
+    if client is None or client.port is None:
+        return False
+    # A conditional request will be answered as 304 by the normal response
+    # path and is already cheap; do not rate-limit legitimate revalidation.
+    if request.headers.get("if-none-match"):
+        return False
+    key = (
+        id(request.scope.get("app")),
+        str(client.host or ""),
+        int(client.port),
+        request.url.path,
+    )
+    with _bootstrap_guard_lock:
+        stale_before = now - (_BOOTSTRAP_GUARD_WINDOW_SECONDS * 4)
+        for old_key, seen_at in list(_bootstrap_guard_recent.items()):
+            if not seen_at or seen_at[-1] < stale_before:
+                _bootstrap_guard_recent.pop(old_key, None)
+        recent = [
+            seen_at
+            for seen_at in _bootstrap_guard_recent.get(key, ())
+            if seen_at >= now - _BOOTSTRAP_GUARD_WINDOW_SECONDS
+        ]
+        recent.append(now)
+        _bootstrap_guard_recent[key] = recent
+        return len(recent) > _BOOTSTRAP_GUARD_BURST_LIMIT
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -83,15 +126,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         migrate(resolved_settings)
-        with writer_lock(resolved_settings.lock_path):
-            with connect(resolved_settings, readonly=False) as connection:
-                backfilled = backfill_writing_runtime(
-                    connection,
-                    asset_root=Path(resolved_settings.asset_store_path),
-                )
-                connection.commit()
-        if backfilled:
-            logger.info("WritingMoney v3.3 运行层回填完成", extra={"count": backfilled})
         provider = getattr(app.state, "wechat_refresh_provider", None)
         if provider is not None:
             recovery_service = WechatRefreshService(
@@ -137,7 +171,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             def watchdog() -> None:
                 while not app.state.wechat_refresh_watchdog_stop.wait(watchdog_interval):
                     try:
-                        stale_jobs = recovery_service.recover_stale_batches()
+                        # 恢复超时关键词。写锁被大快照写入占用时，10秒超时会失败；
+                        # 这里重试最多3次（间隔5秒），避免一次锁冲突就静默放弃，
+                        # 让僵尸批次一直挂着。业务 Why 见 7/18–7/21 卡死事故复盘。
+                        stale_jobs: list[str] = []
+                        for _attempt in range(3):
+                            try:
+                                stale_jobs = recovery_service.recover_stale_batches()
+                                break
+                            except WriterLockTimeout:
+                                if _attempt < 2:
+                                    time.sleep(5)
+                                else:
+                                    logger.warning(
+                                        "微信刷新看门狗：recover_stale_batches 3次重试均因写锁超时失败，跳过本轮"
+                                    )
                         for job_id in stale_jobs:
                             schedule_recovery(job_id, force=True)
                         if stale_jobs:
@@ -145,6 +193,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 "微信刷新看门狗已恢复超时关键词",
                                 extra={"refresh_job_ids": stale_jobs},
                             )
+                        # 强制终止跑了太久的僵尸批次（默认4小时）。这是最后一道
+                        # 防线：即使 recover_stale_batches 因故无法恢复，整个批次
+                        # 也不会永远卡在 running、永远阻塞调度器。
+                        try:
+                            zombie_jobs: list[str] = []
+                            for _attempt in range(3):
+                                try:
+                                    zombie_jobs = recovery_service.recover_zombie_batches()
+                                    break
+                                except WriterLockTimeout:
+                                    if _attempt < 2:
+                                        time.sleep(5)
+                                    else:
+                                        logger.warning(
+                                            "微信刷新看门狗：recover_zombie_batches 3次重试均因写锁超时失败，跳过本轮"
+                                        )
+                            if zombie_jobs:
+                                logger.warning(
+                                    "微信刷新看门狗已强制终止僵尸批次",
+                                    extra={"refresh_job_ids": zombie_jobs},
+                                )
+                        except Exception:
+                            logger.exception("微信刷新看门狗：僵尸批次清理失败")
+                        # 智能刷新与恢复共用一个轻量巡检线程。只有用户在
+                        # scheduler/config 中显式开启 enabled，且到达
+                        # next_run_at、当前没有活动批次时，才会启动新一轮。
+                        # 真实抓取仍在 refresh_batch 的后台线程中执行，不阻塞
+                        # 看门狗，也不阻塞 HTTP 请求。
+                        # 业务 Why 见 docs/微信关键词刷新间隔策略_v1.md#8-预算与公平。
+                        with connect(resolved_settings, readonly=True) as con:
+                            scheduler_row = con.execute(
+                                """SELECT enabled,next_run_at,active_refresh_job_id,
+                                          payload_json
+                                   FROM search_scheduler_state
+                                   WHERE system_key='wechat-search'
+                                     AND platform='wechat-search'"""
+                            ).fetchone()
+                        if scheduler_row and scheduler_row["enabled"] and not scheduler_row["active_refresh_job_id"]:
+                            due = True
+                            next_run_at = str(scheduler_row["next_run_at"] or "").strip()
+                            if next_run_at:
+                                try:
+                                    due = datetime.fromisoformat(
+                                        next_run_at.replace("Z", "+00:00")
+                                    ) <= datetime.now(UTC)
+                                except ValueError:
+                                    due = True
+                            if due:
+                                scheduler_key = (
+                                    "scheduler-daemon-"
+                                    + datetime.now(UTC).strftime("%Y%m%d%H%M")
+                                )
+                                try:
+                                    result = recovery_service.scheduler_trigger(
+                                        key=scheduler_key,
+                                        request_id="scheduler-daemon",
+                                        background=True,
+                                    )
+                                    logger.info(
+                                        "微信智能刷新调度完成",
+                                        extra={
+                                            "trigger_status": result.get("trigger_status"),
+                                            "batch_id": result.get("batch_id"),
+                                            "due_count": (result.get("last_plan") or {}).get("due_count"),
+                                        },
+                                    )
+                                except Exception:
+                                    logger.exception("微信智能刷新调度失败")
                     except Exception:
                         logger.exception("微信刷新看门狗巡检失败")
 
@@ -223,14 +339,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 legacy_path = request.url.path.removeprefix("/api/")
                 response = await proxy_legacy_wechat_api(legacy_path, request)
             else:
-                operation = wechat_http_operation(request.method, request.url.path)
-                if operation and operation["kind"] == "write":
-                    MigrationResolver(
-                        resolved_settings,
-                        module_key="wechat-search",
-                        contract_key=operation["contract_key"],
-                    ).require_mode("hub")
-                response = await call_next(request)
+                bootstrap_runaway = False
+                if (
+                    request.method == "GET"
+                    and request.url.path in _BOOTSTRAP_GUARD_PATHS
+                ):
+                    bootstrap_runaway = _bootstrap_request_is_runaway(
+                        request,
+                        time.monotonic(),
+                    )
+                if bootstrap_runaway:
+                    # A tiny successful envelope terminates Chromium's retry
+                    # behaviour without serializing another bootstrap payload.
+                    # Legitimate StrictMode/double-mount reads remain below the
+                    # burst threshold and still receive the complete response.
+                    response = JSONResponse(
+                        status_code=200,
+                        content={
+                            "ok": True,
+                            "data": None,
+                            "deduplicated": True,
+                        },
+                        headers={
+                            "Cache-Control": "no-store",
+                            "X-Bootstrap-Deduplicated": "1",
+                        },
+                    )
+                else:
+                    operation = wechat_http_operation(request.method, request.url.path)
+                    if operation and operation["kind"] == "write":
+                        MigrationResolver(
+                            resolved_settings,
+                            module_key="wechat-search",
+                            contract_key=operation["contract_key"],
+                        ).require_mode("hub")
+                    response = await call_next(request)
         except AppError as exc:
             # middleware 自身的迁移写护栏位于 FastAPI exception handler 外层；
             # 在这里保持统一错误契约，同时继续 fail-closed。
@@ -278,16 +421,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "default-src 'self'; img-src 'self' data: https:; "
                 "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
             )
-        logger.info(
-            "请求完成",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-            },
-        )
+        # Runaway duplicate bootstraps are deliberately not logged one by one:
+        # doing so previously grew launchd.err.log by hundreds of MB and added
+        # avoidable disk/CPU pressure while the browser was already unhealthy.
+        if response.headers.get("X-Bootstrap-Deduplicated") != "1":
+            logger.info(
+                "请求完成",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
         return response
 
     @app.exception_handler(AppError)
@@ -329,9 +476,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mp_router)
     app.include_router(xhs_router)
     app.include_router(geo_router)
-    app.include_router(wiki_router)
-    app.include_router(writing_router)
-    app.include_router(publishing_router)
     app.include_router(contents_router)
     app.include_router(jobs_router)
     app.include_router(signals_router)

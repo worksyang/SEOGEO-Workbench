@@ -295,7 +295,7 @@ class Settings:
                 "HUB_PUBLISH_ACCOUNTS_SOURCE",
                 "/Users/works14/Documents/zkcode/YZKcode/1126WritePublish/Publish/config/accounts.json",
             )).expanduser().resolve(),
-            # 首版本机默认启用明确标记的 Fake Provider，让母文章铸造/批量成稿
+            # 首版本机默认启用明确标记的 Fake Provider，让生产任务
             # 可以完整跑通任务、产物、审计和回放链路；它不调用外部模型，也不冒充真实生成。
             # 如需验证真实 Provider 门禁，可显式设置 HUB_WRITING_PROVIDER_KIND=unconfigured。
             writing_provider_kind=os.getenv("HUB_WRITING_PROVIDER_KIND", "fake").strip() or "fake",

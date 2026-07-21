@@ -11,6 +11,10 @@ from content_hub.errors import AppError, ValidationAppError
 PLATFORM = "wechat-search"
 SYSTEM = "wechat-search"
 SUPPORTED_REFRESH_DAYS = {1, 3, 7, 15}
+OBSERVATION_INTERVAL_HOURS = 3.0
+OBSERVATION_WINDOW_HOURS = 24.0
+# Why：见 docs/微信关键词刷新间隔策略_v1.md。
+# 新词只在24小时窗口内高频观察，不能因 lifecycle_stage 遗留而永久每3小时刷新。
 LEGACY_UNHANDLED_NOT_FOUND = "LEGACY_UNHANDLED_NOT_FOUND"
 LEGACY_UNHANDLED_INTERNAL_ERROR = "LEGACY_UNHANDLED_INTERNAL_ERROR"
 
@@ -82,7 +86,7 @@ class WechatStateRepository:
                 commercial_value_source,commercial_value_reason,auto_archive_locked
             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (sid, SYSTEM, PLATFORM, keyword_id, group_id, 0, "manual", 1440, 5,
-             note, None, now, "{}", "新词：观察期每日刷新", "auto", "", 0),
+             note, None, now, "{}", "新词：24小时观察期，每3小时刷新", "auto", "", 0),
         )
         return self._setting(keyword_id)
 
@@ -101,7 +105,7 @@ class WechatStateRepository:
             "batch_default_selected": 1,
             "refresh_interval_minutes": 1440,
             "refresh_strategy": "manual",
-            "refresh_policy_reason": "新词：观察期每日刷新",
+            "refresh_policy_reason": "新词：24小时观察期，每3小时刷新",
             "commercial_value": 5,
             "commercial_value_source": "auto",
             "commercial_value_reason": "",
@@ -173,15 +177,46 @@ class WechatStateRepository:
             )
             or "established"
         )
-        effective_interval = (
-            3.0
-            if lifecycle_stage == "observing" and refresh_source != "manual"
-            else float(max(1, frequency) * 24)
+        is_pinned = bool(
+            self._payload_value(setting_payload, "is_pinned", setting["pinned"])
         )
         last_refresh = self._payload_value(
             setting_payload,
             "last_refresh_at",
             self._payload_value(payload, "last_refresh_at"),
+        )
+        snapshot_count = int(
+            self._payload_value(
+                setting_payload,
+                "snapshot_count",
+                self._payload_value(payload, "snapshot_count", 0),
+            )
+            or 0
+        )
+        last_refresh_dt = None
+        if last_refresh:
+            try:
+                last_refresh_dt = datetime.fromisoformat(
+                    str(last_refresh).replace("Z", "+00:00")
+                )
+            except ValueError:
+                pass
+        in_observation = (
+            refresh_source != "manual"
+            and snapshot_count < 2
+            and (
+                last_refresh_dt is None
+                or (
+                    datetime.now(last_refresh_dt.tzinfo)
+                    - last_refresh_dt
+                ).total_seconds()
+                <= OBSERVATION_WINDOW_HOURS * 3600
+            )
+        )
+        effective_interval = (
+            OBSERVATION_INTERVAL_HOURS
+            if in_observation or is_pinned
+            else float(max(1, frequency) * 24)
         )
         next_refresh, refresh_age, refresh_due = self._legacy_refresh_times(
             last_refresh, effective_interval
@@ -212,9 +247,6 @@ class WechatStateRepository:
         )
         archived_at = self._payload_value(
             setting_payload, "archived_at", setting["archived_at"]
-        )
-        is_pinned = bool(
-            self._payload_value(setting_payload, "is_pinned", setting["pinned"])
         )
         pin_order = self._payload_value(
             setting_payload, "pin_order", setting["pin_order"]
@@ -283,14 +315,7 @@ class WechatStateRepository:
                 "last_seen_at",
                 self._payload_value(payload, "last_seen_at"),
             ),
-            "snapshot_count": int(
-                self._payload_value(
-                    setting_payload,
-                    "snapshot_count",
-                    self._payload_value(payload, "snapshot_count", 0),
-                )
-                or 0
-            ),
+            "snapshot_count": snapshot_count,
             "refresh_frequency_days": frequency,
             "effective_refresh_interval_hours": effective_interval,
             "refresh_frequency_source": refresh_source,
@@ -450,6 +475,9 @@ class WechatStateRepository:
         kid = keyword_id_for(text)
         old = self.con.execute("SELECT * FROM keywords WHERE keyword_id=? OR (platform=? AND keyword=?)", (kid, PLATFORM, text)).fetchone()
         now = now_iso()
+        observation_deadline = (
+            datetime.now(timezone.utc) + timedelta(hours=OBSERVATION_WINDOW_HOURS)
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
         if old and old["status"] == "active":
             raise ValidationAppError(f"关键词已存在：{text}")
         runtime_payload = {
@@ -475,16 +503,16 @@ class WechatStateRepository:
             "snapshot_count": 0,
             "refresh_frequency_days": 1,
             "refresh_frequency_source": "auto",
-            "refresh_policy_reason": "新词：观察期每日刷新",
+            "refresh_policy_reason": "新词：24小时观察期，每3小时刷新",
             "last_refresh_at": None,
             "last_refresh_attempt_at": None,
             "last_refresh_status": None,
             "commercial_value_score": 5,
             "commercial_value_source": "auto",
             "commercial_value_reason": "",
-            "lifecycle_stage": "established",
-            "observation_started_at": None,
-            "observation_deadline_at": None,
+            "lifecycle_stage": "observing",
+            "observation_started_at": now,
+            "observation_deadline_at": observation_deadline,
             "discovery_candidate_id": None,
             "auto_archive_locked": False,
             "archive_reason_code": None,
@@ -540,7 +568,7 @@ class WechatStateRepository:
                 f"{SYSTEM}:{kid}", SYSTEM, PLATFORM, kid, group_id, 0,
                 "scheduled", 1440, 5, str(note or "").strip(), None, now,
                 canonical_payload(runtime_payload), order,
-                "新词：观察期每日刷新", "auto", "", 0,
+                "新词：24小时观察期，每3小时刷新", "auto", "", 0,
             ),
         )
         return self._state(kid)

@@ -37,6 +37,7 @@ def test_migrations_are_idempotent(settings) -> None:
         (17, "wechat_refresh_contract"),
         (18, "xhs_shadow_refresh"),
         (19, "xhs_read_migration"),
+        (20, "wechat_agent_projection"),
     ]
 
 
@@ -44,7 +45,7 @@ def test_empty_database_applies_all_migrations_and_repeated_migration_is_noop(
     tmp_path: Path,
 ) -> None:
     fresh = Settings.load().with_database(tmp_path / "empty.sqlite")
-    assert migrate(fresh) == list(range(1, 20))
+    assert migrate(fresh) == list(range(1, 21))
     assert migrate(fresh) == []
     with connect(fresh, readonly=True) as connection:
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1

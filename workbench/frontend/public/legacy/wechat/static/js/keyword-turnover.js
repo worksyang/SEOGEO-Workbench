@@ -4,6 +4,7 @@
   const CONTENT_API_URL = '/api/article-content';
   const WECHAT_AUX_VERSION = 'wechat-v1';
   const state = { filter: 'all', keyword: null, turnover: null, articleById: new Map() };
+  let activeArticleRequestController = null;
 
   if (window.marked) {
     window.marked.setOptions({
@@ -676,6 +677,7 @@
   }
 
   function renderError(message) {
+    clearCityStage($('turnoverCity3d'));
     $('turnoverHero').innerHTML = `<div class="turnover-loading is-error">${esc(message)}</div>`;
     $('turnoverCalendar').innerHTML = '';
     $('turnoverHandoff').innerHTML = '';
@@ -936,11 +938,17 @@
     title.textContent = article.title || '文章详情';
     drawer.classList.add('open');
     body.innerHTML = '<div style="color:#94a3b8">正在加载正文…</div>';
+    if (activeArticleRequestController) activeArticleRequestController.abort();
+    const requestController = new AbortController();
+    activeArticleRequestController = requestController;
 
     let html = '';
     if (article.content_path) {
       try {
-        const resp = await fetch(`${CONTENT_API_URL}?path=${encodeURIComponent(article.content_path)}`, { cache: 'no-store' });
+        const resp = await fetch(`${CONTENT_API_URL}?path=${encodeURIComponent(article.content_path)}`, {
+          cache: 'no-store',
+          signal: requestController.signal,
+        });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const payload = await resp.json();
         const md = preprocessArticleMarkdown(payload.markdown || '', article.title);
@@ -948,6 +956,7 @@
           ? window.marked.parse(md).replace(/<img\s/gi, '<img referrerpolicy="no-referrer" ')
           : `<pre>${esc(md)}</pre>`;
       } catch (err) {
+        if (err?.name === 'AbortError') return;
         html = `<div style="color:#991b1b">无法加载正文：${esc(err.message || err)}</div>
                 <div style="margin-top:8px;font-size:12px;color:#999">路径：${esc(article.content_path)}</div>`;
       }
@@ -958,6 +967,7 @@
       html = `<div style="color:#64748b">当前只有榜单记录，还没有抓到正文或原文链接。</div>
               <div style="margin-top:8px;font-size:12px;color:#999">后续如果抓到正文，这里会自动显示。</div>`;
     }
+    if (requestController.signal.aborted || activeArticleRequestController !== requestController) return;
     body.innerHTML = html;
 
     const footParts = [];
@@ -975,13 +985,30 @@
   }
 
   function closeDrawer() {
+    if (activeArticleRequestController) {
+      activeArticleRequestController.abort();
+      activeArticleRequestController = null;
+    }
     const drawer = $('drawer');
     if (drawer) drawer.classList.remove('open');
+    // Do not leave the rendered Markdown/images resident in a hidden drawer.
+    const body = $('drawerBody');
+    const foot = $('drawerFoot');
+    if (body) body.replaceChildren();
+    if (foot) foot.replaceChildren();
+    const title = $('drawerTitle');
+    if (title) title.textContent = '';
   }
 
   window.closeDrawer = closeDrawer;
   window.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeDrawer();
+  });
+  window.addEventListener('message', event => {
+    if (event.data?.type === 'wechat-island:teardown') {
+      closeDrawer();
+      clearCityStage($('turnoverCity3d'));
+    }
   });
 
   load();

@@ -11,12 +11,19 @@ MONITOR_MIRROR = ROOT / "workbench/legacy_mirrors/wechat/source/static/js/monito
 MONITOR_PUBLIC = ROOT / "workbench/frontend/public/legacy/wechat/static/js/monitor.js"
 
 
-def test_wechat_monitor_mirrors_are_byte_identical() -> None:
-    assert MONITOR_MIRROR.read_bytes() == MONITOR_PUBLIC.read_bytes()
+def test_wechat_monitor_mirror_is_frozen_reference() -> None:
+    relative = MONITOR_MIRROR.relative_to(ROOT)
+    expected = subprocess.run(
+        ["git", "show", f"HEAD:{relative.as_posix()}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert MONITOR_MIRROR.read_bytes() == expected
+    assert MONITOR_MIRROR.read_bytes() != MONITOR_PUBLIC.read_bytes()
 
 
 def test_wechat_monitor_has_twenty_write_calls_and_no_naked_write_fetch() -> None:
-    source = MONITOR_MIRROR.read_text(encoding="utf-8")
+    source = MONITOR_PUBLIC.read_text(encoding="utf-8")
     assert len(re.findall(r"""method:\s*['"](POST|PATCH|PUT|DELETE)['"]""", source)) == 20
     assert source.count("return fetch(url, withIdempotencyKey(options));") == 1
     assert not re.search(
@@ -24,18 +31,18 @@ def test_wechat_monitor_has_twenty_write_calls_and_no_naked_write_fetch() -> Non
         source,
     )
     assert "fetch(DATA_URL, { cache: 'no-cache' })" in source
-    assert "fetch(url, { cache: 'no-cache' })" in source
+    assert "fetch(url, { cache: 'no-cache', signal });" in source
     assert "fetch(REFRESH_HISTORY_URL)" in source
 
 
 def test_wechat_monitor_idempotency_helper_behavior_and_node_syntax() -> None:
     subprocess.run(
-        ["node", "--check", str(MONITOR_MIRROR)],
+        ["node", "--check", str(MONITOR_PUBLIC)],
         check=True,
         capture_output=True,
         text=True,
     )
-    source = MONITOR_MIRROR.read_text(encoding="utf-8")
+    source = MONITOR_PUBLIC.read_text(encoding="utf-8")
     helper_prefix = source.split("marked.setOptions({", 1)[0]
     script = f"""
 const vm = require("node:vm");
@@ -90,3 +97,41 @@ for (const method of ["GET", "HEAD", "OPTIONS"]) {{
         capture_output=True,
         text=True,
     )
+
+
+def test_wechat_monitor_performance_overlay_and_detail_guards() -> None:
+    source = MONITOR_PUBLIC.read_text(encoding="utf-8")
+    assert "const DETAIL_CACHE_LIMIT = 2;" in source
+    assert "const DETAIL_CACHE_TTL_MS" in source
+    assert "const COVER_CACHE_LIMIT = 500;" in source
+    assert "const activeDetailRequests = {" in source
+    assert "keyword: null" in source
+    assert "account: null" in source
+    assert "function touchBoundedCache" in source
+    assert "new AbortController()" in source
+    assert "signal" in source
+    assert "Object.assign(item, detail)" not in source
+    assert "Object.assign(item,detail)" not in source
+    assert "Object.defineProperty(window, '__WX_PERF__'" in source
+
+
+def test_wechat_batch_finished_time_keeps_explicit_utc_source_date() -> None:
+    source = MONITOR_PUBLIC.read_text(encoding="utf-8")
+    start = source.index("function kmSourceDateParts")
+    end = source.index("\n\nfunction kmFormatDuration", start)
+    helper = source[start:end]
+    script = f"""
+const vm = require("node:vm");
+const context = {{}};
+vm.createContext(context);
+vm.runInContext({json.dumps(helper + '''
+globalThis.__format = kmFormatFinishedTime;
+''')}, context);
+if (context.__format("2026-07-18T19:43:00Z") !== "7月18日 19:43") {{
+  throw new Error("explicit UTC timestamp crossed into the browser local date");
+}}
+if (context.__format("2026-07-18T19:43:00") !== "7月18日 19:43") {{
+  throw new Error("naive legacy timestamp changed its labelled date");
+}}
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)

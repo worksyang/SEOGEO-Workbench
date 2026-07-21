@@ -18,12 +18,93 @@ from ..services.audit import AuditService
 from ..validation.timestamps import utc_now_iso
 
 SIGNAL_MODEL = "v3.3.0"
+POST_REFRESH_LINKAGE_MAX_BYTES = 64 << 10
 _SYSTEM_PLATFORM_ALIASES = {
     "微信搜索结果": "wechat-search",
     "微信搜一搜": "wechat-search",
     "公众号": "wechat-mp",
     "小红书": "xiaohongshu",
 }
+
+
+def _bounded_step_result(value: Any, *, depth: int = 0) -> Any:
+    """Return a JSON-safe, small summary for runtime/audit receipts."""
+    if depth >= 3:
+        return {"truncated": True}
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 256 else value[:256] + "…"
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 128:
+                result["truncated"] = True
+                break
+            key = str(key)
+            # Counts, statuses, ids and timestamps are useful diagnostics;
+            # arbitrary nested payloads are not part of the linkage contract.
+            if isinstance(item, (dict, list, tuple)):
+                result[key] = _bounded_step_result(item, depth=depth + 1)
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                result[key] = _bounded_step_result(item, depth=depth + 1)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_bounded_step_result(item, depth=depth + 1) for item in value[:32]]
+    return str(value)[:256]
+
+
+def _summarize_optional_result(module: str, result: Any) -> dict[str, Any]:
+    """Never expose a provider/projection result in a batch receipt."""
+    if "wechat_live_projection" in module and isinstance(result, dict):
+        counts: dict[str, int] = {}
+        generated_at: set[str] = set()
+        keys: list[str] = []
+        for key, payload in result.items():
+            key = str(key)
+            keys.append(key)
+            kind = key.split(":", 1)[0]
+            counts[kind] = counts.get(kind, 0) + 1
+            if isinstance(payload, dict) and payload.get("generated_at"):
+                generated_at.add(str(payload["generated_at"]))
+        return {
+            "projection_keys": sorted(keys)[:256],
+            "projection_count": len(keys),
+            "projection_counts": counts,
+            "generated_at": sorted(generated_at)[-1] if generated_at else None,
+        }
+    return _bounded_step_result(result)
+
+
+def _summarize_linkage_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "snapshot_count": len(context.get("snapshot_ids") or []),
+        "content_count": len(context.get("content_ids") or []),
+        "observed_at": context.get("observed_at"),
+        "source_ref": context.get("source_ref"),
+    }
+
+
+def _bound_linkage_receipt(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep the HTTP/runtime/audit linkage contract below a hard byte bound."""
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(encoded.encode("utf-8")) <= POST_REFRESH_LINKAGE_MAX_BYTES:
+        return value
+    return {
+        "status": value.get("status"),
+        "context": value.get("context"),
+        "steps": {
+            name: {
+                key: step.get(key)
+                for key in ("status", "module", "projection_keys", "projection_count",
+                            "projection_counts", "generated_at", "error")
+                if isinstance(step, dict) and key in step
+            }
+            for name, step in (value.get("steps") or {}).items()
+        },
+        "failures": value.get("failures") or {},
+        "truncated": True,
+    }
 
 
 def _invoke_optional_service(
@@ -100,7 +181,11 @@ def _invoke_optional_service(
     if call_kwargs:
         kwargs.update({key: value for key, value in call_kwargs.items() if key in parameters})
     result = callable_obj(**kwargs)
-    return {"status": "succeeded", "module": module.__name__, "result": result}
+    return {
+        "status": "succeeded",
+        "module": module.__name__,
+        "result": _summarize_optional_result(module.__name__, result),
+    }
 
 
 def _refresh_snapshot_context(connection, job_id: str) -> dict[str, Any]:
@@ -181,17 +266,20 @@ def run_post_refresh_linkage(connection, *, settings, job_id: str) -> dict[str, 
     try:
         steps["signals"] = {
             "status": "succeeded",
-            "result": SignalsService(connection).recompute_all(signal_date=None),
+            "result": _bounded_step_result(
+                SignalsService(connection).recompute_all(signal_date=None)
+            ),
         }
     except Exception as exc:
         failures["signals"] = f"{type(exc).__name__}: {exc}"
         steps["signals"] = {"status": "failed", "error": failures["signals"]}
-    return {
+    linkage = {
         "status": "succeeded" if not failures else "failed",
-        "context": context,
+        "context": _summarize_linkage_context(context),
         "steps": steps,
         "failures": failures,
     }
+    return _bound_linkage_receipt(linkage)
 def load_platform_rules(path: Path | None) -> dict[str, str]:
     """读取 GEO 已有的平台别名规则；文件不存在时不推断新别名。"""
     if path is None or not path.is_file():

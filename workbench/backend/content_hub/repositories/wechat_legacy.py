@@ -3,19 +3,68 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
+import time
 import zlib
 from copy import deepcopy
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from content_hub.db.connection import connect
+from content_hub.db.connection import transaction
+from content_hub.db.writer_lock import writer_lock
 from content_hub.errors import NotFoundError, ValidationAppError
 
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_RUNTIME_FULL_READ_LIMIT = 1 << 20
+_RUNTIME_SUMMARY_FIELDS = (
+    "batch_id", "job_id", "status", "hub_status", "total", "requested_count",
+    "success_count", "succeeded_count", "failed_count", "blocked_count",
+    "cancelled_count", "processed_count", "pending_count", "current_keyword",
+    "completed_keywords", "failed_keywords", "failure_reasons",
+    "cancelled_keywords", "cancel_reason", "snapshot_count", "started_at",
+    "finished_at", "updated_at", "refresh_round", "cancel_requested", "is_active",
+    "is_finished", "source",
+)
+_BOOTSTRAP_KEYWORD_FIELDS = frozenset({
+    "today_best", "keyword", "heat_summary", "pin_order", "keyword_id",
+    "coverage_days", "is_pinned", "article_count", "tracked_accounts",
+    "today_count", "history_best", "history_hits", "topic", "kw_score",
+    "keyword_bucket",
+})
+_BOOTSTRAP_ACCOUNT_FIELDS = frozenset({
+    "account_id", "name", "headimg_url",
+    "score", "score_raw", "score_yesterday", "score_delta", "score_level",
+    "timeliness_score", "timeliness_score_raw", "timeliness_score_yesterday",
+    "timeliness_score_delta", "timeliness_score_level",
+    "today_score", "today_score_raw", "today_score_yesterday",
+    "today_score_delta", "today_score_level",
+    "article_count", "kw_count", "topic_count", "bucket_count",
+    "today_hit_count", "recent_hit_days", "current_streak", "longest_streak",
+    "friends_follow_count", "original_article_count", "move_summary",
+})
+_BOOTSTRAP_CACHE_TTL_SECONDS = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapCacheEntry:
+    """短 TTL 的进程内 bootstrap 读缓存。
+
+    ``payload_json`` 是已经 compact 且序列化好的旧页面响应体，避免高频
+    客户端重复触发 projection 解码、compact 和 JSON 编码。缓存键仍包含
+    数据库版本探针，因此写入/导入/刷新提交后不会依赖 TTL 才看到新数据。
+    """
+
+    version: tuple[Any, ...]
+    expires_at: float
+    payload: dict[str, Any]
+    payload_json: bytes
 
 
 def _row(value: Any) -> dict[str, Any]:
@@ -39,6 +88,115 @@ def _runtime_value(raw: Any) -> dict[str, Any] | None:
     # subtype 只用于 Hub 内部区分单词 job / batch / scheduler，旧响应不得泄露。
     value.pop("runtime_subtype", None)
     return value
+
+
+def _runtime_prefix_summary(
+    subject_id: str,
+    updated_at: Any,
+    prefix: Any,
+) -> dict[str, Any]:
+    """Build a bounded compatibility summary without reading full JSON."""
+    text = str(prefix or "")
+
+    def scalar(name: str) -> str | None:
+        match = re.search(
+            rf'"{re.escape(name)}"\s*:\s*(?:"([^"]*)"|([^,}}\s]+))',
+            text,
+        )
+        if not match:
+            return None
+        return match.group(1) if match.group(1) is not None else match.group(2)
+
+    batch_id = scalar("batch_id") or str(subject_id)
+    value: dict[str, Any] = {
+        "batch_id": batch_id,
+        "job_id": scalar("job_id") or batch_id,
+        "status": scalar("status") or "unknown",
+        "hub_status": scalar("hub_status"),
+        "updated_at": scalar("updated_at") or str(updated_at or ""),
+    }
+    for field in (
+        "total", "requested_count", "success_count", "succeeded_count",
+        "failed_count", "blocked_count", "cancelled_count",
+        "processed_count", "pending_count", "snapshot_count",
+    ):
+        raw = scalar(field)
+        if raw is not None:
+            try:
+                value[field] = int(raw)
+            except ValueError:
+                pass
+    for field in (
+        "started_at", "finished_at", "current_keyword", "cancel_reason",
+        "source",
+    ):
+        raw = scalar(field)
+        if raw is not None:
+            value[field] = raw
+    for field in ("cancel_requested", "is_active", "is_finished"):
+        raw = scalar(field)
+        if raw is not None:
+            value[field] = raw.lower() == "true"
+    return value
+
+
+def _runtime_summary(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the refresh-all history/status compatibility contract."""
+    return {
+        field: value[field]
+        for field in _RUNTIME_SUMMARY_FIELDS
+        if field in value
+    }
+
+
+def _bounded_runtime_payload(
+    value: dict[str, Any],
+    *,
+    max_payload_bytes: int,
+) -> tuple[str, dict[str, Any]]:
+    """Serialize a batch summary under the requested storage bound."""
+    summary = _runtime_summary(value)
+    payload = {"runtime_subtype": "batch", **summary}
+
+    def encode() -> str:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+    encoded = encode()
+    if len(encoded.encode("utf-8")) <= max_payload_bytes:
+        return encoded, payload
+
+    # Large keyword lists are useful in the live status response but are not
+    # needed in the historical list. Drop them before shortening scalar text.
+    for field in (
+        "completed_keywords", "failed_keywords", "cancelled_keywords",
+        "failure_reasons",
+    ):
+        payload.pop(field, None)
+    payload["summary_truncated"] = True
+    for field in ("current_keyword", "cancel_reason", "source"):
+        value = payload.get(field)
+        if isinstance(value, str) and len(value) > 256:
+            payload[field] = value[:256]
+    encoded = encode()
+    if len(encoded.encode("utf-8")) <= max_payload_bytes:
+        return encoded, payload
+
+    # The remaining fields are scalar core status facts. Keep a final bounded
+    # emergency representation rather than allowing a pathological provider
+    # string to defeat the explicit storage limit.
+    compact = {
+        "runtime_subtype": "batch",
+        "batch_id": str(payload.get("batch_id") or ""),
+        "job_id": str(payload.get("job_id") or payload.get("batch_id") or ""),
+        "status": str(payload.get("status") or "unknown")[:64],
+        "hub_status": str(payload.get("hub_status") or "")[:64],
+        "updated_at": str(payload.get("updated_at") or "")[:64],
+        "summary_truncated": True,
+    }
+    encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > max_payload_bytes:
+        raise ValueError("runtime summary exceeds max_payload_bytes")
+    return encoded, compact
 
 
 def _runtime_history_sort_key(value: dict[str, Any]) -> tuple[int, float, str]:
@@ -185,12 +343,11 @@ def _compact_bootstrap_payload(payload: dict[str, Any]) -> dict[str, Any]:
             key: value
             for key, value in source.items()
             if key not in {
-                "payload_json",
-                "payload",
-                "setting_payload_json",
-                "setting_payload",
-                "runs",
+                "payload_json", "payload", "setting_payload_json",
+                "setting_payload", "runs", "turnover_runs", "accounts",
+                "history", "topics",
             }
+            and not str(key).startswith("_")
         }
         latest_run = source.get("latest_run")
         if isinstance(latest_run, dict):
@@ -208,6 +365,17 @@ def _compact_bootstrap_payload(payload: dict[str, Any]) -> dict[str, Any]:
             }
         else:
             item["latest_run"] = None
+        delta = source.get("keyword_read_delta")
+        if isinstance(delta, dict):
+            delta_fields = (
+                "read_delta_estimated", "read_delta_raw",
+                "steady_read_median", "provisional_read_delta_estimated",
+                "confidence_score", "confidence_level", "trend_signal",
+                "trend_label", "status",
+            )
+            item["keyword_read_delta"] = {
+                key: delta.get(key) for key in delta_fields if key in delta
+            }
         compact_keywords.append(item)
 
     compact_accounts: list[dict[str, Any]] = []
@@ -218,16 +386,10 @@ def _compact_bootstrap_payload(payload: dict[str, Any]) -> dict[str, Any]:
             key: value
             for key, value in source.items()
             if key not in {
-                "_today_article_ids",
-                "_today_article_titles",
-                "payload_json",
-                "payload",
-                "setting_payload_json",
-                "setting_payload",
-                "topics",
-                "keywords",
-                "history",
+                "payload_json", "payload", "setting_payload_json",
+                "setting_payload", "history", "topics", "keywords",
             }
+            and not str(key).startswith("_")
         }
 
         # The account list uses a 15-cell rank heat bar.  The live projection
@@ -306,6 +468,8 @@ class WechatLegacyRepository:
         tuple[Any, ...],
         tuple[list[dict[str, Any]], list[dict[str, Any]]],
     ] = {}
+    _bootstrap_cache_lock = Lock()
+    _bootstrap_cache: dict[str, BootstrapCacheEntry] = {}
 
     def __init__(self, settings: Any, *, clock: Callable[[], datetime] | None = None) -> None:
         self.settings = settings
@@ -352,19 +516,131 @@ class WechatLegacyRepository:
         return [_row(x) for x in rows]
 
     def _projection(self, kind: str, subject_id: str = "") -> dict[str, Any] | None:
+        # Do not inspect payload_json while choosing a row.  A single full
+        # projection can be 142–184 MB; JSON1/julianday over every historical
+        # variant would turn a cheap read into hundreds of MB of parsing.
+        # Snapshot freshness is corrected from core tables by
+        # _overlay_live_snapshots().
         with connect(self.settings, readonly=True) as con:
             row = con.execute(
                 """
-                SELECT payload_json FROM wechat_legacy_projections
+                SELECT payload_json
+                FROM wechat_legacy_projections
                 WHERE projection_kind=? AND subject_id=?
-                ORDER BY updated_at DESC LIMIT 1
+                ORDER BY updated_at DESC,projection_id DESC
+                LIMIT 1
                 """,
                 (kind, subject_id),
             ).fetchone()
-        if row is None:
-            return None
-        value = _projection_payload(row["payload_json"])
+        value = _projection_payload(row["payload_json"]) if row else {}
         return value or None
+
+    def _bootstrap_version(self, con) -> tuple[Any, ...]:
+        """Return a cheap version key for all facts overlaid into bootstrap."""
+        row = con.execute(
+            """
+            SELECT
+              COALESCE((SELECT MAX(updated_at) FROM wechat_legacy_projections),'') AS projection_updated,
+              COALESCE((SELECT COUNT(*) FROM wechat_legacy_projections),0) AS projection_count,
+              COALESCE((SELECT MAX(rowid) FROM wechat_legacy_projections),0) AS projection_rowid,
+              COALESCE((SELECT MAX(captured_at) FROM search_snapshots
+                        WHERE platform='wechat-search'),'') AS snapshot_captured,
+              COALESCE((SELECT COUNT(*) FROM search_snapshots
+                        WHERE platform='wechat-search'),0) AS snapshot_count,
+              COALESCE((SELECT MAX(rowid) FROM search_hits),0) AS hit_rowid,
+              COALESCE((SELECT MAX(updated_at) FROM keywords
+                        WHERE platform='wechat-search'),'') AS keyword_updated,
+              COALESCE((SELECT MAX(updated_at) FROM search_keyword_settings
+                        WHERE system_key='wechat-search'),'') AS setting_updated,
+              COALESCE((SELECT MAX(updated_at) FROM creators
+                        WHERE platform='wechat-search'),'') AS creator_updated
+            """
+        ).fetchone()
+        return (
+            str(Path(self.settings.database_path).resolve()),
+            row["projection_updated"],
+            row["projection_count"],
+            row["projection_rowid"],
+            row["snapshot_captured"],
+            row["snapshot_count"],
+            row["hit_rowid"],
+            row["keyword_updated"],
+            row["setting_updated"],
+            row["creator_updated"],
+        )
+
+    def bootstrap_cache_entry(self) -> BootstrapCacheEntry:
+        """Read bootstrap once per short-TTL/version window.
+
+        The hot path checks the in-process entry before opening SQLite. Only an
+        expired entry performs a version probe; projection construction is
+        single-flight under the cache lock.
+        """
+        now = time.monotonic()
+        cache_key = str(Path(self.settings.database_path).resolve())
+        with self._bootstrap_cache_lock:
+            cached = self._bootstrap_cache.get(cache_key)
+            if cached is not None and cached.expires_at > now:
+                return cached
+        # Do not hold the cache lock while probing SQLite. A writer never
+        # needs this read-cache lock, so this ordering also avoids lock cycles.
+        with connect(self.settings, readonly=True) as con:
+            version = self._bootstrap_version(con)
+        now = time.monotonic()
+        with self._bootstrap_cache_lock:
+            # Another caller may have completed the single-flight build while
+            # this caller was probing SQLite.
+            cached = self._bootstrap_cache.get(cache_key)
+            if cached is not None and cached.expires_at > now:
+                return cached
+
+            projected = self._projection("bootstrap")
+            if projected is not None:
+                payload = _compact_bootstrap_payload(
+                    self._overlay_live_snapshots(projected, include_runs=False)
+                )
+            else:
+                with connect(self.settings, readonly=True) as con:
+                    keywords = self._keywords(con)
+                    accounts = [
+                        _row(x) for x in con.execute(
+                            "SELECT * FROM creators WHERE platform='wechat-search' ORDER BY canonical_name,creator_id"
+                        )
+                    ]
+                    latest = self._latest_snapshot(con)
+                    latest_date, _, latest_run_at = self._snapshot_run_at(latest)
+                payload = _compact_bootstrap_payload({
+                    "generated_at": latest_run_at.replace(" ", "T") if latest else None,
+                    "window_days": None,
+                    "window_start": None,
+                    "window_end": latest_date if latest else None,
+                    "scope": {"total": len(keywords), "pinned": sum(bool(x.get("pinned")) for x in keywords)},
+                    "keywords": [self.keyword_summary(x) for x in keywords],
+                    "accounts": accounts,
+                    "bucket_options": sorted({x.get("keyword_bucket") for x in keywords if x.get("keyword_bucket")}),
+                })
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode()
+            entry = BootstrapCacheEntry(
+                version=version,
+                expires_at=time.monotonic() + _BOOTSTRAP_CACHE_TTL_SECONDS,
+                payload=payload,
+                payload_json=encoded,
+            )
+            self._bootstrap_cache[cache_key] = entry
+            return entry
+
+    @staticmethod
+    def _latest_snapshot(con) -> Any:
+        row = con.execute(
+            """
+            SELECT captured_at
+            FROM search_snapshots
+            WHERE platform='wechat-search'
+            ORDER BY julianday(captured_at) DESC,snapshot_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return row["captured_at"] if row else None
 
     @staticmethod
     def _snapshot_run_at(captured_at: Any) -> tuple[str, str, str]:
@@ -664,29 +940,125 @@ class WechatLegacyRepository:
         result = deepcopy(projected)
         projection_time = str(result.get("generated_at") or "")
         with connect(self.settings, readonly=True) as con:
-            snapshot_rows = con.execute(
-                "SELECT snapshot_id,captured_at FROM search_snapshots WHERE platform='wechat-search'"
-            ).fetchall()
-            latest_row = max(
-                snapshot_rows,
-                key=lambda row: (
-                    _legacy_timestamp(row["captured_at"]),
-                    str(row["snapshot_id"] or ""),
-                ),
-                default=None,
-            )
+            # Do not materialise the entire snapshot table just to find the
+            # latest timestamp.  The projection lookup already supplied the
+            # historical payload; only ids present in that payload need a
+            # timestamp repair query.
+            latest_row = con.execute(
+                """SELECT captured_at
+                   FROM search_snapshots
+                   WHERE platform='wechat-search'
+                   ORDER BY captured_at DESC,snapshot_id DESC
+                   LIMIT 1"""
+            ).fetchone()
             latest = latest_row["captured_at"] if latest_row else None
-            if not latest or (
-                projection_time
-                and _legacy_timestamp(latest) <= _legacy_timestamp(projection_time)
-            ):
+            if not latest:
                 return result
-            runs_by_keyword = self._dynamic_runs(
-                con,
-                since=projection_time or None,
-                keyword_id=keyword_id,
-            )
+            latest_timestamp = _legacy_timestamp(latest)
+            projection_timestamp = _legacy_timestamp(projection_time)
+
+            snapshot_ids: set[str] = set()
+            for item in result.get("keywords") or []:
+                if not isinstance(item, dict):
+                    continue
+                for run in [item.get("latest_run"), *(item.get("runs") or []), *(item.get("turnover_runs") or [])]:
+                    if isinstance(run, dict) and run.get("id"):
+                        snapshot_ids.add(str(run["id"]))
+            for run in [result.get("latest_run"), *(result.get("runs") or []), *(result.get("turnover_runs") or [])]:
+                if isinstance(run, dict) and run.get("id"):
+                    snapshot_ids.add(str(run["id"]))
+            snapshot_times: dict[str, Any] = {}
+            if snapshot_ids:
+                marks = ",".join("?" for _ in snapshot_ids)
+                snapshot_times = {
+                    str(row["snapshot_id"]): row["captured_at"]
+                    for row in con.execute(
+                        f"""SELECT snapshot_id,captured_at
+                            FROM search_snapshots
+                            WHERE platform='wechat-search'
+                              AND snapshot_id IN ({marks})""",
+                        tuple(sorted(snapshot_ids)),
+                    )
+                }
+
+        def canonicalize_run(run: Any) -> None:
+            if not isinstance(run, dict):
+                return
+            captured_at = snapshot_times.get(str(run.get("id") or ""))
+            if captured_at is None:
+                return
+            date, clock, run_at = self._snapshot_run_at(captured_at)
+            run["date"] = date
+            run["time"] = clock
+            run["run_at"] = run_at
+
+        def canonicalize_keyword(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            canonicalize_run(item.get("latest_run"))
+            for run in item.get("runs") or []:
+                canonicalize_run(run)
+            for run in item.get("turnover_runs") or []:
+                canonicalize_run(run)
+
+        def canonicalize_window(item: Any, *, end_date: str) -> None:
+            """Repair persisted cross-midnight window labels in-place.
+
+            Snapshot timestamps are canonical UTC facts, while the legacy
+            projection may have been written by an older local-time builder.
+            A stale ``keyword_read_delta`` can therefore still advertise
+            ``07-05 → 07-19`` after the latest source snapshot is correctly
+            rendered as ``07-18``.  Keep every public window on the same
+            source-date basis, including keyword detail payloads.
+            """
+            if not isinstance(item, dict):
+                return
+            try:
+                days = max(1, int(item.get("window_days") or result.get("window_days") or 15))
+            except (TypeError, ValueError):
+                days = 15
+            try:
+                end = datetime.strptime(str(end_date), "%Y-%m-%d")
+            except ValueError:
+                return
+            start_date = (end - timedelta(days=days - 1)).date().isoformat()
+            item["window_start"] = start_date
+            item["window_end"] = str(end_date)
+            delta = item.get("keyword_read_delta")
+            if isinstance(delta, dict):
+                delta["window_start"] = start_date
+                delta["window_end"] = str(end_date)
+
+        for item in result.get("keywords") or []:
+            canonicalize_keyword(item)
+        canonicalize_keyword(result)
+
+        if projection_time and latest_timestamp <= projection_timestamp:
+            # Even an equal-timestamp projection must expose the canonical
+            # Hub spelling of the latest snapshot time and source-date
+            # window.  Older projections may have converted a late UTC
+            # snapshot to Asia/Shanghai and persisted July 19 metadata for
+            # a canonical July 18 source snapshot.
+            latest_date, _, _ = self._snapshot_run_at(latest)
+            window_days = max(1, int(result.get("window_days") or 15))
+            parsed_latest = _legacy_parse_date(latest_date)
+            result["generated_at"] = _legacy_display_iso(latest)
+            result["window_end"] = latest_date
+            if parsed_latest:
+                result["window_start"] = (
+                    parsed_latest - timedelta(days=window_days - 1)
+                ).date().isoformat()
+            canonicalize_window(result, end_date=latest_date)
+            for item in result.get("keywords") or []:
+                canonicalize_window(item, end_date=latest_date)
+            return result
+        runs_by_keyword = self._dynamic_runs(
+            con,
+            since=projection_time or None,
+            keyword_id=keyword_id,
+        )
         if not runs_by_keyword:
+            result["generated_at"] = _legacy_display_iso(latest)
             return result
         window_days = max(1, int(result.get("window_days") or 15))
         latest_date, _, latest_run_at = self._snapshot_run_at(latest)
@@ -720,6 +1092,9 @@ class WechatLegacyRepository:
         result["generated_at"] = _legacy_display_iso(latest)
         result["window_end"] = latest_date
         result["window_start"] = window_start
+        canonicalize_window(result, end_date=latest_date)
+        for item in result.get("keywords") or []:
+            canonicalize_window(item, end_date=latest_date)
         return result
 
     def full(self) -> dict[str, Any]:
@@ -743,6 +1118,25 @@ class WechatLegacyRepository:
                     from content_hub.services.wechat_refresh import WechatRefreshService
 
                     return WechatRefreshService(self.settings)._job_payload(con, subject_id)
+                if subtype == "batch":
+                    row = con.execute(
+                        """
+                        SELECT subject_id,updated_at,substr(payload_json,1,8192) AS payload_prefix
+                        FROM wechat_legacy_projections
+                        WHERE projection_kind='runtime' AND subject_id=?
+                        ORDER BY updated_at DESC,projection_id DESC
+                        LIMIT 1
+                        """,
+                        (subject_id,),
+                    ).fetchone()
+                    if row:
+                        return _runtime_prefix_summary(
+                            str(row["subject_id"]),
+                            row["updated_at"],
+                            row["payload_prefix"],
+                        )
+                if subtype == "batch":
+                    return None
         subtype_clause = ""
         params: list[Any] = [subject_id]
         if subtype:
@@ -763,22 +1157,64 @@ class WechatLegacyRepository:
 
     def runtime_history(self) -> list[dict[str, Any]]:
         with connect(self.settings, readonly=True) as con:
+            from content_hub.services.wechat_refresh import WechatRefreshService
+
+            core_rows = con.execute(
+                """
+                SELECT refresh_job_id
+                FROM search_refresh_jobs
+                WHERE system_key='wechat-search'
+                  AND platform='wechat-search'
+                  AND trigger_type IN ('manual','scheduled')
+                ORDER BY COALESCE(started_at,created_at) DESC,refresh_job_id DESC
+                """
+            ).fetchall()
+            core_ids = {str(row["refresh_job_id"]) for row in core_rows}
+            core_history = [
+                _runtime_summary(
+                    WechatRefreshService(self.settings)._job_payload(
+                        con, row["refresh_job_id"]
+                    )
+                )
+                for row in core_rows
+            ]
             rows = con.execute(
-                """SELECT payload_json, updated_at FROM wechat_legacy_projections
-                   WHERE projection_kind='runtime'
-                     AND json_extract(payload_json, '$.runtime_subtype')='batch'"""
+                f"""
+                SELECT subject_id,updated_at,
+                       substr(payload_json,1,8192) AS payload_prefix,
+                       CASE WHEN length(payload_json)<=? THEN payload_json END AS small_payload
+                FROM wechat_legacy_projections
+                WHERE projection_kind='runtime'
+                  AND substr(payload_json,1,8192) LIKE '%runtime_subtype%batch%'
+                """,
+                (_RUNTIME_FULL_READ_LIMIT,),
             ).fetchall()
         latest_by_batch: dict[str, tuple[str, dict[str, Any]]] = {}
+        for value in core_history:
+            batch_id = str(value.get("batch_id") or value.get("job_id") or "")
+            if batch_id:
+                latest_by_batch[batch_id] = (
+                    str(value.get("updated_at") or ""),
+                    value,
+                )
         for row in rows:
-            value = _runtime_value(row["payload_json"])
-            if value is None:
+            if str(row["subject_id"]) in core_ids:
                 continue
-            if isinstance(value, dict):
-                batch_id = str(value.get("batch_id") or "")
-                previous = latest_by_batch.get(batch_id)
-                updated_at = str(row["updated_at"] or "")
-                if previous is None or updated_at >= previous[0]:
-                    latest_by_batch[batch_id] = (updated_at, value)
+            value = _runtime_value(row["small_payload"])
+            if value is None:
+                value = _runtime_prefix_summary(
+                    str(row["subject_id"]),
+                    row["updated_at"],
+                    row["payload_prefix"],
+                )
+            value = _runtime_summary(value)
+            if not value or not value.get("batch_id") and not value.get("job_id"):
+                continue
+            batch_id = str(value.get("batch_id") or row["subject_id"] or "")
+            previous = latest_by_batch.get(batch_id)
+            updated_at = str(row["updated_at"] or "")
+            if previous is None or updated_at >= previous[0]:
+                latest_by_batch[batch_id] = (updated_at, value)
         return sorted(
             (value for _, value in latest_by_batch.values()),
             key=_runtime_history_sort_key,
@@ -803,24 +1239,99 @@ class WechatLegacyRepository:
                 from content_hub.services.wechat_refresh import WechatRefreshService
 
                 return WechatRefreshService(self.settings)._job_payload(con, row["refresh_job_id"])
-            row = con.execute(
-                """SELECT payload_json FROM wechat_legacy_projections
-                   JOIN search_refresh_jobs j
-                     ON j.refresh_job_id=wechat_legacy_projections.subject_id
-                   WHERE projection_kind='runtime'
-                     AND json_extract(payload_json, '$.runtime_subtype')='batch'
-                     AND j.system_key='wechat-search'
-                     AND j.platform='wechat-search'
-                   AND j.status IN ('queued','running')
-                   AND j.cancel_requested=0
-                   AND json_extract(payload_json, '$.status') IN ('queued','running')
-                   ORDER BY COALESCE(json_extract(payload_json, '$.started_at'),
-                                    json_extract(payload_json, '$.created_at'),
-                                    wechat_legacy_projections.updated_at) DESC LIMIT 1"""
-            ).fetchone()
-        if not row:
-            return None
-        return _runtime_value(row["payload_json"])
+            # Do not trust a compatibility runtime row to resurrect an
+            # active batch after the core job has finished/cancelled.  Core
+            # search_refresh_jobs is the sole source of truth for active
+            # status; old projections remain available to history.
+        return None
+
+    def compact_runtime_projections(
+        self,
+        *,
+        max_payload_bytes: int = _RUNTIME_FULL_READ_LIMIT,
+    ) -> int:
+        """Compact oversized batch runtime projections in an explicit action.
+
+        Only derived ``runtime/batch`` rows above the byte limit are changed.
+        The projection identity and source metadata remain intact; core jobs,
+        snapshots, articles and audit records are never deleted or rewritten.
+        """
+        if max_payload_bytes <= 0:
+            raise ValidationAppError("max_payload_bytes 必须是正整数。")
+        from content_hub.services.wechat_refresh import WechatRefreshService
+
+        compacted = 0
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    rows = con.execute(
+                        """
+                        SELECT projection_id,subject_id,source_hash,updated_at,
+                               substr(payload_json,1,8192) AS payload_prefix
+                        FROM wechat_legacy_projections
+                        WHERE projection_kind='runtime'
+                          AND length(payload_json)>?
+                          AND (
+                              substr(payload_json,1,8192)
+                                  LIKE '%runtime_subtype%batch%'
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM search_refresh_jobs j
+                                  WHERE j.refresh_job_id=subject_id
+                                    AND j.system_key='wechat-search'
+                                    AND j.platform='wechat-search'
+                                    AND j.trigger_type IN ('manual','scheduled')
+                                    AND j.requested_count>1
+                              )
+                          )
+                        ORDER BY updated_at ASC,projection_id ASC
+                        """,
+                        (max_payload_bytes,),
+                    ).fetchall()
+                    refresh_service = WechatRefreshService(self.settings)
+                    for row in rows:
+                        job = con.execute(
+                            """
+                            SELECT refresh_job_id
+                            FROM search_refresh_jobs
+                            WHERE refresh_job_id=?
+                              AND system_key='wechat-search'
+                              AND platform='wechat-search'
+                            """,
+                            (row["subject_id"],),
+                        ).fetchone()
+                        if job:
+                            summary = refresh_service._job_payload(
+                                con, row["subject_id"]
+                            )
+                        else:
+                            summary = _runtime_prefix_summary(
+                                str(row["subject_id"]),
+                                row["updated_at"],
+                                row["payload_prefix"],
+                            )
+                        encoded, _ = _bounded_runtime_payload(
+                            summary,
+                            max_payload_bytes=max_payload_bytes,
+                        )
+                        source_hash = hashlib.sha256(
+                            (
+                                "runtime-summary:"
+                                + str(row["source_hash"] or "")
+                                + ":"
+                                + encoded
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        con.execute(
+                            """
+                            UPDATE wechat_legacy_projections
+                            SET payload_json=?,source_hash=?
+                            WHERE projection_id=?
+                            """,
+                            (encoded, source_hash, row["projection_id"]),
+                        )
+                        compacted += 1
+        return compacted
 
     def scheduler_runtime(self) -> dict[str, Any]:
         with connect(self.settings, readonly=True) as con:
@@ -850,41 +1361,63 @@ class WechatLegacyRepository:
         return result or {"enabled": False, "is_active": False}
 
     def bootstrap(self) -> dict[str, Any]:
-        projected = self._projection("bootstrap")
-        if projected is not None:
-            return _compact_bootstrap_payload(
-                self._overlay_live_snapshots(projected, include_runs=False)
-            )
-        with connect(self.settings, readonly=True) as con:
-            keywords = self._keywords(con)
-            accounts = [
-                _row(x) for x in con.execute(
-                    "SELECT * FROM creators WHERE platform='wechat-search' ORDER BY canonical_name,creator_id"
-                )
-            ]
-            snapshot_rows = con.execute(
-                "SELECT snapshot_id,captured_at FROM search_snapshots WHERE platform='wechat-search'"
-            ).fetchall()
-            latest_row = max(
-                snapshot_rows,
-                key=lambda row: (
-                    _legacy_timestamp(row["captured_at"]),
-                    str(row["snapshot_id"] or ""),
-                ),
-                default=None,
-            )
-            latest = latest_row["captured_at"] if latest_row else None
-            latest_date, _, latest_run_at = self._snapshot_run_at(latest)
-        return _compact_bootstrap_payload({
-            "generated_at": latest_run_at.replace(" ", "T") if latest else None,
-            "window_days": None,
-            "window_start": None,
-            "window_end": latest_date if latest else None,
-            "scope": {"total": len(keywords), "pinned": sum(bool(x.get("pinned")) for x in keywords)},
-            "keywords": [self.keyword_summary(x) for x in keywords],
-            "accounts": accounts,
-            "bucket_options": sorted({x.get("keyword_bucket") for x in keywords if x.get("keyword_bucket")}),
-        })
+        return self.bootstrap_cache_entry().payload
+
+    def compact_bootstrap_projection(
+        self,
+        *,
+        max_payload_bytes: int = 10 << 20,
+    ) -> int:
+        """Rewrite oversized bootstrap rows to the actual list-view shape."""
+        if max_payload_bytes <= 0:
+            raise ValidationAppError("max_payload_bytes 必须是正整数。")
+        compacted = 0
+        with writer_lock(self.settings.lock_path):
+            with connect(self.settings) as con:
+                with transaction(con):
+                    rows = con.execute(
+                        """
+                        SELECT projection_id,source_hash,payload_json
+                        FROM wechat_legacy_projections
+                        WHERE projection_kind='bootstrap'
+                          AND subject_id=''
+                          AND length(payload_json)>?
+                        ORDER BY updated_at ASC,projection_id ASC
+                        """,
+                        (max_payload_bytes,),
+                    ).fetchall()
+                    for row in rows:
+                        payload = _projection_payload(row["payload_json"])
+                        if not payload:
+                            continue
+                        compact = _compact_bootstrap_payload(payload)
+                        encoded = json.dumps(
+                            compact,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        if len(encoded.encode("utf-8")) > max_payload_bytes:
+                            raise ValidationAppError(
+                                "bootstrap compact payload 仍超过 max_payload_bytes。"
+                            )
+                        source_hash = hashlib.sha256(
+                            (
+                                "bootstrap-compact:"
+                                + str(row["source_hash"] or "")
+                                + ":"
+                                + encoded
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        con.execute(
+                            """
+                            UPDATE wechat_legacy_projections
+                            SET payload_json=?,source_hash=?
+                            WHERE projection_id=?
+                            """,
+                            (encoded, source_hash, row["projection_id"]),
+                        )
+                        compacted += 1
+        return compacted
 
     @staticmethod
     def keyword_summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -1686,6 +2219,8 @@ class WechatLegacyRepository:
                 content_id = str(row["content_id"] or "")
                 if not content_id:
                     continue
+                identity_id = str(payload.get("article_id") or "")
+                article_key = identity_id or content_id
                 source_snapshot_id = str(
                     payload.get("snapshot_id") or row["snapshot_id"]
                 )
@@ -1696,19 +2231,18 @@ class WechatLegacyRepository:
                     snapshot.get("keyword"),
                 )
                 if text:
-                    article_keywords.setdefault(content_id, set()).add(text)
+                    article_keywords.setdefault(article_key, set()).add(text)
                 snapshot_date = str(
                     snapshot.get("snapshot_date")
                     or snapshot.get("captured_at")
                     or ""
                 )[:10]
                 if snapshot_date:
-                    article_days.setdefault(content_id, set()).add(
+                    article_days.setdefault(article_key, set()).add(
                         snapshot_date
                     )
 
-            external_ids: dict[str, str] = {}
-            identifier_payloads: dict[str, dict[str, Any]] = {}
+            external_ids: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
             for identifier in con.execute(
                 """
                 SELECT content_id,external_id,payload_json
@@ -1718,10 +2252,11 @@ class WechatLegacyRepository:
                 """
             ):
                 content_id = str(identifier["content_id"])
-                external_ids.setdefault(content_id, str(identifier["external_id"]))
-                identifier_payloads.setdefault(
-                    content_id,
-                    _json_object(identifier["payload_json"]),
+                external_ids[content_id].append(
+                    (
+                        str(identifier["external_id"]),
+                        _json_object(identifier["payload_json"]),
+                    )
                 )
 
             content_paths = {
@@ -1758,69 +2293,81 @@ class WechatLegacyRepository:
                 """
             ):
                 content_id = str(content["content_id"])
-                hit_keywords = article_keywords.get(content_id)
-                if not hit_keywords:
-                    continue
                 content_payload = _json_object(content["payload_json"])
-                raw = {
-                    **identifier_payloads.get(content_id, {}),
-                    **content_payload,
-                }
-                account_name = str(
-                    content["author_name"]
-                    or raw.get("canonical_name")
-                    or raw.get("creator_name_raw")
-                    or raw.get("account")
-                    or ""
-                )
-                account_id = str(content["creator_id"] or raw.get("account_id") or "")
-                if not account_id and account_name:
-                    account_id = str(
-                        creators_by_name.get(account_name, {}).get("creator_id")
-                        or (
-                            "acct_"
-                            + hashlib.sha256(account_name.encode("utf-8")).hexdigest()[:16]
-                        )
+                identities = external_ids.get(content_id) or [(content_id, {})]
+                for external_id, identifier_payload in identities:
+                    hit_keywords = (
+                        article_keywords.get(external_id)
+                        or article_keywords.get(content_id)
                     )
-                account = creators.get(account_id, {})
-                monitor_account = monitor_accounts.get(account_id, {})
-                sorted_keywords = sorted(hit_keywords)
-                metric_fallback = metric_fallbacks.get(content_id, {})
-                read_count = raw.get("read_count")
-                if read_count is None:
-                    read_count = metric_fallback.get("read_count")
-                like_count = raw.get("like_count")
-                if like_count is None:
-                    like_count = metric_fallback.get("like_count")
-                rows.append({
-                    "article_id": external_ids.get(content_id, content_id),
-                    "title": content["title"] or raw.get("title") or raw.get("title_raw") or "",
-                    "url": content["canonical_url"] or raw.get("normalized_url") or raw.get("raw_url") or raw.get("url_raw") or "",
-                    "account_id": account_id,
-                    "account_name": (
-                        account.get("canonical_name")
-                        or monitor_account.get("name")
-                        or account_name
-                    ),
-                    "account_headimg": (
-                        account.get("headimg_url")
-                        or monitor_account.get("headimg_url", "")
-                    ),
-                    # Contents payload is the primary legacy value; canonical
-                    # observations are a fallback for imported/older articles.
-                    "read_count": read_count,
-                    "like_count": like_count,
-                    "hit_count": len(sorted_keywords),
-                    "hit_keywords": sorted_keywords,
-                    "on_rank_days": len(article_days.get(content_id, set())),
-                    "account_score": monitor_account.get("score") or 0,
-                    "published_at": content["published_at"] or raw.get("published_at"),
-                    "content_file_path": (
-                        content_paths.get(content_id)
-                        or raw.get("content_file_path")
-                    ),
-                    "cover_url": raw.get("cover_url"),
-                })
+                    if not hit_keywords:
+                        continue
+                    # A canonical content row may represent multiple legacy
+                    # WeChat article identities.  Preserve each identifier's
+                    # display fields instead of collapsing them to the first
+                    # external_id.
+                    raw = {**content_payload, **identifier_payload}
+                    account_name = str(
+                        raw.get("author_name")
+                        or content["author_name"]
+                        or raw.get("canonical_name")
+                        or raw.get("creator_name_raw")
+                        or raw.get("account")
+                        or ""
+                    )
+                    account_id = str(
+                        raw.get("account_id")
+                        or content["creator_id"]
+                        or ""
+                    )
+                    if not account_id and account_name:
+                        account_id = str(
+                            creators_by_name.get(account_name, {}).get("creator_id")
+                            or (
+                                "acct_"
+                                + hashlib.sha256(account_name.encode("utf-8")).hexdigest()[:16]
+                            )
+                        )
+                    account = creators.get(account_id, {})
+                    monitor_account = monitor_accounts.get(account_id, {})
+                    sorted_keywords = sorted(hit_keywords)
+                    metric_fallback = metric_fallbacks.get(content_id, {})
+                    read_count = raw.get("read_count")
+                    if read_count is None:
+                        read_count = metric_fallback.get("read_count")
+                    like_count = raw.get("like_count")
+                    if like_count is None:
+                        like_count = metric_fallback.get("like_count")
+                    rows.append({
+                        "article_id": external_id,
+                        "title": raw.get("title") or raw.get("title_raw") or content["title"] or "",
+                        "url": raw.get("normalized_url") or raw.get("raw_url") or raw.get("url_raw") or content["canonical_url"] or "",
+                        "account_id": account_id,
+                        "account_name": (
+                            account.get("canonical_name")
+                            or monitor_account.get("name")
+                            or account_name
+                        ),
+                        "account_headimg": (
+                            account.get("headimg_url")
+                            or monitor_account.get("headimg_url", "")
+                        ),
+                        "read_count": read_count,
+                        "like_count": like_count,
+                        "hit_count": len(sorted_keywords),
+                        "hit_keywords": sorted_keywords,
+                        "on_rank_days": len(
+                            article_days.get(external_id)
+                            or article_days.get(content_id, set())
+                        ),
+                        "account_score": monitor_account.get("score") or 0,
+                        "published_at": raw.get("published_at") or content["published_at"],
+                        "content_file_path": (
+                            content_paths.get(content_id)
+                            or raw.get("content_file_path")
+                        ),
+                        "cover_url": raw.get("cover_url"),
+                    })
 
         account_map: dict[str, dict[str, Any]] = {}
         for article in rows:
@@ -1879,16 +2426,20 @@ class WechatLegacyRepository:
                 key=lambda item: (
                     item["like_count"] is None,
                     -(item["like_count"] or 0),
+                    item.get("published_at") is None,
                 )
             )
         elif sort == "hitCount":
-            filtered.sort(key=lambda item: -item["hit_count"])
+            filtered.sort(
+                key=lambda item: (-item["hit_count"], item.get("published_at") is None)
+            )
         elif sort == "onRankDays":
             filtered.sort(
                 key=lambda item: (
                     -item["on_rank_days"],
                     item["read_count"] is None,
                     -(item["read_count"] or 0),
+                    item.get("published_at") is None,
                 )
             )
         elif sort == "publishTime":
